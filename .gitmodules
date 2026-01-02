@@ -1,0 +1,36 @@
+[submodule "backend"]
+	path = backend
+	url = git@github.com:Reevit-Platform/backend.git
+[submodule "frontend"]
+	path = frontend
+	url = git@github.com:Reevit-Platform/frontend.git
+[submodule "docs"]
+	path = docs
+	url = git@github.com:Reevit-Platform/docs.git
+[submodule "examples"]
+	path = examples
+	url = git@github.com:Reevit-Platform/examples.git
+[submodule "sdks/core"]
+	path = sdks/core
+	url = git@github.com:Reevit-Platform/core-sdk.git
+[submodule "sdks/react"]
+	path = sdks/react
+	url = git@github.com:Reevit-Platform/react-sdk.git
+[submodule "sdks/svelte"]
+	path = sdks/svelte
+	url = git@github.com:Reevit-Platform/svelte-sdk.git
+[submodule "sdks/go"]
+	path = sdks/go
+	url = git@github.com:Reevit-Platform/go-sdk.git
+[submodule "sdks/python"]
+	path = sdks/python
+	url = git@github.com:Reevit-Platform/python-sdk.git
+[submodule "sdks/typescript"]
+	path = sdks/typescript
+	url = git@github.com:Reevit-Platform/node-sdk.git
+[submodule "sdks/vue"]
+	path = sdks/vue
+	url = git@github.com:Reevit-Platform/vue-sdk.git
+[submodule "sdks/php"]
+	path = sdks/php
+	url = git@github.com:Reevit-Platform/php-sdk.git
