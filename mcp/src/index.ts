@@ -3,10 +3,20 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
 import { configFromEnv, ReevitClient } from "./client.js";
+import { serveHttp } from "./http.js";
 import { buildTools } from "./tools.js";
 
 async function main() {
   const config = configFromEnv();
+
+  // --http [--port N]: streamable HTTP transport instead of stdio.
+  const argv = process.argv.slice(2);
+  if (argv.includes("--http")) {
+    const portFlag = argv[argv.indexOf("--port") + 1];
+    await serveHttp(config, Number(portFlag) > 0 ? Number(portFlag) : 8788);
+    return;
+  }
+
   const client = new ReevitClient(config);
 
   const server = new McpServer({ name: "reevit", version: "0.1.0" });

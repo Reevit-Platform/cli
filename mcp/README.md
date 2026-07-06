@@ -160,6 +160,19 @@ Add to `~/.gemini/settings.json`:
   tool call can never double-refund or double-create.
 - Amounts are minor units everywhere (GHS 50.00 = `5000`).
 
+## Streamable HTTP mode
+
+For remote/agent-platform use, run the same server over streamable HTTP
+(stateless; each request gets a fresh server, no session leakage):
+
+```bash
+REEVIT_API_KEY=rk_test_... npx -y @reevit/mcp --http --port 8788
+# endpoint: http://localhost:8788/mcp
+```
+
+Auth is still the configured scoped key — this is a self-hosted endpoint, so
+put it behind your own network boundary.
+
 ## Development
 
 ```bash
