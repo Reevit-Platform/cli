@@ -50,7 +50,9 @@ scopes you want the CLI to have. Test-mode keys are strongly recommended.`,
 		// Verify before saving — a cheap read that any scope can perform is
 		// not guaranteed, so tolerate 403 (valid key, narrow scopes) and only
 		// reject definite auth failures.
-		var probe map[string]any
+		// GET /payments returns an array; decode into any so the probe only
+		// cares about auth, not shape.
+		var probe any
 
 		err = api.New(cfg).Do(cmd.Context(), api.Request{Path: "/payments", Query: nil}, &probe)
 		if apiErr, ok := err.(*api.APIError); ok && (apiErr.Status == 401) {
