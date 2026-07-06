@@ -1,0 +1,59 @@
+version: 2
+
+project_name: reevit
+
+builds:
+  - id: reevit
+    main: .
+    binary: reevit
+    env:
+      - CGO_ENABLED=0
+    goos: [darwin, linux, windows]
+    goarch: [amd64, arm64]
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w -X github.com/Reevit-Platform/cli/cmd.Version={{.Version}}
+
+archives:
+  # tar.gz everywhere (including windows) so the dependency-free npm
+  # installer only needs gunzip + a minimal tar reader.
+  - id: default
+    formats: [tar.gz]
+    name_template: >-
+      reevit_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: github
+  filters:
+    exclude:
+      - "^chore"
+      - "^docs"
+      - "^test"
+
+release:
+  github:
+    owner: Reevit-Platform
+    name: cli
+  draft: false
+
+homebrew_casks:
+  - name: reevit
+    repository:
+      owner: Reevit-Platform
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    homepage: https://github.com/Reevit-Platform/cli
+    description: "Reevit CLI — test payments, drive the sandbox simulator, forward events locally"
+    license: MIT
+    # The binary is not notarized — clear the quarantine bit on install.
+    hooks:
+      post:
+        install: |
+          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/reevit"]
+          end

@@ -3,8 +3,23 @@
 Command-line tool for [Reevit](https://reevit.io): test payments locally,
 drive the sandbox simulator, and inspect your account — with a scoped API key.
 
+## Install
+
 ```bash
+# Homebrew (macOS / Linux)
+brew install reevit-platform/tap/reevit
+
+# npm
+npm install -g @reevit/cli
+
+# Go
 go install github.com/Reevit-Platform/cli@latest   # binary: cli → alias as reevit
+```
+
+Prebuilt binaries for every platform are on the
+[releases page](https://github.com/Reevit-Platform/cli/releases).
+
+```bash
 reevit login                                        # stores the key with 0600 perms
 reevit payments list --status failed
 reevit trigger payment.succeeded
@@ -55,6 +70,11 @@ verification code runs unchanged. The signing secret comes from your webhook
 config when the key has `webhooks:read`; otherwise an ephemeral secret is
 generated and printed. Reconnects with backoff; test mode only.
 
-## Roadmap
+## Releasing
 
-- Homebrew tap + prebuilt binaries
+Tag `v*` → GitHub Actions runs GoReleaser: builds all platforms, publishes the
+GitHub release, and updates the Homebrew tap (needs the `HOMEBREW_TAP_TOKEN`
+repo secret — a fine-grained PAT with `contents:write` on
+`Reevit-Platform/homebrew-tap`). The npm package (`npm/`) is published
+manually: bump `npm/package.json` to the tag version, then
+`npm publish --access public` from `npm/`.
