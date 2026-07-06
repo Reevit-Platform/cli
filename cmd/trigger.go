@@ -60,8 +60,7 @@ Supported: ` + strings.Join(triggerEventNames(), ", "),
 			return fmt.Errorf("trigger only runs in test mode (REEVIT_MODE=%s)", c.Mode())
 		}
 
-		connID, err := ensureSimulatorConnection(cmd.Context(), c)
-		if err != nil {
+		if _, err := ensureSimulatorConnection(cmd.Context(), c); err != nil {
 			return err
 		}
 
@@ -74,13 +73,15 @@ Supported: ` + strings.Join(triggerEventNames(), ", "),
 			Method:     "POST",
 			Path:       "/payments/intents",
 			Idempotent: true,
+			// Intents always route — the simulator connection ensured above is
+			// what the router picks, so triggers exercise the real routing path.
 			Body: map[string]any{
-				"amount":        amount,
-				"currency":      strings.ToUpper(triggerCurrency),
-				"method":        "mobile_money",
-				"connection_id": connID,
-				"description":   "reevit trigger " + event,
-				"metadata":      map[string]any{"created_via": "reevit-cli", "trigger": event},
+				"amount":      amount,
+				"currency":    strings.ToUpper(triggerCurrency),
+				"method":      "mobile_money",
+				"country":     "GH",
+				"description": "reevit trigger " + event,
+				"metadata":    map[string]any{"created_via": "reevit-cli", "trigger": event},
 			},
 		}, &payment)
 		if err != nil {
@@ -121,11 +122,13 @@ func ensureSimulatorConnection(ctx context.Context, c *api.Client) (string, erro
 		Method:     "POST",
 		Path:       "/connections",
 		Idempotent: true,
+		// The API rejects unknown fields; connections are identified by
+		// provider + labels (no name field).
 		Body: map[string]any{
-			"name":        "Simulator",
 			"provider":    "stub",
 			"mode":        "sandbox",
-			"credentials": map[string]any{},
+			"credentials": map[string]any{"simulator": true},
+			"labels":      []string{"simulator"},
 		},
 	}, &created)
 	if err != nil {
