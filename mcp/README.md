@@ -30,7 +30,105 @@ claude mcp add reevit -e REEVIT_API_KEY=rk_test_... -- npx -y @reevit/mcp
 
 ### Claude Desktop
 
-Add to `claude_desktop_config.json`:
+Add to `claude_desktop_config.json` (Settings → Developer → Edit Config):
+
+```json
+{
+  "mcpServers": {
+    "reevit": {
+      "command": "npx",
+      "args": ["-y", "@reevit/mcp"],
+      "env": { "REEVIT_API_KEY": "rk_test_..." }
+    }
+  }
+}
+```
+
+### Cursor
+
+Add to `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` in your project:
+
+```json
+{
+  "mcpServers": {
+    "reevit": {
+      "command": "npx",
+      "args": ["-y", "@reevit/mcp"],
+      "env": { "REEVIT_API_KEY": "rk_test_..." }
+    }
+  }
+}
+```
+
+### VS Code (Copilot agent mode)
+
+Add to `.vscode/mcp.json` in your workspace:
+
+```json
+{
+  "servers": {
+    "reevit": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@reevit/mcp"],
+      "env": { "REEVIT_API_KEY": "rk_test_..." }
+    }
+  }
+}
+```
+
+### Windsurf
+
+Add to `~/.codeium/windsurf/mcp_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "reevit": {
+      "command": "npx",
+      "args": ["-y", "@reevit/mcp"],
+      "env": { "REEVIT_API_KEY": "rk_test_..." }
+    }
+  }
+}
+```
+
+### Cline
+
+Open Cline → MCP Servers → Configure, and add the same `mcpServers` entry as
+Cursor/Windsurf above to `cline_mcp_settings.json`.
+
+### Zed
+
+Add to Zed `settings.json`:
+
+```json
+{
+  "context_servers": {
+    "reevit": {
+      "command": { "path": "npx", "args": ["-y", "@reevit/mcp"] },
+      "settings": {}
+    }
+  }
+}
+```
+
+Set `REEVIT_API_KEY` in the environment Zed is launched from.
+
+### Codex CLI
+
+Add to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.reevit]
+command = "npx"
+args = ["-y", "@reevit/mcp"]
+env = { REEVIT_API_KEY = "rk_test_..." }
+```
+
+### Gemini CLI
+
+Add to `~/.gemini/settings.json`:
 
 ```json
 {
