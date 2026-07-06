@@ -17,6 +17,7 @@ reevit trigger payment.succeeded
 | `reevit login [--key rk_test_...]` | Verify + store a scoped API key (`~/.config/reevit/config.json`, 0600) |
 | `reevit payments list [--status s] [--limit n]` | Recent payments in the current mode |
 | `reevit trigger <event>` | Fire a test event by creating a **real** sandbox payment through the simulator |
+| `reevit listen --forward-to <url>` | Stream live test-mode events to a local endpoint, signed like production |
 
 ### `trigger` events → simulator magic amounts
 
@@ -41,8 +42,19 @@ Env vars override the config file: `REEVIT_API_KEY`, `REEVIT_API_URL`
 (default `https://api.reevit.io`), `REEVIT_MODE` (`test`|`live`, default
 `test`), `REEVIT_CONFIG` (config file path).
 
+### `listen`
+
+```bash
+reevit listen --forward-to http://localhost:3000/webhooks
+```
+
+Subscribes to your account's live test-mode event stream and POSTs each event
+to your endpoint with the production header set and a real signature
+(`X-Reevit-Signature: sha256=<hex HMAC-SHA256 of the raw body>`), so your
+verification code runs unchanged. The signing secret comes from your webhook
+config when the key has `webhooks:read`; otherwise an ephemeral secret is
+generated and printed. Reconnects with backoff; test mode only.
+
 ## Roadmap
 
-- `reevit listen --forward-to localhost:3000/webhooks` — stream test-mode
-  events to a local endpoint with valid `X-Reevit-Signature`s
 - Homebrew tap + prebuilt binaries
