@@ -10,9 +10,13 @@ import (
 	"github.com/Reevit-Platform/cli/internal/config"
 )
 
+// Version is stamped by goreleaser at build time (-X …/cmd.Version=v1.2.3).
+var Version = "dev"
+
 var rootCmd = &cobra.Command{
 	Use:           "reevit",
 	Short:         "Reevit CLI — test payments, drive the sandbox simulator, inspect your account",
+	Version:       Version,
 	SilenceUsage:  true,
 	SilenceErrors: true,
 }
