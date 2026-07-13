@@ -35,7 +35,7 @@ func client() (*api.Client, error) {
 	}
 
 	if cfg.APIKey == "" {
-		return nil, fmt.Errorf("no API key configured — run `reevit login` or set REEVIT_API_KEY")
+		return nil, fmt.Errorf("no API key configured — run `reevit login` (opens your browser) or set REEVIT_API_KEY")
 	}
 
 	return api.New(cfg), nil

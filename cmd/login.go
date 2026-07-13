@@ -12,16 +12,29 @@ import (
 	"github.com/Reevit-Platform/cli/internal/config"
 )
 
-var loginKey string
+var (
+	loginKey       string
+	loginManual    bool
+	loginNoBrowser bool
+)
 
 var loginCmd = &cobra.Command{
 	Use:   "login",
-	Short: "Store a scoped Reevit API key for the CLI",
-	Long: `Stores an API key in your user config (owner-only permissions).
-Create a key in the dashboard under Developers → API keys — give it only the
-scopes you want the CLI to have. Test-mode keys are strongly recommended.`,
+	Short: "Log in via your browser, or store an API key with --key",
+	Long: `Logs the CLI in. By default this opens the Reevit dashboard in your
+browser: you confirm a pairing code there and the CLI receives a freshly
+minted TEST-MODE API key scoped to what the CLI needs — no copy-pasting.
+
+To use an existing key instead (e.g. a live key), pass --key or --manual.
+Keys are stored in your user config with owner-only permissions.`,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		key := strings.TrimSpace(loginKey)
+
+		// Default path: browser pairing. Manual key entry stays available for
+		// live keys, CI, and air-gapped setups.
+		if key == "" && !loginManual {
+			return browserLogin(cmd, !loginNoBrowser)
+		}
 
 		if key == "" {
 			fmt.Fprint(cmd.OutOrStdout(), "API key: ")
@@ -79,7 +92,9 @@ func isScopeError(err error) bool {
 }
 
 func init() {
-	loginCmd.Flags().StringVar(&loginKey, "key", "", "API key (omit to be prompted)")
+	loginCmd.Flags().StringVar(&loginKey, "key", "", "API key (skips the browser flow)")
+	loginCmd.Flags().BoolVar(&loginManual, "manual", false, "prompt for an API key instead of using the browser")
+	loginCmd.Flags().BoolVar(&loginNoBrowser, "no-browser", false, "print the pairing link instead of opening a browser")
 
 	if v := os.Getenv("REEVIT_API_KEY"); v != "" && loginKey == "" {
 		loginKey = v
