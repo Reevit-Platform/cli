@@ -1,0 +1,43 @@
+"use client";
+
+import { useState } from "react";
+import { ReevitCheckout } from "@reevit/react";
+import "@reevit/react/styles.css";
+
+// Drop-in checkout button. Amounts are in the smallest currency unit
+// (e.g. 5000 = GHS 50.00). The component creates its own payment intent
+// with the public key; pass `initialPaymentIntent` instead if your server
+// creates intents (see lib/reevit).
+export function ReevitCheckoutButton({{if .TS}}{
+  amount,
+  currency = "GHS",
+}: {
+  amount: number;
+  currency?: string;
+}{{else}}{ amount, currency = "GHS" }{{end}}) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <>
+      <button type="button" onClick={() => setOpen(true)}>
+        Pay now
+      </button>
+      <ReevitCheckout
+        publicKey={process.env.NEXT_PUBLIC_REEVIT_KEY ?? ""}
+        amount={amount}
+        currency={currency}
+        paymentMethods={["card", "mobile_money"]}
+        isOpen={open}
+        onOpenChange={setOpen}
+        onSuccess={(result) => {
+          // TODO: show your confirmation UI
+          console.log("payment succeeded", result);
+        }}
+        onError={(error) => {
+          console.error("payment failed", error);
+        }}
+        onClose={() => setOpen(false)}
+      />
+    </>
+  );
+}

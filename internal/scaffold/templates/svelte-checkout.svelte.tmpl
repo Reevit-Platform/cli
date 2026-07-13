@@ -1,0 +1,34 @@
+<script{{if .TS}} lang="ts"{{end}}>
+  import { ReevitCheckout } from "@reevit/svelte";
+  import "@reevit/svelte/styles.css";
+
+  // Amounts are in the smallest currency unit (e.g. 5000 = GHS 50.00).
+  // Set VITE_REEVIT_KEY in your env — use a test-mode key (pfk_test_…)
+  // while integrating.
+  export let amount{{if .TS}}: number{{end}};
+  export let currency = "GHS";
+
+  let open = false;
+
+  function onSuccess(event{{if .TS}}: CustomEvent{{end}}) {
+    // TODO: show your confirmation UI
+    console.log("payment succeeded", event.detail);
+  }
+
+  function onError(event{{if .TS}}: CustomEvent{{end}}) {
+    console.error("payment failed", event.detail);
+  }
+</script>
+
+<button type="button" on:click={() => (open = true)}>Pay now</button>
+
+<ReevitCheckout
+  publicKey={import.meta.env.VITE_REEVIT_KEY ?? ""}
+  {amount}
+  {currency}
+  paymentMethods={["card", "mobile_money"]}
+  isOpen={open}
+  on:success={onSuccess}
+  on:error={onError}
+  on:close={() => (open = false)}
+/>

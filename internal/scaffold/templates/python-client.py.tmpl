@@ -1,0 +1,21 @@
+"""Server-side Reevit client.
+
+Install: pip install reevit
+Amounts are in the smallest currency unit (e.g. pesewas).
+"""
+
+import os
+
+from reevit import Reevit
+
+reevit_client = Reevit(
+    api_key=os.environ.get("REEVIT_API_KEY", ""),
+    org_id=os.environ.get("REEVIT_ORG_ID", ""),
+)
+
+# Example: create a payment intent.
+#
+# payment = reevit_client.payments.create_intent(
+#     {"amount": 5000, "currency": "GHS", "country": "GH", "method": "mobile_money"},
+#     idempotency_key="order_12345",
+# )

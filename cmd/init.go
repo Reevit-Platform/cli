@@ -1,0 +1,277 @@
+package cmd
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"strings"
+
+	"github.com/spf13/cobra"
+
+	"github.com/Reevit-Platform/cli/internal/config"
+	"github.com/Reevit-Platform/cli/internal/scaffold"
+)
+
+var (
+	initTargets []string
+	initYes     bool
+	initDryRun  bool
+)
+
+var initCmd = &cobra.Command{
+	Use:   "init",
+	Short: "Set up Reevit in the current project",
+	Long: `Detects your stack, logs you in if needed (browser pairing, test-mode
+key), installs the matching Reevit SDK, wires REEVIT_* environment variables,
+and writes integration starter files — a webhook handler, a checkout
+component, or a server-side client, depending on the project.
+
+Existing files and env values are never overwritten.`,
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		out := cmd.OutOrStdout()
+
+		// --- 1. Auth: reuse the browser pairing flow when logged out ---
+		cfg, err := config.Load()
+		if err != nil {
+			return err
+		}
+
+		if cfg.APIKey == "" {
+			fmt.Fprintln(out, "No API key configured yet — starting browser login first.")
+
+			if err := browserLogin(cmd, true); err != nil {
+				return err
+			}
+
+			if cfg, err = config.Load(); err != nil {
+				return err
+			}
+		}
+
+		// --- 2. Detect the stack ---
+		root, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("resolve working directory: %w", err)
+		}
+
+		project := scaffold.Detect(root)
+		if project.Stack == scaffold.StackUnknown {
+			return fmt.Errorf("couldn't detect a project here — run `reevit init` inside a project with a package.json, go.mod, composer.json, or pyproject.toml")
+		}
+
+		fmt.Fprintf(out, "\nDetected: %s project", project.Stack)
+
+		if len(project.Managers) > 1 {
+			fmt.Fprintf(out, " (lockfiles: %s — all will be kept in sync)", joinManagers(project.Managers))
+		}
+
+		fmt.Fprintln(out)
+
+		available := scaffold.TargetsFor(project)
+
+		// --- 3. Pick what to scaffold ---
+		targets, err := pickTargets(cmd, available)
+		if err != nil {
+			return err
+		}
+
+		if len(targets) == 0 {
+			return fmt.Errorf("nothing selected — nothing to do")
+		}
+
+		if initDryRun {
+			return printPlan(out, project, targets)
+		}
+
+		// --- 4. Install SDKs ---
+		for _, plan := range scaffold.NpmInstallPlans(project, targets) {
+			fmt.Fprintf(out, "\n$ %s\n", strings.Join(plan, " "))
+
+			install := exec.CommandContext(cmd.Context(), plan[0], plan[1:]...)
+			install.Dir = project.Root
+			install.Stdout = out
+			install.Stderr = cmd.ErrOrStderr()
+
+			if err := install.Run(); err != nil {
+				return fmt.Errorf("install failed (%s): %w", strings.Join(plan, " "), err)
+			}
+		}
+
+		runCmds, showCmds := scaffold.OtherInstallCmds(targets)
+
+		for _, plan := range runCmds {
+			fmt.Fprintf(out, "\n$ %s\n", strings.Join(plan, " "))
+
+			install := exec.CommandContext(cmd.Context(), plan[0], plan[1:]...)
+			install.Dir = project.Root
+			install.Stdout = out
+			install.Stderr = cmd.ErrOrStderr()
+
+			if err := install.Run(); err != nil {
+				return fmt.Errorf("install failed (%s): %w", strings.Join(plan, " "), err)
+			}
+		}
+
+		// --- 5. Env wiring ---
+		envRes, err := scaffold.WriteEnv(project, cfg.APIKey, cfg.OrgID)
+		if err != nil {
+			return err
+		}
+
+		// --- 6. Starter files ---
+		files, err := scaffold.Apply(project, targets)
+		if err != nil {
+			return err
+		}
+
+		// --- 7. Summary + next steps ---
+		fmt.Fprintln(out)
+
+		if envRes.KeyAlreadySet {
+			fmt.Fprintf(out, "• %s already had REEVIT_API_KEY — left untouched\n", envRes.EnvFile)
+		} else {
+			fmt.Fprintf(out, "✔ %s — REEVIT_API_KEY (test mode) + REEVIT_ORG_ID\n", envRes.EnvFile)
+		}
+
+		if envRes.EnvExample != "" {
+			fmt.Fprintf(out, "✔ %s — placeholders added\n", envRes.EnvExample)
+		}
+
+		if envRes.GitignoreNoted {
+			fmt.Fprintf(out, "✔ .gitignore — %s added\n", envRes.EnvFile)
+		}
+
+		for _, f := range files {
+			if f.Skipped {
+				fmt.Fprintf(out, "• %s exists — skipped\n", f.Path)
+			} else {
+				fmt.Fprintf(out, "✔ %s\n", f.Path)
+			}
+		}
+
+		for _, plan := range showCmds {
+			fmt.Fprintf(out, "\nInstall the SDK in your environment:  %s\n", strings.Join(plan, " "))
+		}
+
+		printNextSteps(out, targets)
+
+		return nil
+	},
+}
+
+// pickTargets resolves --target flags or prompts interactively.
+func pickTargets(cmd *cobra.Command, available []scaffold.Target) ([]scaffold.Target, error) {
+	if len(available) == 0 {
+		return nil, fmt.Errorf("no Reevit integrations available for this stack yet")
+	}
+
+	if len(initTargets) > 0 {
+		byKey := map[string]scaffold.Target{}
+		for _, t := range available {
+			byKey[string(t.Key)] = t
+		}
+
+		var picked []scaffold.Target
+
+		for _, key := range initTargets {
+			t, ok := byKey[strings.TrimSpace(key)]
+			if !ok {
+				return nil, fmt.Errorf("unknown --target %q — available: %s", key, availableKeys(available))
+			}
+
+			picked = append(picked, t)
+		}
+
+		return picked, nil
+	}
+
+	if initYes || len(available) == 1 {
+		return available, nil
+	}
+
+	labels := make([]string, len(available))
+	for i, t := range available {
+		labels[i] = t.Label
+	}
+
+	picks, err := choose(cmd.OutOrStdout(), cmd.InOrStdin(), "What should Reevit set up?", labels, true)
+	if err != nil {
+		return nil, err
+	}
+
+	var picked []scaffold.Target
+	for _, i := range picks {
+		picked = append(picked, available[i])
+	}
+
+	return picked, nil
+}
+
+func printPlan(out interface{ Write([]byte) (int, error) }, project scaffold.Project, targets []scaffold.Target) error {
+	fmt.Fprintln(out, "\nDry run — would do the following:")
+
+	for _, plan := range scaffold.NpmInstallPlans(project, targets) {
+		fmt.Fprintf(out, "  $ %s\n", strings.Join(plan, " "))
+	}
+
+	runCmds, showCmds := scaffold.OtherInstallCmds(targets)
+	for _, plan := range append(runCmds, showCmds...) {
+		fmt.Fprintf(out, "  $ %s\n", strings.Join(plan, " "))
+	}
+
+	fmt.Fprintf(out, "  write %s (REEVIT_API_KEY, REEVIT_ORG_ID, REEVIT_WEBHOOK_SECRET) + .env.example + .gitignore\n", "env file")
+
+	for _, t := range targets {
+		for _, path := range t.Files {
+			fmt.Fprintf(out, "  write %s\n", path)
+		}
+	}
+
+	return nil
+}
+
+func printNextSteps(out interface{ Write([]byte) (int, error) }, targets []scaffold.Target) {
+	fmt.Fprintln(out, "\nNext steps:")
+
+	for _, t := range targets {
+		switch t.Key {
+		case scaffold.TargetWebhook:
+			fmt.Fprintln(out, "  • Forward signed test events to your webhook handler:")
+			fmt.Fprintln(out, "      reevit listen --forward-to http://localhost:<port>/<your webhook path>")
+			fmt.Fprintln(out, "    and put the printed signing secret in REEVIT_WEBHOOK_SECRET.")
+		case scaffold.TargetCheckout:
+			fmt.Fprintln(out, "  • Render the checkout component with an amount in the smallest currency unit.")
+		case scaffold.TargetClient:
+			fmt.Fprintln(out, "  • Create a test payment with the server client, then check `reevit payments list`.")
+		}
+	}
+
+	fmt.Fprintln(out, "\nYou're on a TEST-MODE key. When you're ready for live traffic, create a live")
+	fmt.Fprintln(out, "key in Dashboard → Developers → API keys and run:  reevit login --key <live_key>")
+}
+
+func availableKeys(targets []scaffold.Target) string {
+	keys := make([]string, len(targets))
+	for i, t := range targets {
+		keys[i] = string(t.Key)
+	}
+
+	return strings.Join(keys, ", ")
+}
+
+func joinManagers(managers []scaffold.PackageManager) string {
+	names := make([]string, len(managers))
+	for i, m := range managers {
+		names[i] = string(m)
+	}
+
+	return strings.Join(names, ", ")
+}
+
+func init() {
+	initCmd.Flags().StringSliceVar(&initTargets, "target", nil, "what to scaffold (webhook, checkout, client) — skips the prompt")
+	initCmd.Flags().BoolVarP(&initYes, "yes", "y", false, "scaffold everything available without prompting")
+	initCmd.Flags().BoolVar(&initDryRun, "dry-run", false, "print what would happen without writing anything")
+
+	rootCmd.AddCommand(initCmd)
+}

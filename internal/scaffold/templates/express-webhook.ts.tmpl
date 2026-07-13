@@ -1,0 +1,36 @@
+{{if .TS}}import type { Request, Response, Express } from "express";
+{{end}}import express from "express";
+import { verifyWebhookSignature } from "@reevit/node";
+
+// Reevit webhook receiver. Mount BEFORE any global express.json() middleware —
+// signature verification needs the raw body bytes.
+// Local dev: `reevit listen --forward-to http://localhost:3000/webhooks/reevit`
+export function mountReevitWebhook(app{{if .TS}}: Express{{end}}) {
+  app.post(
+    "/webhooks/reevit",
+    express.raw({ type: "application/json" }),
+    (req{{if .TS}}: Request{{end}}, res{{if .TS}}: Response{{end}}) => {
+      const signature = req.header("x-reevit-signature");
+
+      if (!verifyWebhookSignature(req.body, signature, process.env.REEVIT_WEBHOOK_SECRET ?? "")) {
+        res.status(401).send("invalid signature");
+        return;
+      }
+
+      const event = JSON.parse(req.body.toString("utf8"));
+
+      switch (event.type) {
+        case "payment.succeeded":
+          // TODO: fulfil the order for event.data
+          break;
+        case "payment.failed":
+          // TODO: notify the customer / retry logic
+          break;
+        default:
+          break;
+      }
+
+      res.status(200).send("ok");
+    },
+  );
+}

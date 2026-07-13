@@ -1,0 +1,15 @@
+import { Reevit } from "@reevit/node";
+
+// Server-side Reevit client — import this from route handlers and server
+// components only; the API key must never reach the browser.
+//
+// Create a payment intent:
+//   const payment = await reevit.payments.createIntent(
+//     { amount: 5000, currency: "GHS", country: "GH", method: "mobile_money" },
+//     { idempotencyKey: "order_12345" },
+//   );
+// Amounts are in the smallest currency unit (e.g. pesewas).
+export const reevit = new Reevit(
+  process.env.REEVIT_API_KEY ?? "",
+  process.env.REEVIT_ORG_ID ?? "",
+);

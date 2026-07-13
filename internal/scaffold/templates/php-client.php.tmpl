@@ -1,0 +1,25 @@
+<?php
+
+// Server-side Reevit client.
+// Install: composer require reevit/reevit-php
+// Amounts are in the smallest currency unit (e.g. pesewas).
+
+declare(strict_types=1);
+
+require __DIR__ . '/vendor/autoload.php';
+
+use Reevit\Reevit;
+
+$reevit = new Reevit(
+    getenv('REEVIT_API_KEY') ?: '',
+    getenv('REEVIT_ORG_ID') ?: '',
+);
+
+// Example: create a payment intent.
+//
+// $payment = $reevit->payments->createIntent([
+//     'amount' => 5000, // GHS 50.00
+//     'currency' => 'GHS',
+//     'country' => 'GH',
+//     'method' => 'mobile_money',
+// ]);
