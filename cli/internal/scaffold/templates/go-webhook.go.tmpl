@@ -1,0 +1,64 @@
+package main
+
+// Reevit webhook receiver.
+// Signature: X-Reevit-Signature: sha256=<hex HMAC-SHA256 of the raw body>.
+// The verifier is inlined — the Go SDK's webhooks package signs OUTBOUND
+// provider payloads and does not verify Reevit's inbound signature.
+// Local dev: reevit listen --forward-to http://localhost:8080/webhooks/reevit
+
+import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"io"
+	"net/http"
+	"os"
+	"strings"
+)
+
+func verifyReevitSignature(payload []byte, signature, secret string) bool {
+	const prefix = "sha256="
+	if !strings.HasPrefix(signature, prefix) || secret == "" {
+		return false
+	}
+
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(payload)
+	expected := hex.EncodeToString(mac.Sum(nil))
+
+	return hmac.Equal([]byte(expected), []byte(strings.TrimPrefix(signature, prefix)))
+}
+
+// HandleReevitWebhook is an http.HandlerFunc for POST /webhooks/reevit.
+func HandleReevitWebhook(w http.ResponseWriter, r *http.Request) {
+	payload, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "read body", http.StatusBadRequest)
+		return
+	}
+
+	if !verifyReevitSignature(payload, r.Header.Get("X-Reevit-Signature"), os.Getenv("REEVIT_WEBHOOK_SECRET")) {
+		http.Error(w, "invalid signature", http.StatusUnauthorized)
+		return
+	}
+
+	var event struct {
+		Type string          `json:"type"`
+		Data json.RawMessage `json:"data"`
+	}
+
+	if err := json.Unmarshal(payload, &event); err != nil {
+		http.Error(w, "invalid payload", http.StatusBadRequest)
+		return
+	}
+
+	switch event.Type {
+	case "payment.succeeded":
+		// TODO: fulfil the order for event.Data
+	case "payment.failed":
+		// TODO: notify the customer / retry logic
+	}
+
+	w.WriteHeader(http.StatusOK)
+}

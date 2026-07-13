@@ -1,0 +1,28 @@
+package main
+
+// Server-side Reevit client. Amounts are in the smallest currency unit
+// (e.g. pesewas). Install: go get github.com/Reevit-Platform/go-sdk
+
+import (
+	"context"
+	"os"
+
+	reevit "github.com/Reevit-Platform/go-sdk"
+)
+
+// NewReevitClient builds the client from the environment.
+func NewReevitClient() *reevit.Client {
+	return reevit.NewClient(os.Getenv("REEVIT_API_KEY"), os.Getenv("REEVIT_ORG_ID"))
+}
+
+// Example: create a payment intent.
+func createPaymentExample(ctx context.Context, client *reevit.Client) error {
+	_, err := client.Payments.CreateIntent(ctx, &reevit.PaymentIntentRequest{
+		Amount:   5000, // GHS 50.00
+		Currency: "GHS",
+		Country:  "GH",
+		Method:   "mobile_money",
+	})
+
+	return err
+}

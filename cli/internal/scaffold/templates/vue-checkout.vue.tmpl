@@ -1,0 +1,38 @@
+<script setup{{if .TS}} lang="ts"{{end}}>
+import { ref } from "vue";
+import { ReevitCheckout } from "@reevit/vue";
+import "@reevit/vue/styles.css";
+
+// Amounts are in the smallest currency unit (e.g. 5000 = GHS 50.00).
+// Set VITE_REEVIT_KEY in your env — use a test-mode key (pfk_test_…)
+// while integrating.
+const props = defineProps({
+  amount: { type: Number, required: true },
+  currency: { type: String, default: "GHS" },
+});
+
+const open = ref(false);
+
+function onSuccess(result{{if .TS}}: unknown{{end}}) {
+  // TODO: show your confirmation UI
+  console.log("payment succeeded", result);
+}
+
+function onError(error{{if .TS}}: unknown{{end}}) {
+  console.error("payment failed", error);
+}
+</script>
+
+<template>
+  <button type="button" @click="open = true">Pay now</button>
+  <ReevitCheckout
+    :public-key="import.meta.env.VITE_REEVIT_KEY ?? ''"
+    :amount="props.amount"
+    :currency="props.currency"
+    :payment-methods="['card', 'mobile_money']"
+    :is-open="open"
+    @success="onSuccess"
+    @error="onError"
+    @close="open = false"
+  />
+</template>

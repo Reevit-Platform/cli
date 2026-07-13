@@ -1,0 +1,13 @@
+import { Reevit } from "@reevit/node";
+
+// Server-side Reevit client. Amounts are in the smallest currency unit
+// (e.g. pesewas). Example:
+//
+//   const payment = await reevit.payments.createIntent(
+//     { amount: 5000, currency: "GHS", country: "GH", method: "mobile_money" },
+//     { idempotencyKey: "order_12345" },
+//   );
+export const reevit = new Reevit(
+  process.env.REEVIT_API_KEY ?? "",
+  process.env.REEVIT_ORG_ID ?? "",
+);

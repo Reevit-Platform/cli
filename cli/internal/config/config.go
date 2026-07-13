@@ -16,6 +16,9 @@ type Config struct {
 	APIKey  string `json:"api_key"`
 	BaseURL string `json:"base_url,omitempty"`
 	Mode    string `json:"mode,omitempty"`
+	// OrgID is recorded by the browser login flow; SDK constructors need it
+	// alongside the key, so `reevit init` writes it into project env files.
+	OrgID string `json:"org_id,omitempty"`
 }
 
 const (

@@ -87,6 +87,10 @@ func browserLogin(cmd *cobra.Command, openBrowser bool) error {
 	cfg.APIKey = result.APIKey.Raw
 	cfg.Mode = "test"
 
+	if result.Org != nil {
+		cfg.OrgID = result.Org.ID
+	}
+
 	p, err := config.Save(cfg)
 	if err != nil {
 		return err
