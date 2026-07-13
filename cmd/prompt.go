@@ -62,6 +62,29 @@ func choose(out io.Writer, in io.Reader, title string, options []string, multi b
 	return picks, nil
 }
 
+// promptString asks for a free-text value; Enter returns def.
+func promptString(out io.Writer, in io.Reader, question, def string) (string, error) {
+	if def != "" {
+		fmt.Fprintf(out, "%s [%s] ", question, def)
+	} else {
+		fmt.Fprintf(out, "%s ", question)
+	}
+
+	reader := bufio.NewReader(in)
+
+	line, err := reader.ReadString('\n')
+	if err != nil && line == "" {
+		return "", fmt.Errorf("read input: %w", err)
+	}
+
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return def, nil
+	}
+
+	return line, nil
+}
+
 // confirm asks a yes/no question; Enter means the given default.
 func confirm(out io.Writer, in io.Reader, question string, def bool) (bool, error) {
 	suffix := "[Y/n]"

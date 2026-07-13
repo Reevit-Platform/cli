@@ -40,8 +40,8 @@ reevit doctor --webhook-url http://localhost:3000/api/webhooks/reevit
 | Command | What it does |
 | --- | --- |
 | `reevit login` | Opens the dashboard in your browser to authorize the CLI — a **test-mode** key is created for you and stored locally (0600). `--key pfk_...` pastes a key manually; `--no-browser` prints the URL instead of opening it |
-| `reevit init` | Sets Reevit up in the current project: detects the stack + package manager, installs the SDK, wires `REEVIT_*` env vars, scaffolds a webhook handler / checkout component / server client. `--target webhook,checkout,client`, `-y`, `--dry-run` |
-| `reevit doctor [--webhook-url url]` | Verifies the setup: key against the API, env wiring, SDK installed, and (with `--webhook-url`) that your handler **accepts a correctly signed event and rejects a tampered one** |
+| `reevit init` | Sets Reevit up in the current project: detects the stack + package manager, installs the SDK, wires env vars (including the browser-exposed `NEXT_PUBLIC_`/`VITE_` key for checkout), scaffolds a webhook handler / checkout component / server client. `--target`, `-y`, `--dry-run`, `--webhook-path`/`--checkout-path`/`--client-path`, `--register-webhook <url>` |
+| `reevit doctor [--webhook-url url] [--e2e]` | Verifies the setup: key against the API, env wiring, SDK installed, signed + tampered webhook round-trip — and with `--e2e`, a **real** sandbox payment through the simulator delivered to your handler |
 | `reevit payments list [--status s] [--limit n]` | Recent payments in the current mode |
 | `reevit trigger <event>` | Fire a test event by creating a **real** sandbox payment through the simulator |
 | `reevit listen --forward-to <url>` | Stream live test-mode events to a local endpoint, signed like production |
@@ -70,6 +70,16 @@ the stack:
 - **Server client** — SDK client wired to `REEVIT_API_KEY` + `REEVIT_ORG_ID`
   with a payment-intent example
 
+Env wiring is stack-aware: server code reads plain `REEVIT_*` vars, and when
+you scaffold checkout the browser-exposed key is written under the framework's
+own convention — `NEXT_PUBLIC_REEVIT_KEY` on Next.js, `VITE_REEVIT_KEY` on
+Vite-based stacks (React/Vue/Svelte). Test-mode keys only in the client bundle.
+
+Place code wherever you like with `--webhook-path`, `--checkout-path`, and
+`--client-path`. With a webhook target, `--register-webhook https://…` (or the
+interactive prompt) registers the production endpoint in your dashboard —
+needs a key with `webhooks:write` (fresh `reevit login` keys have it).
+
 Existing files and env values are never overwritten; re-running is safe.
 
 ### `doctor`
@@ -85,6 +95,12 @@ running, it signs a synthetic `payment.succeeded` with your
 `REEVIT_WEBHOOK_SECRET` and POSTs it — your handler must accept it — then
 sends the same payload with a tampered signature — your handler must reject
 it. Exits non-zero when anything fails, so it works in CI.
+
+Add `--e2e` for the strongest check: doctor fires a **real** sandbox payment
+through the simulator, waits for the platform-generated event on your
+account's stream, and delivers it to `--webhook-url` with the production
+envelope and signature — proving the entire pipeline, not just the signature
+contract. Test mode only.
 
 ### `trigger` events → simulator magic amounts
 

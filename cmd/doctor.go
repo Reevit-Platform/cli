@@ -6,6 +6,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -20,7 +21,10 @@ import (
 	"github.com/Reevit-Platform/cli/internal/scaffold"
 )
 
-var doctorWebhookURL string
+var (
+	doctorWebhookURL string
+	doctorE2E        bool
+)
 
 // doctorResult tallies outcomes so the command can exit non-zero on failures.
 type doctorResult struct {
@@ -146,6 +150,24 @@ so the check proves your handler's signature verification end to end.`,
 			res.pass(out, "REEVIT_WEBHOOK_SECRET set")
 		}
 
+		// The checkout templates read a browser-exposed variable whose name is
+		// a framework convention (NEXT_PUBLIC_* / VITE_*) — a plain REEVIT_*
+		// var never reaches the client bundle. Checked whenever checkout usage
+		// is implied: a scaffolded component (any path may have moved) or a
+		// frontend Reevit SDK in the dependencies.
+		if clientVar := scaffold.ClientKeyVar(project.Stack); clientVar != "" {
+			sdkPkg, sdkInstalled := scaffold.SDKPackageFor(project)
+			frontendSDK := sdkInstalled && (sdkPkg == "@reevit/react" || sdkPkg == "@reevit/vue" || sdkPkg == "@reevit/svelte")
+
+			if scaffold.CheckoutComponent(project) != "" || frontendSDK {
+				if scaffold.ReadEnvValue(project, clientVar) == "" {
+					res.fail(out, "%s is not set — checkout components read it (browser-side); rerun `reevit init` or add it", clientVar)
+				} else {
+					res.pass(out, "%s set (browser-exposed checkout key)", clientVar)
+				}
+			}
+		}
+
 		// --- 4. Webhook handler ---
 		fmt.Fprintln(out, "\nWebhook")
 
@@ -165,6 +187,15 @@ so the check proves your handler's signature verification end to end.`,
 			res.fail(out, "cannot run the live check: REEVIT_WEBHOOK_SECRET is empty (the handler would reject every event)")
 		default:
 			checkWebhookEndToEnd(cmd.Context(), out, res, doctorWebhookURL, webhookSecret)
+
+			if doctorE2E {
+				fmt.Fprintln(out, "\nEnd-to-end (simulator → platform → your handler)")
+				checkWebhookE2E(cmd, out, res, doctorWebhookURL, webhookSecret)
+			}
+		}
+
+		if doctorE2E && doctorWebhookURL == "" {
+			res.fail(out, "--e2e needs --webhook-url so the platform event has somewhere to land")
 		}
 
 		printDoctorSummary(out, res)
@@ -216,6 +247,131 @@ func checkWebhookEndToEnd(ctx context.Context, out io.Writer, res *doctorResult,
 	}
 }
 
+// checkWebhookE2E proves the ENTIRE pipeline: a real sandbox payment through
+// the simulator produces a platform-generated event, which is delivered to
+// the handler with a production-shaped envelope and signature. This is what
+// production deliveries will look like, end to end.
+func checkWebhookE2E(cmd *cobra.Command, out io.Writer, res *doctorResult, targetURL, secret string) {
+	c, err := client()
+	if err != nil {
+		res.fail(out, "e2e needs a logged-in CLI: %v", err)
+
+		return
+	}
+
+	if c.Mode() != "test" {
+		res.fail(out, "the e2e check only runs in test mode (REEVIT_MODE=%s)", c.Mode())
+
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(cmd.Context(), 90*time.Second)
+	defer cancel()
+
+	events := make(chan api.SSEEvent, 16)
+	streamErr := make(chan error, 1)
+
+	go func() {
+		streamErr <- c.Stream(ctx, "/events/stream?mode=test", func(evt api.SSEEvent) {
+			select {
+			case events <- evt:
+			default:
+			}
+		})
+	}()
+
+	// Let the stream establish before creating the payment, so the resulting
+	// events can't race past us.
+	select {
+	case err := <-streamErr:
+		res.fail(out, "could not open the event stream (%v)", err)
+
+		return
+	case <-time.After(1500 * time.Millisecond):
+	}
+
+	paymentID, _, err := triggerSimulatorEvent(ctx, c, "payment.succeeded", triggerAmounts["payment.succeeded"], "GHS")
+	if err != nil {
+		res.fail(out, "could not create a sandbox payment via the simulator (%v)", err)
+
+		return
+	}
+
+	res.pass(out, "sandbox payment created through the real pipeline (%s)", paymentID)
+
+	for {
+		select {
+		case <-ctx.Done():
+			res.fail(out, "timed out waiting for the platform event (90s) — check `reevit listen` works for this account")
+
+			return
+		case err := <-streamErr:
+			res.fail(out, "event stream dropped before the event arrived (%v)", err)
+
+			return
+		case evt := <-events:
+			if !strings.Contains(evt.Data, paymentID) {
+				continue
+			}
+
+			status, err := forwardPlatformEvent(ctx, targetURL, secret, evt)
+
+			switch {
+			case err != nil:
+				res.fail(out, "could not deliver the platform event to %s (%v)", targetURL, err)
+			case status >= 200 && status < 300:
+				res.pass(out, "platform event delivered and accepted by your handler (%d)", status)
+			default:
+				res.fail(out, "your handler rejected the real platform event (%d) — its envelope differs from the synthetic one; check your parsing", status)
+			}
+
+			return
+		}
+	}
+}
+
+// forwardPlatformEvent wraps a streamed event in the production delivery
+// envelope (delivery id, attempt, signature timestamp inside the SIGNED
+// body) and POSTs it — the same shape `reevit listen` and real deliveries use.
+func forwardPlatformEvent(ctx context.Context, targetURL, secret string, evt api.SSEEvent) (int, error) {
+	var envelope map[string]any
+	if err := json.Unmarshal([]byte(evt.Data), &envelope); err != nil {
+		envelope = map[string]any{"type": evt.Type, "data": evt.Data}
+	}
+
+	ts := time.Now().UTC().Format(time.RFC3339)
+	envelope["delivery_id"] = "evtd_doctor_e2e"
+	envelope["attempt"] = 1
+	envelope["signature_timestamp"] = ts
+
+	body, err := json.Marshal(envelope)
+	if err != nil {
+		return 0, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
+	if err != nil {
+		return 0, err
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Reevit-Signature", SignBody(secret, body))
+	req.Header.Set("X-Reevit-Delivery-ID", "evtd_doctor_e2e")
+	req.Header.Set("X-Reevit-Delivery-Attempt", "1")
+	req.Header.Set("X-Reevit-Mode", "sandbox")
+	req.Header.Set("X-Reevit-Signature-Timestamp", ts)
+
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	return resp.StatusCode, nil
+}
+
 func postWebhook(ctx context.Context, url string, payload []byte, signature string) (int, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
@@ -253,6 +409,7 @@ func printDoctorSummary(out io.Writer, res *doctorResult) {
 
 func init() {
 	doctorCmd.Flags().StringVar(&doctorWebhookURL, "webhook-url", "", "your running app's webhook endpoint, e.g. http://localhost:3000/api/webhooks/reevit")
+	doctorCmd.Flags().BoolVar(&doctorE2E, "e2e", false, "also fire a REAL sandbox payment through the simulator and deliver the resulting platform event to --webhook-url")
 
 	rootCmd.AddCommand(doctorCmd)
 }
