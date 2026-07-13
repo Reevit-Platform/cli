@@ -117,6 +117,22 @@ config when the key has `webhooks:read`; otherwise an ephemeral secret is
 generated and printed — put it in `REEVIT_WEBHOOK_SECRET`. Reconnects with
 backoff; test mode only.
 
+## Telemetry
+
+The CLI reports one **anonymous** usage event per command run (command name,
+CLI version, OS/arch, detected stack and chosen targets for `init`,
+success/failure, duration, org id when logged in, and a random per-install
+UUID). Never collected: file contents, paths, keys, or hostnames. Events go
+to the Reevit API only — no third-party analytics keys ship in the binary.
+
+Opt out any time:
+
+```bash
+export REEVIT_TELEMETRY=0   # or the cross-tool convention: DO_NOT_TRACK=1
+```
+
+A one-time notice is printed on first use.
+
 ## Configuration
 
 Env vars override the config file: `REEVIT_API_KEY`, `REEVIT_API_URL`

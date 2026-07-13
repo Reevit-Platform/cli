@@ -10,6 +10,7 @@ import (
 
 	"github.com/Reevit-Platform/cli/internal/config"
 	"github.com/Reevit-Platform/cli/internal/scaffold"
+	"github.com/Reevit-Platform/cli/internal/telemetry"
 )
 
 var (
@@ -67,6 +68,8 @@ Existing files and env values are never overwritten.`,
 
 		fmt.Fprintln(out)
 
+		telemetry.SetContext(string(project.Stack), nil)
+
 		available := scaffold.TargetsFor(project)
 
 		// --- 3. Pick what to scaffold ---
@@ -78,6 +81,13 @@ Existing files and env values are never overwritten.`,
 		if len(targets) == 0 {
 			return fmt.Errorf("nothing selected — nothing to do")
 		}
+
+		chosen := make([]string, len(targets))
+		for i, t := range targets {
+			chosen[i] = string(t.Key)
+		}
+
+		telemetry.SetContext(string(project.Stack), chosen)
 
 		if initDryRun {
 			return printPlan(out, project, targets)
