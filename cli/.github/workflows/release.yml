@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write # npm trusted publishing (OIDC)
 
 jobs:
   goreleaser:
@@ -30,3 +31,27 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Fine-grained PAT with contents:write on Reevit-Platform/homebrew-tap.
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      # npm wrapper via trusted publishing (OIDC — no token, no OTP).
+      # One-time setup: on npmjs.com → @reevit/cli → Settings → Trusted
+      # Publisher → GitHub Actions → Reevit-Platform/cli, workflow release.yml.
+      # npm 11.5+ required for OIDC publish.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Guard npm wrapper version matches the tag
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PKG_VERSION=$(node -p "require('./npm/package.json').version")
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "npm/package.json is $PKG_VERSION but the tag is $TAG_VERSION — bump it before tagging" >&2
+            exit 1
+          fi
+
+      - name: Publish npm wrapper
+        working-directory: npm
+        run: |
+          npm install -g npm@latest
+          npm publish --access public

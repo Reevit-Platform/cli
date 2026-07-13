@@ -153,7 +153,7 @@ Existing files and env values are never overwritten.`,
 			fmt.Fprintf(out, "\nInstall the SDK in your environment:  %s\n", strings.Join(plan, " "))
 		}
 
-		printNextSteps(out, targets)
+		printNextSteps(out, project, targets)
 
 		return nil
 	},
@@ -230,15 +230,22 @@ func printPlan(out interface{ Write([]byte) (int, error) }, project scaffold.Pro
 	return nil
 }
 
-func printNextSteps(out interface{ Write([]byte) (int, error) }, targets []scaffold.Target) {
+func printNextSteps(out interface{ Write([]byte) (int, error) }, project scaffold.Project, targets []scaffold.Target) {
 	fmt.Fprintln(out, "\nNext steps:")
 
 	for _, t := range targets {
 		switch t.Key {
 		case scaffold.TargetWebhook:
+			path := "/<your webhook path>"
+			if _, handlerPath := scaffold.WebhookHandler(project); handlerPath != "" {
+				path = handlerPath
+			}
+
 			fmt.Fprintln(out, "  • Forward signed test events to your webhook handler:")
-			fmt.Fprintln(out, "      reevit listen --forward-to http://localhost:<port>/<your webhook path>")
+			fmt.Fprintf(out, "      reevit listen --forward-to http://localhost:<port>%s\n", path)
 			fmt.Fprintln(out, "    and put the printed signing secret in REEVIT_WEBHOOK_SECRET.")
+			fmt.Fprintln(out, "  • Then verify the whole setup (signature check included):")
+			fmt.Fprintf(out, "      reevit doctor --webhook-url http://localhost:<port>%s\n", path)
 		case scaffold.TargetCheckout:
 			fmt.Fprintln(out, "  • Render the checkout component with an amount in the smallest currency unit.")
 		case scaffold.TargetClient:
@@ -246,8 +253,22 @@ func printNextSteps(out interface{ Write([]byte) (int, error) }, targets []scaff
 		}
 	}
 
+	if !hasTarget(targets, scaffold.TargetWebhook) {
+		fmt.Fprintln(out, "  • Run `reevit doctor` any time to check the setup.")
+	}
+
 	fmt.Fprintln(out, "\nYou're on a TEST-MODE key. When you're ready for live traffic, create a live")
 	fmt.Fprintln(out, "key in Dashboard → Developers → API keys and run:  reevit login --key <live_key>")
+}
+
+func hasTarget(targets []scaffold.Target, key scaffold.TargetKey) bool {
+	for _, t := range targets {
+		if t.Key == key {
+			return true
+		}
+	}
+
+	return false
 }
 
 func availableKeys(targets []scaffold.Target) string {
