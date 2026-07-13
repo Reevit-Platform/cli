@@ -1,24 +1,43 @@
 {
   "name": "@reevit/cli",
-  "version": "0.1.0",
-  "description": "Reevit CLI — test payments, drive the sandbox simulator, forward events locally with valid signatures",
+  "version": "0.2.0",
+  "description": "Reevit CLI \u2014 test payments, drive the sandbox simulator, forward events locally with valid signatures",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Reevit-Platform/cli.git"
   },
   "homepage": "https://github.com/Reevit-Platform/cli#readme",
-  "keywords": ["reevit", "payments", "cli", "webhooks", "sandbox", "ghana", "mobile-money"],
+  "keywords": [
+    "reevit",
+    "payments",
+    "cli",
+    "webhooks",
+    "sandbox",
+    "ghana",
+    "mobile-money"
+  ],
   "bin": {
     "reevit": "bin/reevit.js"
   },
-  "files": ["bin/reevit.js", "install.js", "README.md"],
+  "files": [
+    "bin/reevit.js",
+    "install.js",
+    "README.md"
+  ],
   "scripts": {
     "postinstall": "node install.js"
   },
   "engines": {
     "node": ">=18"
   },
-  "os": ["darwin", "linux", "win32"],
-  "cpu": ["x64", "arm64"]
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ]
 }
