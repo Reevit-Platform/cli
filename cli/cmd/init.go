@@ -8,15 +8,20 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/Reevit-Platform/cli/internal/api"
 	"github.com/Reevit-Platform/cli/internal/config"
 	"github.com/Reevit-Platform/cli/internal/scaffold"
 	"github.com/Reevit-Platform/cli/internal/telemetry"
 )
 
 var (
-	initTargets []string
-	initYes     bool
-	initDryRun  bool
+	initTargets         []string
+	initYes             bool
+	initDryRun          bool
+	initWebhookPath     string
+	initCheckoutPath    string
+	initClientPath      string
+	initRegisterWebhook string
 )
 
 var initCmd = &cobra.Command{
@@ -82,6 +87,8 @@ Existing files and env values are never overwritten.`,
 			return fmt.Errorf("nothing selected — nothing to do")
 		}
 
+		applyPathOverrides(targets)
+
 		chosen := make([]string, len(targets))
 		for i, t := range targets {
 			chosen[i] = string(t.Key)
@@ -123,7 +130,7 @@ Existing files and env values are never overwritten.`,
 		}
 
 		// --- 5. Env wiring ---
-		envRes, err := scaffold.WriteEnv(project, cfg.APIKey, cfg.OrgID)
+		envRes, err := scaffold.WriteEnv(project, cfg.APIKey, cfg.OrgID, hasTarget(targets, scaffold.TargetCheckout))
 		if err != nil {
 			return err
 		}
@@ -147,6 +154,10 @@ Existing files and env values are never overwritten.`,
 			fmt.Fprintf(out, "✔ %s — placeholders added\n", envRes.EnvExample)
 		}
 
+		if envRes.ClientKeyVar != "" {
+			fmt.Fprintf(out, "✔ %s — %s (browser-exposed, test mode)\n", envRes.EnvFile, envRes.ClientKeyVar)
+		}
+
 		if envRes.GitignoreNoted {
 			fmt.Fprintf(out, "✔ .gitignore — %s added\n", envRes.EnvFile)
 		}
@@ -162,6 +173,8 @@ Existing files and env values are never overwritten.`,
 		for _, plan := range showCmds {
 			fmt.Fprintf(out, "\nInstall the SDK in your environment:  %s\n", strings.Join(plan, " "))
 		}
+
+		registerWebhookEndpoint(cmd, out, targets)
 
 		printNextSteps(out, project, targets)
 
@@ -215,6 +228,91 @@ func pickTargets(cmd *cobra.Command, available []scaffold.Target) ([]scaffold.Ta
 	}
 
 	return picked, nil
+}
+
+// applyPathOverrides remaps each target's single output file when the
+// developer specified where the code should live.
+func applyPathOverrides(targets []scaffold.Target) {
+	overrides := map[scaffold.TargetKey]string{
+		scaffold.TargetWebhook:  initWebhookPath,
+		scaffold.TargetCheckout: initCheckoutPath,
+		scaffold.TargetClient:   initClientPath,
+	}
+
+	for i := range targets {
+		override := strings.TrimSpace(overrides[targets[i].Key])
+		if override == "" {
+			continue
+		}
+
+		remapped := make(map[string]string, len(targets[i].Files))
+		for tmpl := range targets[i].Files {
+			remapped[tmpl] = override
+		}
+
+		targets[i].Files = remapped
+	}
+}
+
+// registerWebhookEndpoint optionally registers a production webhook endpoint
+// in the dashboard. Needs webhooks:write — keys minted before that scope
+// joined the pairing defaults get a pointer to re-login instead of an error.
+func registerWebhookEndpoint(cmd *cobra.Command, out interface{ Write([]byte) (int, error) }, targets []scaffold.Target) {
+	if !hasTarget(targets, scaffold.TargetWebhook) {
+		return
+	}
+
+	endpoint := strings.TrimSpace(initRegisterWebhook)
+
+	if endpoint == "" {
+		if initYes || len(initTargets) > 0 {
+			return // non-interactive without the flag → skip silently
+		}
+
+		yes, err := confirm(out, cmd.InOrStdin(), "\nRegister a production webhook endpoint in your dashboard now?", false)
+		if err != nil || !yes {
+			return
+		}
+
+		endpoint, err = promptString(out, cmd.InOrStdin(), "Endpoint URL (https://…):", "")
+		if err != nil || endpoint == "" {
+			return
+		}
+	}
+
+	if !strings.HasPrefix(endpoint, "https://") && !strings.HasPrefix(endpoint, "http://") {
+		fmt.Fprintf(out, "• skipping webhook registration — %q is not a URL\n", endpoint)
+
+		return
+	}
+
+	c, err := client()
+	if err != nil {
+		fmt.Fprintf(out, "• skipping webhook registration — %v\n", err)
+
+		return
+	}
+
+	err = c.Do(cmd.Context(), api.Request{
+		Method:     "POST",
+		Path:       "/webhooks/config",
+		Idempotent: true,
+		Body:       map[string]any{"url": endpoint},
+	}, nil)
+
+	switch {
+	case err == nil:
+		fmt.Fprintf(out, "✔ webhook endpoint registered: %s\n", endpoint)
+	default:
+		if apiErr, ok := err.(*api.APIError); ok && apiErr.Status == 403 {
+			fmt.Fprintln(out, "• couldn't register the endpoint — your CLI key lacks webhooks:write.")
+			fmt.Fprintln(out, "  Run `reevit login` again for a fresh key, or register it in Dashboard → Developers → Webhooks.")
+
+			return
+		}
+
+		fmt.Fprintf(out, "• webhook registration failed (%v) — you can register it in Dashboard → Developers → Webhooks\n", err)
+	}
 }
 
 func printPlan(out interface{ Write([]byte) (int, error) }, project scaffold.Project, targets []scaffold.Target) error {
@@ -303,6 +401,10 @@ func init() {
 	initCmd.Flags().StringSliceVar(&initTargets, "target", nil, "what to scaffold (webhook, checkout, client) — skips the prompt")
 	initCmd.Flags().BoolVarP(&initYes, "yes", "y", false, "scaffold everything available without prompting")
 	initCmd.Flags().BoolVar(&initDryRun, "dry-run", false, "print what would happen without writing anything")
+	initCmd.Flags().StringVar(&initWebhookPath, "webhook-path", "", "custom output path for the webhook handler")
+	initCmd.Flags().StringVar(&initCheckoutPath, "checkout-path", "", "custom output path for the checkout component")
+	initCmd.Flags().StringVar(&initClientPath, "client-path", "", "custom output path for the server client")
+	initCmd.Flags().StringVar(&initRegisterWebhook, "register-webhook", "", "register this production webhook endpoint in your dashboard")
 
 	rootCmd.AddCommand(initCmd)
 }

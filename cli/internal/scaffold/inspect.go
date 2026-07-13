@@ -108,6 +108,34 @@ func WebhookHandler(project Project) (file, urlPath string) {
 	return "", ""
 }
 
+// CheckoutComponent returns the scaffolded checkout component file if present.
+func CheckoutComponent(project Project) string {
+	var candidates []string
+
+	switch project.Stack {
+	case StackNext:
+		for _, ext := range []string{"tsx", "jsx"} {
+			candidates = append(candidates, prefixSrc(project, "components/reevit-checkout-button."+ext))
+		}
+	case StackReact:
+		for _, ext := range []string{"tsx", "jsx"} {
+			candidates = append(candidates, "src/components/ReevitCheckoutButton."+ext)
+		}
+	case StackVue:
+		candidates = append(candidates, "src/components/ReevitCheckoutButton.vue")
+	case StackSvelte:
+		candidates = append(candidates, "src/lib/ReevitCheckoutButton.svelte")
+	}
+
+	for _, rel := range candidates {
+		if exists(project.Root, rel) {
+			return rel
+		}
+	}
+
+	return ""
+}
+
 func fileContains(root, rel, needle string) bool {
 	raw, err := os.ReadFile(filepath.Join(root, rel))
 	if err != nil {

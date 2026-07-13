@@ -16,6 +16,22 @@ type EnvResult struct {
 	EnvExample     string // example file updated, "" when skipped
 	GitignoreNoted bool   // true when we had to add the env file to .gitignore
 	KeyAlreadySet  bool   // true when REEVIT_API_KEY was already present
+	ClientKeyVar   string // browser-exposed var written (e.g. NEXT_PUBLIC_REEVIT_KEY), "" when none
+}
+
+// ClientKeyVar returns the browser-exposed env var the checkout templates
+// read, following each bundler's convention for client-side variables:
+// Next.js inlines NEXT_PUBLIC_*, Vite-based stacks (React/Vue/Svelte) expose
+// VITE_* via import.meta.env. Server-only stacks have no client bundle ("").
+func ClientKeyVar(stack Stack) string {
+	switch stack {
+	case StackNext:
+		return "NEXT_PUBLIC_REEVIT_KEY"
+	case StackReact, StackVue, StackSvelte:
+		return "VITE_REEVIT_KEY"
+	default:
+		return ""
+	}
 }
 
 // envFileFor picks the conventional env filename per stack.
@@ -31,9 +47,14 @@ func envFileFor(stack Stack) string {
 // WriteEnv appends REEVIT_API_KEY (and a webhook-secret placeholder) to the
 // stack's env file, mirrors placeholders into .env.example, and makes sure
 // the env file is gitignored. Existing values are never overwritten.
-func WriteEnv(project Project, apiKey, orgID string) (EnvResult, error) {
+// WriteEnv appends the Reevit env vars. includeClientKey additionally writes
+// the stack's browser-exposed key variable (NEXT_PUBLIC_*/VITE_*) so the
+// scaffolded checkout component actually has a key at runtime — test-mode
+// keys only; the comment in the file says so.
+func WriteEnv(project Project, apiKey, orgID string, includeClientKey bool) (EnvResult, error) {
 	res := EnvResult{EnvFile: envFileFor(project.Stack)}
 	envPath := filepath.Join(project.Root, res.EnvFile)
+	clientVar := ClientKeyVar(project.Stack)
 
 	existing, _ := os.ReadFile(envPath)
 	if strings.Contains(string(existing), "REEVIT_API_KEY=") {
@@ -49,11 +70,28 @@ func WriteEnv(project Project, apiKey, orgID string) (EnvResult, error) {
 		}
 	}
 
+	if includeClientKey && clientVar != "" {
+		current, _ := os.ReadFile(envPath)
+		if !strings.Contains(string(current), clientVar+"=") {
+			block := fmt.Sprintf("# Exposed to the browser bundle by your framework — test-mode keys only\n%s=%s\n", clientVar, apiKey)
+			if err := appendFile(envPath, block); err != nil {
+				return res, fmt.Errorf("write %s: %w", res.EnvFile, err)
+			}
+
+			res.ClientKeyVar = clientVar
+		}
+	}
+
 	// Placeholders only — the example file is committed.
 	examplePath := filepath.Join(project.Root, ".env.example")
 	if example, err := os.ReadFile(examplePath); err == nil || os.IsNotExist(err) {
 		if !strings.Contains(string(example), "REEVIT_API_KEY") {
-			block := fmt.Sprintf("\n%s\nREEVIT_API_KEY=\nREEVIT_ORG_ID=\nREEVIT_WEBHOOK_SECRET=\n", envHeader)
+			clientLine := ""
+			if includeClientKey && clientVar != "" {
+				clientLine = clientVar + "=\n"
+			}
+
+			block := fmt.Sprintf("\n%s\nREEVIT_API_KEY=\nREEVIT_ORG_ID=\nREEVIT_WEBHOOK_SECRET=\n%s", envHeader, clientLine)
 			if len(example) == 0 {
 				block = strings.TrimPrefix(block, "\n")
 			}

@@ -79,3 +79,40 @@ func TestWebhookHandlerPaths(t *testing.T) {
 		t.Errorf("expected no handler, got %q", file)
 	}
 }
+
+func TestClientKeyVar(t *testing.T) {
+	cases := map[Stack]string{
+		StackNext:   "NEXT_PUBLIC_REEVIT_KEY",
+		StackReact:  "VITE_REEVIT_KEY",
+		StackVue:    "VITE_REEVIT_KEY",
+		StackSvelte: "VITE_REEVIT_KEY",
+		StackNode:   "",
+		StackGo:     "",
+		StackPython: "",
+		StackPHP:    "",
+	}
+
+	for stack, want := range cases {
+		if got := ClientKeyVar(stack); got != want {
+			t.Errorf("ClientKeyVar(%s) = %q, want %q", stack, got, want)
+		}
+	}
+}
+
+func TestCheckoutComponentDetection(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "package.json", `{"dependencies":{"next":"16"}}`)
+	write(t, dir, "tsconfig.json", "{}")
+	write(t, dir, "components/reevit-checkout-button.tsx", "")
+
+	if got := CheckoutComponent(Detect(dir)); got != "components/reevit-checkout-button.tsx" {
+		t.Errorf("checkout component = %q", got)
+	}
+
+	dir = t.TempDir()
+	write(t, dir, "package.json", `{"dependencies":{"next":"16"}}`)
+
+	if got := CheckoutComponent(Detect(dir)); got != "" {
+		t.Errorf("expected no component, got %q", got)
+	}
+}

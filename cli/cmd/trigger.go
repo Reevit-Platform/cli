@@ -60,38 +60,50 @@ Supported: ` + strings.Join(triggerEventNames(), ", "),
 			return fmt.Errorf("trigger only runs in test mode (REEVIT_MODE=%s)", c.Mode())
 		}
 
-		if _, err := ensureSimulatorConnection(cmd.Context(), c); err != nil {
-			return err
-		}
-
-		var payment struct {
-			ID     string `json:"id"`
-			Status string `json:"status"`
-		}
-
-		err = c.Do(cmd.Context(), api.Request{
-			Method:     "POST",
-			Path:       "/payments/intents",
-			Idempotent: true,
-			// Intents always route — the simulator connection ensured above is
-			// what the router picks, so triggers exercise the real routing path.
-			Body: map[string]any{
-				"amount":      amount,
-				"currency":    strings.ToUpper(triggerCurrency),
-				"method":      "mobile_money",
-				"country":     "GH",
-				"description": "reevit trigger " + event,
-				"metadata":    map[string]any{"created_via": "reevit-cli", "trigger": event},
-			},
-		}, &payment)
+		paymentID, status, err := triggerSimulatorEvent(cmd.Context(), c, event, amount, triggerCurrency)
 		if err != nil {
 			return err
 		}
 
-		fmt.Fprintf(cmd.OutOrStdout(), "Triggered %s → payment %s (status: %s)\n", event, payment.ID, payment.Status)
+		fmt.Fprintf(cmd.OutOrStdout(), "Triggered %s → payment %s (status: %s)\n", event, paymentID, status)
 
 		return nil
 	},
+}
+
+// triggerSimulatorEvent creates a real sandbox payment through the simulator
+// with the outcome's magic amount, exercising the production routing path.
+// Shared by `reevit trigger` and `reevit doctor --e2e`.
+func triggerSimulatorEvent(ctx context.Context, c *api.Client, event string, amount int64, currency string) (id, status string, err error) {
+	if _, err := ensureSimulatorConnection(ctx, c); err != nil {
+		return "", "", err
+	}
+
+	var payment struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+	}
+
+	err = c.Do(ctx, api.Request{
+		Method:     "POST",
+		Path:       "/payments/intents",
+		Idempotent: true,
+		// Intents always route — the simulator connection ensured above is
+		// what the router picks.
+		Body: map[string]any{
+			"amount":      amount,
+			"currency":    strings.ToUpper(currency),
+			"method":      "mobile_money",
+			"country":     "GH",
+			"description": "reevit trigger " + event,
+			"metadata":    map[string]any{"created_via": "reevit-cli", "trigger": event},
+		},
+	}, &payment)
+	if err != nil {
+		return "", "", err
+	}
+
+	return payment.ID, payment.Status, nil
 }
 
 // ensureSimulatorConnection finds or creates the sandbox simulator connection.
