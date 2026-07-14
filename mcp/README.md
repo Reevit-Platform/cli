@@ -25,7 +25,7 @@ the scopes you want the agent to have.
 ### Claude Code
 
 ```bash
-claude mcp add reevit -e REEVIT_API_KEY=rk_test_... -- npx -y @reevit/mcp
+claude mcp add reevit -e REEVIT_API_KEY=pfk_test_... -- npx -y @reevit/mcp
 ```
 
 ### Claude Desktop
@@ -38,7 +38,7 @@ Add to `claude_desktop_config.json` (Settings → Developer → Edit Config):
     "reevit": {
       "command": "npx",
       "args": ["-y", "@reevit/mcp"],
-      "env": { "REEVIT_API_KEY": "rk_test_..." }
+      "env": { "REEVIT_API_KEY": "pfk_test_..." }
     }
   }
 }
@@ -54,7 +54,7 @@ Add to `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` in your project:
     "reevit": {
       "command": "npx",
       "args": ["-y", "@reevit/mcp"],
-      "env": { "REEVIT_API_KEY": "rk_test_..." }
+      "env": { "REEVIT_API_KEY": "pfk_test_..." }
     }
   }
 }
@@ -71,7 +71,7 @@ Add to `.vscode/mcp.json` in your workspace:
       "type": "stdio",
       "command": "npx",
       "args": ["-y", "@reevit/mcp"],
-      "env": { "REEVIT_API_KEY": "rk_test_..." }
+      "env": { "REEVIT_API_KEY": "pfk_test_..." }
     }
   }
 }
@@ -87,7 +87,7 @@ Add to `~/.codeium/windsurf/mcp_config.json`:
     "reevit": {
       "command": "npx",
       "args": ["-y", "@reevit/mcp"],
-      "env": { "REEVIT_API_KEY": "rk_test_..." }
+      "env": { "REEVIT_API_KEY": "pfk_test_..." }
     }
   }
 }
@@ -123,7 +123,7 @@ Add to `~/.codex/config.toml`:
 [mcp_servers.reevit]
 command = "npx"
 args = ["-y", "@reevit/mcp"]
-env = { REEVIT_API_KEY = "rk_test_..." }
+env = { REEVIT_API_KEY = "pfk_test_..." }
 ```
 
 ### Gemini CLI
@@ -136,7 +136,7 @@ Add to `~/.gemini/settings.json`:
     "reevit": {
       "command": "npx",
       "args": ["-y", "@reevit/mcp"],
-      "env": { "REEVIT_API_KEY": "rk_test_..." }
+      "env": { "REEVIT_API_KEY": "pfk_test_..." }
     }
   }
 }
@@ -166,7 +166,7 @@ For remote/agent-platform use, run the same server over streamable HTTP
 (stateless; each request gets a fresh server, no session leakage):
 
 ```bash
-REEVIT_API_KEY=rk_test_... npx -y @reevit/mcp --http --port 8788
+REEVIT_API_KEY=pfk_test_... npx -y @reevit/mcp --http --port 8788
 # endpoint: http://localhost:8788/mcp
 ```
 
@@ -179,5 +179,5 @@ put it behind your own network boundary.
 npm install
 npm test        # vitest — gate + request-shaping tests
 npm run build   # tsc → dist/
-REEVIT_API_KEY=rk_test_... npm run dev
+REEVIT_API_KEY=pfk_test_... npm run dev
 ```

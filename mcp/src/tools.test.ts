@@ -12,7 +12,7 @@ function jsonResponse(status: number, body: unknown): Response {
 
 function makeClient(mode: string, fetchImpl: ReturnType<typeof vi.fn>) {
   return new ReevitClient(
-    { apiKey: "rk_test_123", baseUrl: "https://api.example.com", mode },
+    { apiKey: "pfk_test_123", baseUrl: "https://api.example.com", mode },
     fetchImpl as never,
   );
 }
@@ -111,7 +111,7 @@ describe("request shaping", () => {
     expect(url).toBe("https://api.example.com/v1/payment-links");
     expect(body.currency).toBe("GHS");
     expect(body.metadata.created_via).toBe("mcp");
-    expect(headers["X-Reevit-Key"]).toBe("rk_test_123");
+    expect(headers["X-Reevit-Key"]).toBe("pfk_test_123");
     expect(headers["Idempotency-Key"]).toBeTruthy();
   });
 
