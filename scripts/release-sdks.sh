@@ -15,7 +15,11 @@
 # Usage:
 #   scripts/release-sdks.sh                 # dry-run: assess all SDKs, print plan
 #   scripts/release-sdks.sh python node     # dry-run, limited to named SDKs
+#   scripts/release-sdks.sh --bump react:patch --bump php:minor
+#                                            # dry-run explicit version bumps
 #   scripts/release-sdks.sh --execute       # perform pushes/releases/publishes
+#   scripts/release-sdks.sh --execute --bump react:patch
+#                                            # bump, commit, push, and publish
 #   scripts/release-sdks.sh --execute --yes # ...without the interactive confirm
 #
 # Exit status: 0 if the plan is clean / all actions succeeded; 1 if any SDK is
@@ -41,14 +45,20 @@ SDKS=(
 EXECUTE=0
 ASSUME_YES=0
 FILTER=()
-for arg in "$@"; do
-  case "$arg" in
+BUMP_SPECS=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
     --execute) EXECUTE=1 ;;
     --yes|-y)  ASSUME_YES=1 ;;
     -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    -*)        echo "unknown flag: $arg" >&2; exit 2 ;;
-    *)         FILTER+=("$arg") ;;
+    --bump)
+      [ "$#" -ge 2 ] || { echo "--bump requires SDK:LEVEL" >&2; exit 2; }
+      BUMP_SPECS+=("$2"); shift ;;
+    --bump=*)  BUMP_SPECS+=("${1#--bump=}") ;;
+    -*)        echo "unknown flag: $1" >&2; exit 2 ;;
+    *)         FILTER+=("$1") ;;
   esac
+  shift
 done
 
 ROOT="$(git rev-parse --show-toplevel)"
@@ -64,8 +74,48 @@ fi
 say()     { printf '%s\n' "$*"; }
 section() { printf '\n%s%s%s\n' "$BOLD" "$*" "$RST"; }
 
+sdk_exists() {
+  local wanted="$1" entry key
+  for entry in "${SDKS[@]}"; do
+    IFS='|' read -r key _ <<<"$entry"
+    [ "$key" = "$wanted" ] && return 0
+  done
+  return 1
+}
+
+array_contains() {
+  local wanted="$1" item; shift
+  for item in "$@"; do [ "$item" = "$wanted" ] && return 0; done
+  return 1
+}
+
+BUMP_KEYS=()
+BUMP_LEVELS=()
+for spec in ${BUMP_SPECS[@]+"${BUMP_SPECS[@]}"}; do
+  key="${spec%%:*}"; level="${spec#*:}"
+  [ "$key" != "$level" ] || { echo "invalid --bump '$spec'; expected SDK:LEVEL" >&2; exit 2; }
+  sdk_exists "$key" || { echo "unknown SDK in --bump: $key" >&2; exit 2; }
+  case "$level" in patch|minor|major) ;; *) echo "invalid bump level for $key: $level" >&2; exit 2 ;; esac
+  array_contains "$key" ${BUMP_KEYS[@]+"${BUMP_KEYS[@]}"} && { echo "duplicate --bump for $key" >&2; exit 2; }
+  BUMP_KEYS+=("$key"); BUMP_LEVELS+=("$level")
+  array_contains "$key" ${FILTER[@]+"${FILTER[@]}"} || FILTER+=("$key")
+done
+
+for key in ${FILTER[@]+"${FILTER[@]}"}; do
+  sdk_exists "$key" || { echo "unknown SDK filter: $key" >&2; exit 2; }
+done
+
+bump_level_for() {
+  local wanted="$1" index
+  for ((index=0; index<${#BUMP_KEYS[@]}; index++)); do
+    [ "${BUMP_KEYS[$index]}" = "$wanted" ] && { printf '%s' "${BUMP_LEVELS[$index]}"; return 0; }
+  done
+  return 1
+}
+
 # ── version helpers ───────────────────────────────────────────────────────────
 strip_v() { printf '%s' "${1#v}"; }
+next_version() { python3 "$ROOT/scripts/sdk_release_versions.py" next "$1" "$2"; }
 
 # a < b  (semver), using version sort; equal → false
 ver_lt() {
@@ -112,28 +162,35 @@ d=json.load(sys.stdin)["package"]["versions"]
 vs=[v for v in d if "dev" not in v and "-" not in v]
 print(vs[0].lstrip("v") if vs else "")' 2>/dev/null ;;
     crates)
-      curl -fsS "https://crates.io/api/v1/crates/$pkg" 2>/dev/null \
+      curl -fsS -A 'reevit-release-orchestrator/1.0 (+https://github.com/Reevit-Platform)' \
+        "https://crates.io/api/v1/crates/$pkg" 2>/dev/null \
         | python3 -c 'import sys,json;print(json.load(sys.stdin)["crate"].get("max_stable_version", ""))' 2>/dev/null ;;
   esac
 }
 
 # ── per-SDK assessment (writes A_* globals) ───────────────────────────────────
-A_default=main; A_dirty=0; A_ahead=0; A_localv=; A_pubv=; A_verdict=; A_detail=; A_branch=
+A_default=main; A_dirty=0; A_ahead=0; A_behind=0; A_localv=; A_pubv=; A_nextv=; A_verdict=; A_detail=; A_branch=
 
 assess() {
   local key="$1" dir="$2" repo="$3" kind="$4" pkg="$5" manifest="$6"
-  A_default=main; A_dirty=0; A_ahead=0; A_localv=; A_pubv=; A_verdict=; A_detail=; A_branch=
+  A_default=main; A_dirty=0; A_ahead=0; A_behind=0; A_localv=; A_pubv=; A_nextv=; A_verdict=; A_detail=; A_branch=
 
   git -C "$dir" fetch --quiet origin --tags 2>/dev/null || true
   A_default="$(gh api "repos/$repo" --jq .default_branch 2>/dev/null || echo main)"
   A_branch="$(git -C "$dir" branch --show-current 2>/dev/null)"
   A_dirty="$(git -C "$dir" status --porcelain 2>/dev/null | grep -c . || true)"
 
-  # is the current branch ahead of its upstream? (unpushed local commits)
+  # Is the current branch ahead/behind its upstream? Bumps require a clean,
+  # synchronized checkout of the repository's default branch.
   local up
-  up="$(git -C "$dir" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)"
+  if [ "$A_branch" = "$A_default" ]; then
+    up="origin/$A_default"
+  else
+    up="$(git -C "$dir" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)"
+  fi
   if [ -n "$up" ]; then
     A_ahead="$(git -C "$dir" rev-list --count "${up}..HEAD" 2>/dev/null || echo 0)"
+    A_behind="$(git -C "$dir" rev-list --count "HEAD..${up}" 2>/dev/null || echo 0)"
   fi
 
   A_localv="$(version_at_ref "$kind" "$dir" "$manifest" "origin/$A_default")"
@@ -160,6 +217,25 @@ assess() {
   fi
 }
 
+plan_bump() {
+  local key="$1" level="$2"
+  if [ "${A_dirty:-0}" -gt 0 ]; then
+    A_verdict=BLOCKED; A_detail="cannot bump with ${A_dirty} uncommitted file(s)"
+  elif [ "$A_branch" != "$A_default" ]; then
+    A_verdict=BLOCKED; A_detail="checkout $A_default before bumping (currently on ${A_branch:-detached HEAD})"
+  elif [ "${A_behind:-0}" -gt 0 ]; then
+    A_verdict=BLOCKED; A_detail="local $A_default is behind origin/$A_default by $A_behind commit(s)"
+  elif [ "$A_verdict" != CURRENT ]; then
+    A_detail="cannot bump from $A_verdict — ${A_detail}"
+    A_verdict=BLOCKED
+  elif ! A_nextv="$(next_version "$A_localv" "$level")"; then
+    A_verdict=BLOCKED; A_detail="could not calculate $level bump from $A_localv"
+  else
+    A_verdict=BUMP
+    A_detail="$level bump v$A_localv → v$A_nextv; commit, push, release, and publish"
+  fi
+}
+
 # ── release execution (only under --execute) ──────────────────────────────────
 tag_for() { case "$1" in go|crates) printf 'v%s' "$2" ;; *) printf '%s' "$2" ;; esac; }
 
@@ -174,12 +250,18 @@ wait_for_registry() {
   return 1
 }
 
+# Return the newest publish workflow run id, or an empty string.
+latest_publish_run() {
+  gh run list --repo "$1" --workflow publish.yml --event release \
+    --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || true
+}
+
 # Watch the publish workflow run a release just triggered. 0 ok / 1 fail.
 watch_publish_run() {
-  local repo="$1" tries=15 rid=
+  local repo="$1" previous_rid="$2" tries=20 rid= candidate
   while [ "$tries" -gt 0 ] && [ -z "$rid" ]; do
-    rid="$(gh run list --repo "$repo" --workflow publish.yml --event release \
-           --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)"
+    candidate="$(latest_publish_run "$repo")"
+    [ -n "$candidate" ] && [ "$candidate" != "$previous_rid" ] && rid="$candidate"
     [ -n "$rid" ] && break
     sleep 3; tries=$((tries-1))
   done
@@ -193,11 +275,58 @@ watch_publish_run() {
   return $ok
 }
 
+prepare_bump() {
+  local key="$1" dir="$2" repo="$3" kind="$4" pkg="$5" manifest="$6" level="$7"
+  local changed_output target file
+  local changed_files=()
+
+  assess "$key" "$dir" "$repo" "$kind" "$pkg" "$manifest"
+  plan_bump "$key" "$level"
+  if [ "$A_verdict" != BUMP ]; then
+    say "  ${RED}✗ bump precondition failed: $A_detail${RST}"
+    return 1
+  fi
+  target="$A_nextv"
+
+  if ! changed_output="$(python3 "$ROOT/scripts/sdk_release_versions.py" update \
+      "$kind" "$dir" "$manifest" "$pkg" "$target")"; then
+    say "  ${RED}✗ failed to update version files${RST}"
+    return 1
+  fi
+  while IFS= read -r file; do
+    [ -n "$file" ] && changed_files+=("$file")
+  done <<<"$changed_output"
+
+  if [ "${#changed_files[@]}" -gt 0 ]; then
+    git -C "$dir" add -- "${changed_files[@]}" || return 1
+    git -C "$dir" diff --cached --check || {
+      say "  ${RED}✗ version diff failed whitespace validation${RST}"; return 1;
+    }
+    say "  ${BLU}commit${RST} v$target in $repo:$A_default"
+    git -C "$dir" commit -m "chore(release): bump ${key} to v${target}" || {
+      say "  ${RED}✗ version commit failed${RST}"; return 1;
+    }
+  else
+    say "  ${DIM}$kind is tag-driven; no manifest version edit required${RST}"
+  fi
+
+  say "  ${BLU}push${RST} $repo:$A_default"
+  git -C "$dir" push origin "HEAD:$A_default" || {
+    say "  ${RED}✗ push failed${RST}"; return 1;
+  }
+  A_localv="$target"
+  A_nextv="$target"
+  A_ahead=0
+  A_verdict=RELEASE
+  A_detail="prepared v$target"
+}
+
 # uses A_* from a fresh assess() of this SDK. 0 ok / 1 fail.
 execute_release() {
   local key="$1" dir="$2" repo="$3" kind="$4" pkg="$5"
   local ver="$A_localv" tag; tag="$(tag_for "$kind" "$ver")"
   local notes="Automated release of ${key} SDK v${ver} via scripts/release-sdks.sh."
+  local previous_rid triggered=0
 
   # 1. push the default branch if the local checkout is ahead
   if [ "${A_ahead:-0}" -gt 0 ] && [ "$A_branch" = "$A_default" ]; then
@@ -209,16 +338,22 @@ execute_release() {
   if git -C "$dir" ls-remote --tags origin "refs/tags/$tag" 2>/dev/null | grep -q .; then
     say "  ${DIM}tag $tag already on remote — skipping tag/release creation${RST}"
   else
+    previous_rid="$(latest_publish_run "$repo")"
     say "  ${BLU}release${RST} $tag on $repo (target $A_default)"
     gh release create "$tag" --repo "$repo" --target "$A_default" \
        --title "$key v$ver" --notes "$notes" >/dev/null \
        || { say "  ${RED}✗ gh release create failed${RST}"; return 1; }
+    triggered=1
   fi
 
   # 3. drive the publish per kind, then verify the registry
   case "$kind" in
     npm|pypi|crates)
-      watch_publish_run "$repo" || { say "  ${RED}✗ publish workflow failed${RST}"; return 1; } ;;
+      if [ "$triggered" -eq 1 ]; then
+        watch_publish_run "$repo" "$previous_rid" || { say "  ${RED}✗ publish workflow failed${RST}"; return 1; }
+      else
+        say "  ${DIM}release already existed; skipping workflow wait${RST}"
+      fi ;;
     go)
       say "  ${DIM}go: tag pushed; module proxy serves on first fetch${RST}" ;;
     packagist)
@@ -251,15 +386,20 @@ for entry in "${SDKS[@]}"; do
   IFS='|' read -r key dir repo kind pkg manifest <<<"$entry"
   want "$key" || continue
   assess "$key" "$dir" "$repo" "$kind" "$pkg" "$manifest"
+  bump_level="$(bump_level_for "$key" || true)"
+  [ -n "$bump_level" ] && plan_bump "$key" "$bump_level"
 
-  local_disp="${A_localv:-–}"; pub_disp="${A_pubv:-none}"
+  local_disp="${A_localv:-–}"
+  [ "$A_verdict" = BUMP ] && local_disp="${A_localv}→${A_nextv}"
+  pub_disp="${A_pubv:-none}"
   case "$A_verdict" in
-    RELEASE) c="$GRN" ;; CURRENT) c="$DIM" ;; BLOCKED) c="$RED"; blocked=1 ;;
+    RELEASE|BUMP) c="$GRN" ;; CURRENT) c="$DIM" ;; BLOCKED) c="$RED"; blocked=1 ;;
     BEHIND|UNKNOWN) c="$YLW"; blocked=1 ;; *) c="$RST" ;;
   esac
   flags=""
   [ "${A_dirty:-0}" -gt 0 ] && flags+=" ${RED}dirty:${A_dirty}${RST}"
   [ "${A_ahead:-0}" -gt 0 ] && flags+=" ${YLW}ahead:${A_ahead}${RST}"
+  [ "${A_behind:-0}" -gt 0 ] && flags+=" ${RED}behind:${A_behind}${RST}"
   [ "$A_branch" != "$A_default" ] && [ -n "$A_branch" ] && flags+=" ${DIM}on:${A_branch}${RST}"
 
   line="$(printf '%b%-8s%b %-9s local %-9s registry %-9s %b→ %s%b%s' \
@@ -267,28 +407,34 @@ for entry in "${SDKS[@]}"; do
   say "$line"
   say "         ${DIM}${A_detail}${RST}"
 
-  [ "$A_verdict" = RELEASE ] && { REL_KEYS+=("$key"); REL_ROWS+=("$entry"); }
+  case "$A_verdict" in
+    RELEASE|BUMP) REL_KEYS+=("$key"); REL_ROWS+=("$entry") ;;
+  esac
 done
 
 # ── summary / act ─────────────────────────────────────────────────────────────
 section "Summary"
 if [ "${#REL_KEYS[@]}" -eq 0 ]; then
-  say "No SDK needs a release — every package is up to date with its default branch."
+  if [ "$blocked" -eq 1 ]; then
+    say "No SDK is currently planned for release because one or more requested actions are blocked."
+  else
+    say "No SDK needs a release — every package is up to date with its default branch."
+  fi
 else
-  say "Release-worthy: ${BOLD}${REL_KEYS[*]}${RST}"
+  say "Planned for release: ${BOLD}${REL_KEYS[*]}${RST}"
 fi
 [ "$blocked" -eq 1 ] && say "${YLW}Some SDKs are blocked or need attention (see 'dirty'/BEHIND/UNKNOWN above).${RST}"
 
 if [ "$EXECUTE" -eq 0 ]; then
   section "Dry run — nothing changed."
-  [ "${#REL_KEYS[@]}" -gt 0 ] && say "Re-run with ${BOLD}--execute${RST} to push, release, and publish the above."
+  [ "${#REL_KEYS[@]}" -gt 0 ] && say "Re-run with the same arguments plus ${BOLD}--execute${RST} to apply bumps, push, release, and publish."
   [ "$blocked" -eq 1 ] && exit 1 || exit 0
 fi
 
 # EXECUTE path
 [ "${#REL_ROWS[@]}" -eq 0 ] && { section "Nothing to execute."; exit "$blocked"; }
 if [ "$ASSUME_YES" -eq 0 ]; then
-  printf '\n%sPublish %s to their registries? This is irreversible. [y/N] %s' "$BOLD" "${REL_KEYS[*]}" "$RST"
+  printf '\n%sApply planned bumps and publish %s? Publishing is irreversible. [y/N] %s' "$BOLD" "${REL_KEYS[*]}" "$RST"
   read -r reply; case "$reply" in y|Y|yes|YES) ;; *) say "Aborted."; exit 1 ;; esac
 fi
 
@@ -296,9 +442,16 @@ fail=0
 for row in "${REL_ROWS[@]}"; do
   IFS='|' read -r key dir repo kind pkg manifest <<<"$row"
   section "Releasing ${key}"
-  assess "$key" "$dir" "$repo" "$kind" "$pkg" "$manifest"   # refresh state right before acting
-  if [ "$A_verdict" != RELEASE ]; then
-    say "  ${YLW}state changed since planning (now $A_verdict) — skipping${RST}"; continue
+  bump_level="$(bump_level_for "$key" || true)"
+  if [ -n "$bump_level" ]; then
+    if ! prepare_bump "$key" "$dir" "$repo" "$kind" "$pkg" "$manifest" "$bump_level"; then
+      fail=1; say "${RED}✗ ${key} bump did not complete${RST}"; continue
+    fi
+  else
+    assess "$key" "$dir" "$repo" "$kind" "$pkg" "$manifest"   # refresh state right before acting
+    if [ "$A_verdict" != RELEASE ]; then
+      say "  ${YLW}state changed since planning (now $A_verdict) — skipping${RST}"; continue
+    fi
   fi
   if ! execute_release "$key" "$dir" "$repo" "$kind" "$pkg"; then
     fail=1; say "${RED}✗ ${key} release did not complete${RST}"
