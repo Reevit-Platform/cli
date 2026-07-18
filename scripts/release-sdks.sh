@@ -218,7 +218,7 @@ assess() {
 }
 
 plan_bump() {
-  local key="$1" level="$2"
+  local key="$1" dir="$2" kind="$3" level="$4" immediate_next current_tag
   if [ "${A_dirty:-0}" -gt 0 ]; then
     A_verdict=BLOCKED; A_detail="cannot bump with ${A_dirty} uncommitted file(s)"
   elif [ "$A_branch" != "$A_default" ]; then
@@ -227,19 +227,38 @@ plan_bump() {
     A_verdict=BLOCKED; A_detail="local $A_default is behind origin/$A_default by $A_behind commit(s)"
   elif [ "${A_ahead:-0}" -gt 0 ]; then
     A_verdict=BLOCKED; A_detail="push the $A_ahead existing commit(s) on $A_default before bumping"
-  elif [ "$A_verdict" != CURRENT ]; then
+  elif [ "$A_verdict" = RELEASE ] && current_tag="$(tag_for "$kind" "$A_localv")" && \
+      ! git -C "$dir" ls-remote --tags origin "refs/tags/$current_tag" 2>/dev/null | grep -q .; then
+    A_detail="cannot bump while unpublished v$A_localv has no release tag"
+    A_verdict=BLOCKED
+  elif [ "$A_verdict" != CURRENT ] && [ "$A_verdict" != RELEASE ]; then
     A_detail="cannot bump from $A_verdict — ${A_detail}"
     A_verdict=BLOCKED
-  elif ! A_nextv="$(next_version "$A_localv" "$level")"; then
+  elif ! immediate_next="$(next_version "$A_localv" "$level")" || \
+      ! A_nextv="$(next_available_version "$dir" "$kind" "$A_localv" "$level")"; then
     A_verdict=BLOCKED; A_detail="could not calculate $level bump from $A_localv"
   else
     A_verdict=BUMP
     A_detail="$level bump v$A_localv → v$A_nextv; commit, push, release, and publish"
+    [ "$A_nextv" != "$immediate_next" ] && A_detail+=" (skipped occupied tag $(tag_for "$kind" "$immediate_next"))"
   fi
 }
 
 # ── release execution (only under --execute) ──────────────────────────────────
 tag_for() { case "$1" in go|crates) printf 'v%s' "$2" ;; *) printf '%s' "$2" ;; esac; }
+
+next_available_version() {
+  local dir="$1" kind="$2" current="$3" level="$4" candidate tag
+  candidate="$(next_version "$current" "$level")" || return 1
+  while :; do
+    tag="$(tag_for "$kind" "$candidate")"
+    if ! git -C "$dir" ls-remote --tags origin "refs/tags/$tag" 2>/dev/null | grep -q .; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+    candidate="$(next_version "$candidate" "$level")" || return 1
+  done
+}
 
 # poll a registry until it serves $want (bare version) or times out. 0 ok / 1 timeout.
 wait_for_registry() {
@@ -252,23 +271,49 @@ wait_for_registry() {
   return 1
 }
 
-# Watch the publish workflow run a release just triggered. 0 ok / 1 fail.
-watch_publish_run() {
-  local repo="$1" tag="$2" tries=20 rid=
-  while [ "$tries" -gt 0 ] && [ -z "$rid" ]; do
-    rid="$(gh run list --repo "$repo" --workflow publish.yml --event release \
-      --branch "$tag" --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)"
-    [ -n "$rid" ] && break
-    sleep 3; tries=$((tries-1))
-  done
-  [ -z "$rid" ] && { say "  ${YLW}!${RST} could not find a triggered publish run"; return 1; }
-  # Braces are required before the Unicode ellipsis: macOS Bash otherwise
-  # treats it as part of the variable name when `set -u` is active.
+publish_run_for_tag() {
+  gh run list --repo "$1" --workflow publish.yml --event release \
+    --branch "$2" --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || true
+}
+
+watch_run_id() {
+  local repo="$1" rid="$2"
   say "  ${DIM}watching run ${rid}…${RST}"
   gh run watch "$rid" --repo "$repo" --exit-status >/dev/null 2>&1
   local ok=$?
   say "  run ${rid}: $(gh run view "$rid" --repo "$repo" --json conclusion --jq .conclusion 2>/dev/null)"
   return $ok
+}
+
+# Watch the publish workflow run for the exact release tag just created.
+watch_publish_run() {
+  local repo="$1" tag="$2" tries=20 rid=
+  while [ "$tries" -gt 0 ] && [ -z "$rid" ]; do
+    rid="$(publish_run_for_tag "$repo" "$tag")"
+    [ -n "$rid" ] && break
+    sleep 3; tries=$((tries-1))
+  done
+  [ -z "$rid" ] && { say "  ${YLW}!${RST} could not find a triggered publish run"; return 1; }
+  watch_run_id "$repo" "$rid"
+}
+
+retry_failed_publish_run() {
+  local repo="$1" tag="$2" rid conclusion
+  rid="$(publish_run_for_tag "$repo" "$tag")"
+  [ -n "$rid" ] || { say "  ${RED}✗ no publish run exists for tag $tag${RST}"; return 1; }
+  conclusion="$(gh run view "$rid" --repo "$repo" --json conclusion --jq .conclusion 2>/dev/null || true)"
+  case "$conclusion" in
+    success)
+      say "  ${DIM}existing publish run succeeded; waiting for registry propagation${RST}"
+      return 0 ;;
+    failure|cancelled|timed_out|action_required)
+      say "  ${BLU}rerun${RST} failed publish workflow $rid for tag $tag"
+      gh run rerun "$rid" --repo "$repo" || return 1
+      watch_run_id "$repo" "$rid" ;;
+    *)
+      say "  ${DIM}publish run $rid is still active${RST}"
+      watch_run_id "$repo" "$rid" ;;
+  esac
 }
 
 prepare_bump() {
@@ -277,7 +322,7 @@ prepare_bump() {
   local changed_files=()
 
   assess "$key" "$dir" "$repo" "$kind" "$pkg" "$manifest"
-  plan_bump "$key" "$level"
+  plan_bump "$key" "$dir" "$kind" "$level"
   if [ "$A_verdict" != BUMP ]; then
     say "  ${RED}✗ bump precondition failed: $A_detail${RST}"
     return 1
@@ -347,7 +392,7 @@ execute_release() {
       if [ "$triggered" -eq 1 ]; then
         watch_publish_run "$repo" "$tag" || { say "  ${RED}✗ publish workflow failed${RST}"; return 1; }
       else
-        say "  ${DIM}release already existed; skipping workflow wait${RST}"
+        retry_failed_publish_run "$repo" "$tag" || { say "  ${RED}✗ publish workflow recovery failed${RST}"; return 1; }
       fi ;;
     go)
       say "  ${DIM}go: tag pushed; module proxy serves on first fetch${RST}" ;;
@@ -382,7 +427,7 @@ for entry in "${SDKS[@]}"; do
   want "$key" || continue
   assess "$key" "$dir" "$repo" "$kind" "$pkg" "$manifest"
   bump_level="$(bump_level_for "$key" || true)"
-  [ -n "$bump_level" ] && plan_bump "$key" "$bump_level"
+  [ -n "$bump_level" ] && plan_bump "$key" "$dir" "$kind" "$bump_level"
 
   local_disp="${A_localv:-–}"
   [ "$A_verdict" = BUMP ] && local_disp="${A_localv}→${A_nextv}"
