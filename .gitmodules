@@ -6,7 +6,7 @@
 	url = git@github.com:Reevit-Platform/frontend.git
 [submodule "docs"]
 	path = docs
-	url = git@github.com:Reevit-Platform/docs.git
+	url = git@github.com:Reevit-Platform/docs-v2.git
 [submodule "examples"]
 	path = examples
 	url = git@github.com:Reevit-Platform/examples.git
@@ -34,3 +34,12 @@
 [submodule "sdks/php"]
 	path = sdks/php
 	url = git@github.com:Reevit-Platform/php-sdk.git
+[submodule "sdks/rust"]
+	path = sdks/rust
+	url = git@github.com:Reevit-Platform/rust-sdk.git
+[submodule "frontend-start"]
+	path = frontend-start
+	url = git@github.com:Reevit-Platform/frontend-start.git
+[submodule "mintlify-docs"]
+	path = mintlify-docs
+	url = git@github.com:Reevit-Platform/dcos.git
