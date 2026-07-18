@@ -49,18 +49,21 @@ def _update_npm(
             f"{manifest} contains package {package.get('name')!r}, expected {package_name!r}"
         )
     package["version"] = version
-    _write_json(manifest_path, package)
     changed = [Path(manifest)]
 
     lock_path = root / "package-lock.json"
+    lock: dict | None = None
     if lock_path.exists():
         lock = json.loads(lock_path.read_text())
         lock["version"] = version
         root_package = lock.get("packages", {}).get("")
         if isinstance(root_package, dict):
             root_package["version"] = version
-        _write_json(lock_path, lock)
         changed.append(Path("package-lock.json"))
+
+    _write_json(manifest_path, package)
+    if lock is not None:
+        _write_json(lock_path, lock)
     return changed
 
 

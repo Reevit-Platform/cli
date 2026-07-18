@@ -225,6 +225,8 @@ plan_bump() {
     A_verdict=BLOCKED; A_detail="checkout $A_default before bumping (currently on ${A_branch:-detached HEAD})"
   elif [ "${A_behind:-0}" -gt 0 ]; then
     A_verdict=BLOCKED; A_detail="local $A_default is behind origin/$A_default by $A_behind commit(s)"
+  elif [ "${A_ahead:-0}" -gt 0 ]; then
+    A_verdict=BLOCKED; A_detail="push the $A_ahead existing commit(s) on $A_default before bumping"
   elif [ "$A_verdict" != CURRENT ]; then
     A_detail="cannot bump from $A_verdict — ${A_detail}"
     A_verdict=BLOCKED
@@ -250,18 +252,12 @@ wait_for_registry() {
   return 1
 }
 
-# Return the newest publish workflow run id, or an empty string.
-latest_publish_run() {
-  gh run list --repo "$1" --workflow publish.yml --event release \
-    --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || true
-}
-
 # Watch the publish workflow run a release just triggered. 0 ok / 1 fail.
 watch_publish_run() {
-  local repo="$1" previous_rid="$2" tries=20 rid= candidate
+  local repo="$1" tag="$2" tries=20 rid=
   while [ "$tries" -gt 0 ] && [ -z "$rid" ]; do
-    candidate="$(latest_publish_run "$repo")"
-    [ -n "$candidate" ] && [ "$candidate" != "$previous_rid" ] && rid="$candidate"
+    rid="$(gh run list --repo "$repo" --workflow publish.yml --event release \
+      --branch "$tag" --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)"
     [ -n "$rid" ] && break
     sleep 3; tries=$((tries-1))
   done
@@ -326,7 +322,7 @@ execute_release() {
   local key="$1" dir="$2" repo="$3" kind="$4" pkg="$5"
   local ver="$A_localv" tag; tag="$(tag_for "$kind" "$ver")"
   local notes="Automated release of ${key} SDK v${ver} via scripts/release-sdks.sh."
-  local previous_rid triggered=0
+  local triggered=0
 
   # 1. push the default branch if the local checkout is ahead
   if [ "${A_ahead:-0}" -gt 0 ] && [ "$A_branch" = "$A_default" ]; then
@@ -338,7 +334,6 @@ execute_release() {
   if git -C "$dir" ls-remote --tags origin "refs/tags/$tag" 2>/dev/null | grep -q .; then
     say "  ${DIM}tag $tag already on remote — skipping tag/release creation${RST}"
   else
-    previous_rid="$(latest_publish_run "$repo")"
     say "  ${BLU}release${RST} $tag on $repo (target $A_default)"
     gh release create "$tag" --repo "$repo" --target "$A_default" \
        --title "$key v$ver" --notes "$notes" >/dev/null \
@@ -350,7 +345,7 @@ execute_release() {
   case "$kind" in
     npm|pypi|crates)
       if [ "$triggered" -eq 1 ]; then
-        watch_publish_run "$repo" "$previous_rid" || { say "  ${RED}✗ publish workflow failed${RST}"; return 1; }
+        watch_publish_run "$repo" "$tag" || { say "  ${RED}✗ publish workflow failed${RST}"; return 1; }
       else
         say "  ${DIM}release already existed; skipping workflow wait${RST}"
       fi ;;
@@ -432,6 +427,11 @@ if [ "$EXECUTE" -eq 0 ]; then
 fi
 
 # EXECUTE path
+[ "$blocked" -eq 1 ] && [ "${#BUMP_KEYS[@]}" -gt 0 ] && {
+  section "Execution blocked."
+  say "Resolve every requested bump precondition before publishing any package."
+  exit 1
+}
 [ "${#REL_ROWS[@]}" -eq 0 ] && { section "Nothing to execute."; exit "$blocked"; }
 if [ "$ASSUME_YES" -eq 0 ]; then
   printf '\n%sApply planned bumps and publish %s? Publishing is irreversible. [y/N] %s' "$BOLD" "${REL_KEYS[*]}" "$RST"

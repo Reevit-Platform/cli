@@ -65,6 +65,24 @@ class UpdateVersionTests(unittest.TestCase):
             )
             self.assertEqual(changed, [Path("package.json"), Path("package-lock.json")])
 
+    def test_npm_update_is_atomic_when_lockfile_is_invalid(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            manifest = '{"name":"@reevit/example","version":"0.10.1"}\n'
+            invalid_lockfile = "not valid json\n"
+            (root / "package.json").write_text(manifest)
+            (root / "package-lock.json").write_text(invalid_lockfile)
+
+            with self.assertRaises(json.JSONDecodeError):
+                update_version(
+                    "npm", root, "package.json", "@reevit/example", "0.10.2"
+                )
+
+            self.assertEqual((root / "package.json").read_text(), manifest)
+            self.assertEqual(
+                (root / "package-lock.json").read_text(), invalid_lockfile
+            )
+
     def test_updates_python_single_source_version(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
