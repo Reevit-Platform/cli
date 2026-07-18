@@ -338,6 +338,7 @@ prepare_bump() {
   local key="$1" dir="$2" repo="$3" kind="$4" pkg="$5" manifest="$6" level="$7"
   local changed_output target file
   local changed_files=()
+  local staged_files=()
 
   assess "$key" "$dir" "$repo" "$kind" "$pkg" "$manifest"
   plan_bump "$key" "$dir" "$kind" "$level"
@@ -357,7 +358,18 @@ prepare_bump() {
   done <<<"$changed_output"
 
   if [ "${#changed_files[@]}" -gt 0 ]; then
-    git -C "$dir" add -- "${changed_files[@]}" || return 1
+    for file in "${changed_files[@]}"; do
+      if git -C "$dir" ls-files --error-unmatch -- "$file" >/dev/null 2>&1 ||
+          ! git -C "$dir" check-ignore -q -- "$file"; then
+        staged_files+=("$file")
+      else
+        say "  ${DIM}skip ignored untracked version file $file${RST}"
+      fi
+    done
+    [ "${#staged_files[@]}" -gt 0 ] || {
+      say "  ${RED}✗ version update produced no committable files${RST}"; return 1;
+    }
+    git -C "$dir" add -- "${staged_files[@]}" || return 1
     git -C "$dir" diff --cached --check || {
       say "  ${RED}✗ version diff failed whitespace validation${RST}"; return 1;
     }
