@@ -169,11 +169,11 @@ print(vs[0].lstrip("v") if vs else "")' 2>/dev/null ;;
 }
 
 # ── per-SDK assessment (writes A_* globals) ───────────────────────────────────
-A_default=main; A_dirty=0; A_ahead=0; A_behind=0; A_localv=; A_pubv=; A_nextv=; A_verdict=; A_detail=; A_branch=
+A_default=main; A_dirty=0; A_ahead=0; A_behind=0; A_localv=; A_pubv=; A_nextv=; A_tagv=; A_verdict=; A_detail=; A_branch=
 
 assess() {
   local key="$1" dir="$2" repo="$3" kind="$4" pkg="$5" manifest="$6"
-  A_default=main; A_dirty=0; A_ahead=0; A_behind=0; A_localv=; A_pubv=; A_nextv=; A_verdict=; A_detail=; A_branch=
+  A_default=main; A_dirty=0; A_ahead=0; A_behind=0; A_localv=; A_pubv=; A_nextv=; A_tagv=; A_verdict=; A_detail=; A_branch=
 
   git -C "$dir" fetch --quiet origin --tags 2>/dev/null || true
   A_default="$(gh api "repos/$repo" --jq .default_branch 2>/dev/null || echo main)"
@@ -215,6 +215,24 @@ assess() {
   else
     A_verdict=CURRENT; A_detail="v$A_localv already published"
   fi
+
+  # A failed release is recoverable only when its tag contains the version we
+  # intend to publish. This catches stale/mistagged releases during the dry run,
+  # before execution can rerun the wrong workflow.
+  local current_tag
+  if [ "$A_verdict" = RELEASE ]; then
+    case "$kind" in
+      npm|pypi|crates)
+        current_tag="$(tag_for "$kind" "$A_localv")"
+        if git -C "$dir" ls-remote --tags origin "refs/tags/$current_tag" 2>/dev/null | grep -q .; then
+          A_tagv="$(version_at_ref "$kind" "$dir" "$manifest" "$current_tag")"
+          if [ "$A_tagv" != "$A_localv" ]; then
+            A_verdict=TAG_MISMATCH
+            A_detail="tag $current_tag contains package version ${A_tagv:-unknown}, expected $A_localv — use --bump ${key}:patch"
+          fi
+        fi ;;
+    esac
+  fi
 }
 
 plan_bump() {
@@ -231,7 +249,7 @@ plan_bump() {
       ! git -C "$dir" ls-remote --tags origin "refs/tags/$current_tag" 2>/dev/null | grep -q .; then
     A_detail="cannot bump while unpublished v$A_localv has no release tag"
     A_verdict=BLOCKED
-  elif [ "$A_verdict" != CURRENT ] && [ "$A_verdict" != RELEASE ]; then
+  elif [ "$A_verdict" != CURRENT ] && [ "$A_verdict" != RELEASE ] && [ "$A_verdict" != TAG_MISMATCH ]; then
     A_detail="cannot bump from $A_verdict — ${A_detail}"
     A_verdict=BLOCKED
   elif ! immediate_next="$(next_version "$A_localv" "$level")" || \
@@ -364,8 +382,8 @@ prepare_bump() {
 
 # uses A_* from a fresh assess() of this SDK. 0 ok / 1 fail.
 execute_release() {
-  local key="$1" dir="$2" repo="$3" kind="$4" pkg="$5"
-  local ver="$A_localv" tag; tag="$(tag_for "$kind" "$ver")"
+  local key="$1" dir="$2" repo="$3" kind="$4" pkg="$5" manifest="$6"
+  local ver="$A_localv" tag taggedv; tag="$(tag_for "$kind" "$ver")"
   local notes="Automated release of ${key} SDK v${ver} via scripts/release-sdks.sh."
   local triggered=0
 
@@ -377,6 +395,15 @@ execute_release() {
 
   # 2. skip tag/release creation if the tag already exists remotely (idempotent)
   if git -C "$dir" ls-remote --tags origin "refs/tags/$tag" 2>/dev/null | grep -q .; then
+    case "$kind" in
+      npm|pypi|crates)
+        taggedv="$(version_at_ref "$kind" "$dir" "$manifest" "$tag")"
+        if [ "$taggedv" != "$ver" ]; then
+          say "  ${RED}✗ tag $tag contains package version ${taggedv:-unknown}, expected $ver${RST}"
+          say "  ${DIM}the occupied tag cannot be recovered; create the next version with --bump ${key}:patch${RST}"
+          return 1
+        fi ;;
+    esac
     say "  ${DIM}tag $tag already on remote — skipping tag/release creation${RST}"
   else
     say "  ${BLU}release${RST} $tag on $repo (target $A_default)"
@@ -434,7 +461,7 @@ for entry in "${SDKS[@]}"; do
   pub_disp="${A_pubv:-none}"
   case "$A_verdict" in
     RELEASE|BUMP) c="$GRN" ;; CURRENT) c="$DIM" ;; BLOCKED) c="$RED"; blocked=1 ;;
-    BEHIND|UNKNOWN) c="$YLW"; blocked=1 ;; *) c="$RST" ;;
+    BEHIND|UNKNOWN|TAG_MISMATCH) c="$YLW"; blocked=1 ;; *) c="$RST" ;;
   esac
   flags=""
   [ "${A_dirty:-0}" -gt 0 ] && flags+=" ${RED}dirty:${A_dirty}${RST}"
@@ -463,7 +490,7 @@ if [ "${#REL_KEYS[@]}" -eq 0 ]; then
 else
   say "Planned for release: ${BOLD}${REL_KEYS[*]}${RST}"
 fi
-[ "$blocked" -eq 1 ] && say "${YLW}Some SDKs are blocked or need attention (see 'dirty'/BEHIND/UNKNOWN above).${RST}"
+[ "$blocked" -eq 1 ] && say "${YLW}Some SDKs are blocked or need attention (see their status above).${RST}"
 
 if [ "$EXECUTE" -eq 0 ]; then
   section "Dry run — nothing changed."
@@ -479,7 +506,7 @@ fi
 }
 [ "${#REL_ROWS[@]}" -eq 0 ] && { section "Nothing to execute."; exit "$blocked"; }
 if [ "$ASSUME_YES" -eq 0 ]; then
-  printf '\n%sApply planned bumps and publish %s? Publishing is irreversible. [y/N] %s' "$BOLD" "${REL_KEYS[*]}" "$RST"
+  printf '\n%sApply planned version changes and publish %s? Publishing is irreversible. [y/N] %s' "$BOLD" "${REL_KEYS[*]}" "$RST"
   read -r reply; case "$reply" in y|Y|yes|YES) ;; *) say "Aborted."; exit 1 ;; esac
 fi
 
@@ -498,7 +525,7 @@ for row in "${REL_ROWS[@]}"; do
       say "  ${YLW}state changed since planning (now $A_verdict) — skipping${RST}"; continue
     fi
   fi
-  if ! execute_release "$key" "$dir" "$repo" "$kind" "$pkg"; then
+  if ! execute_release "$key" "$dir" "$repo" "$kind" "$pkg" "$manifest"; then
     fail=1; say "${RED}✗ ${key} release did not complete${RST}"
   fi
 done
