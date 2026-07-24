@@ -20,7 +20,7 @@ export function ReevitCheckoutButton({{if .TS}}{
         Pay now
       </button>
       <ReevitCheckout
-        publicKey={import.meta.env.VITE_REEVIT_KEY ?? ""}
+      publicKey={import.meta.env.VITE_REEVIT_CHECKOUT_KEY ?? ""}
         amount={amount}
         currency={currency}
         paymentMethods={["card", "mobile_money"]}

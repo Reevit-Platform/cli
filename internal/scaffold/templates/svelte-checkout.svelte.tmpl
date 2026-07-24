@@ -23,7 +23,7 @@
 <button type="button" on:click={() => (open = true)}>Pay now</button>
 
 <ReevitCheckout
-  publicKey={import.meta.env.VITE_REEVIT_KEY ?? ""}
+    publicKey={import.meta.env.VITE_REEVIT_CHECKOUT_KEY ?? ""}
   {amount}
   {currency}
   paymentMethods={["card", "mobile_money"]}

@@ -19,6 +19,13 @@ type EnvResult struct {
 	ClientKeyVar   string // browser-exposed var written (e.g. NEXT_PUBLIC_REEVIT_KEY), "" when none
 }
 
+type ProjectCredentials struct {
+	ServerKey     string
+	CheckoutKey   string
+	OrgID         string
+	WebhookSecret string
+}
+
 // ClientKeyVar returns the browser-exposed env var the checkout templates
 // read, following each bundler's convention for client-side variables:
 // Next.js inlines NEXT_PUBLIC_*, Vite-based stacks (React/Vue/Svelte) expose
@@ -26,9 +33,9 @@ type EnvResult struct {
 func ClientKeyVar(stack Stack) string {
 	switch stack {
 	case StackNext:
-		return "NEXT_PUBLIC_REEVIT_KEY"
+		return "NEXT_PUBLIC_REEVIT_CHECKOUT_KEY"
 	case StackReact, StackVue, StackSvelte:
-		return "VITE_REEVIT_KEY"
+		return "VITE_REEVIT_CHECKOUT_KEY"
 	default:
 		return ""
 	}
@@ -51,34 +58,38 @@ func envFileFor(stack Stack) string {
 // the stack's browser-exposed key variable (NEXT_PUBLIC_*/VITE_*) so the
 // scaffolded checkout component actually has a key at runtime — test-mode
 // keys only; the comment in the file says so.
-func WriteEnv(project Project, apiKey, orgID string, includeClientKey bool) (EnvResult, error) {
+func WriteEnv(project Project, credentials ProjectCredentials) (EnvResult, error) {
 	res := EnvResult{EnvFile: envFileFor(project.Stack)}
 	envPath := filepath.Join(project.Root, res.EnvFile)
 	clientVar := ClientKeyVar(project.Stack)
 
 	existing, _ := os.ReadFile(envPath)
-	if strings.Contains(string(existing), "REEVIT_API_KEY=") {
+	current := string(existing)
+	if strings.Contains(current, "REEVIT_API_KEY=") {
 		res.KeyAlreadySet = true
-	} else {
-		block := fmt.Sprintf("\n%s\nREEVIT_API_KEY=%s\nREEVIT_ORG_ID=%s\n# Signing secret for verifying webhooks — `reevit listen` prints one for local dev\nREEVIT_WEBHOOK_SECRET=\n", envHeader, apiKey, orgID)
+	}
+
+	var lines []string
+	if !res.KeyAlreadySet && credentials.ServerKey != "" {
+		lines = append(lines, "REEVIT_API_KEY="+credentials.ServerKey)
+	}
+	if !strings.Contains(current, "REEVIT_ORG_ID=") && credentials.OrgID != "" {
+		lines = append(lines, "REEVIT_ORG_ID="+credentials.OrgID)
+	}
+	if !strings.Contains(current, "REEVIT_WEBHOOK_SECRET=") && credentials.WebhookSecret != "" {
+		lines = append(lines, "REEVIT_WEBHOOK_SECRET="+credentials.WebhookSecret)
+	}
+	if clientVar != "" && credentials.CheckoutKey != "" && !strings.Contains(current, clientVar+"=") {
+		lines = append(lines, "# Browser checkout credential — test mode only", clientVar+"="+credentials.CheckoutKey)
+		res.ClientKeyVar = clientVar
+	}
+	if len(lines) > 0 {
+		block := "\n" + envHeader + "\n" + strings.Join(lines, "\n") + "\n"
 		if len(existing) == 0 {
 			block = strings.TrimPrefix(block, "\n")
 		}
-
 		if err := appendFile(envPath, block); err != nil {
 			return res, fmt.Errorf("write %s: %w", res.EnvFile, err)
-		}
-	}
-
-	if includeClientKey && clientVar != "" {
-		current, _ := os.ReadFile(envPath)
-		if !strings.Contains(string(current), clientVar+"=") {
-			block := fmt.Sprintf("# Exposed to the browser bundle by your framework — test-mode keys only\n%s=%s\n", clientVar, apiKey)
-			if err := appendFile(envPath, block); err != nil {
-				return res, fmt.Errorf("write %s: %w", res.EnvFile, err)
-			}
-
-			res.ClientKeyVar = clientVar
 		}
 	}
 
@@ -87,7 +98,7 @@ func WriteEnv(project Project, apiKey, orgID string, includeClientKey bool) (Env
 	if example, err := os.ReadFile(examplePath); err == nil || os.IsNotExist(err) {
 		if !strings.Contains(string(example), "REEVIT_API_KEY") {
 			clientLine := ""
-			if includeClientKey && clientVar != "" {
+			if credentials.CheckoutKey != "" && clientVar != "" {
 				clientLine = clientVar + "=\n"
 			}
 

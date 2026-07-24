@@ -82,10 +82,10 @@ func TestWebhookHandlerPaths(t *testing.T) {
 
 func TestClientKeyVar(t *testing.T) {
 	cases := map[Stack]string{
-		StackNext:   "NEXT_PUBLIC_REEVIT_KEY",
-		StackReact:  "VITE_REEVIT_KEY",
-		StackVue:    "VITE_REEVIT_KEY",
-		StackSvelte: "VITE_REEVIT_KEY",
+		StackNext:   "NEXT_PUBLIC_REEVIT_CHECKOUT_KEY",
+		StackReact:  "VITE_REEVIT_CHECKOUT_KEY",
+		StackVue:    "VITE_REEVIT_CHECKOUT_KEY",
+		StackSvelte: "VITE_REEVIT_CHECKOUT_KEY",
 		StackNode:   "",
 		StackGo:     "",
 		StackPython: "",

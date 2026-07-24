@@ -22,7 +22,12 @@ func TestWriteEnvFreshNextProject(t *testing.T) {
 	dir := t.TempDir()
 	project := Project{Root: dir, Stack: StackNext}
 
-	res, err := WriteEnv(project, "pfk_test_abc.secret", "org_123", true)
+	res, err := WriteEnv(project, ProjectCredentials{
+		ServerKey:     "pfk_test_server.secret",
+		CheckoutKey:   "pfk_test_checkout.secret",
+		OrgID:         "org_123",
+		WebhookSecret: "whsec_local",
+	})
 	if err != nil {
 		t.Fatalf("WriteEnv: %v", err)
 	}
@@ -32,7 +37,7 @@ func TestWriteEnvFreshNextProject(t *testing.T) {
 	}
 
 	env := readFile(t, dir, ".env.local")
-	if !strings.Contains(env, "REEVIT_API_KEY=pfk_test_abc.secret") {
+	if !strings.Contains(env, "REEVIT_API_KEY=pfk_test_server.secret") {
 		t.Errorf(".env.local missing key: %s", env)
 	}
 
@@ -41,7 +46,7 @@ func TestWriteEnvFreshNextProject(t *testing.T) {
 	}
 
 	example := readFile(t, dir, ".env.example")
-	if strings.Contains(example, "pfk_test_abc") {
+	if strings.Contains(example, "pfk_test_") {
 		t.Error(".env.example must contain placeholders, never the real key")
 	}
 
@@ -49,15 +54,19 @@ func TestWriteEnvFreshNextProject(t *testing.T) {
 		t.Error(".env.example missing placeholder")
 	}
 
-	if res.ClientKeyVar != "NEXT_PUBLIC_REEVIT_KEY" {
-		t.Errorf("client var = %q, want NEXT_PUBLIC_REEVIT_KEY for Next.js", res.ClientKeyVar)
+	if res.ClientKeyVar != "NEXT_PUBLIC_REEVIT_CHECKOUT_KEY" {
+		t.Errorf("client var = %q, want NEXT_PUBLIC_REEVIT_CHECKOUT_KEY for Next.js", res.ClientKeyVar)
 	}
 
-	if !strings.Contains(env, "NEXT_PUBLIC_REEVIT_KEY=pfk_test_abc.secret") {
+	if !strings.Contains(env, "NEXT_PUBLIC_REEVIT_CHECKOUT_KEY=pfk_test_checkout.secret") {
 		t.Errorf(".env.local missing browser key: %s", env)
 	}
 
-	if !strings.Contains(example, "NEXT_PUBLIC_REEVIT_KEY=") {
+	if !strings.Contains(env, "REEVIT_WEBHOOK_SECRET=whsec_local") {
+		t.Errorf(".env.local missing webhook secret: %s", env)
+	}
+
+	if !strings.Contains(example, "NEXT_PUBLIC_REEVIT_CHECKOUT_KEY=") {
 		t.Error(".env.example missing client-key placeholder")
 	}
 
@@ -77,7 +86,9 @@ func TestWriteEnvNeverOverwritesExistingKey(t *testing.T) {
 
 	project := Project{Root: dir, Stack: StackNode}
 
-	res, err := WriteEnv(project, "pfk_test_new.secret", "org_123", false)
+	res, err := WriteEnv(project, ProjectCredentials{
+		ServerKey: "pfk_test_new.secret", OrgID: "org_123",
+	})
 	if err != nil {
 		t.Fatalf("WriteEnv: %v", err)
 	}
@@ -110,7 +121,7 @@ func TestWriteEnvRespectsExistingGitignorePatterns(t *testing.T) {
 			write(t, dir, ".gitignore", tc.pattern+"\n")
 
 			project := Project{Root: dir, Stack: StackNext}
-			res, err := WriteEnv(project, "k", "org_123", false)
+			res, err := WriteEnv(project, ProjectCredentials{ServerKey: "k", OrgID: "org_123"})
 			if err != nil {
 				t.Fatalf("WriteEnv: %v", err)
 			}

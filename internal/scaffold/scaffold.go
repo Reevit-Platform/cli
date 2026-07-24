@@ -76,7 +76,8 @@ func TargetsFor(project Project) []Target {
 				Key:   TargetCheckout,
 				Label: "Checkout button component (@reevit/react)",
 				Files: map[string]string{
-					"next-checkout.tsx.tmpl": prefixSrc(project, "components/reevit-checkout-button."+ext(project, "tsx", "jsx")),
+					"next-checkout.tsx.tmpl":      prefixSrc(project, "components/reevit-checkout-button."+ext(project, "tsx", "jsx")),
+					"next-app-demo-page.tsx.tmpl": prefixSrc(project, "app/reevit-demo/page."+ext(project, "tsx", "jsx")),
 				},
 				NpmPackages: []string{"@reevit/react"},
 			},

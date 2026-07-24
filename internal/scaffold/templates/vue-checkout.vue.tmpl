@@ -26,7 +26,7 @@ function onError(error{{if .TS}}: unknown{{end}}) {
 <template>
   <button type="button" @click="open = true">Pay now</button>
   <ReevitCheckout
-    :public-key="import.meta.env.VITE_REEVIT_KEY ?? ''"
+    :public-key="import.meta.env.VITE_REEVIT_CHECKOUT_KEY ?? ''"
     :amount="props.amount"
     :currency="props.currency"
     :payment-methods="['card', 'mobile_money']"

@@ -56,6 +56,28 @@ func TestRenderTSConditionals(t *testing.T) {
 	}
 }
 
+func TestNextCheckoutCreatesRunnableDemoRoute(t *testing.T) {
+	t.Parallel()
+
+	project := Project{Root: t.TempDir(), Stack: StackNext, TypeScript: true}
+	var checkout Target
+	for _, target := range TargetsFor(project) {
+		if target.Key == TargetCheckout {
+			checkout = target
+		}
+	}
+	if _, ok := checkout.Files["next-app-demo-page.tsx.tmpl"]; !ok {
+		t.Fatalf("checkout files = %#v; missing runnable demo page", checkout.Files)
+	}
+	if _, err := Apply(project, []Target{checkout}); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	page := readFile(t, project.Root, "app/reevit-demo/page.tsx")
+	if !strings.Contains(page, "ReevitCheckoutButton") {
+		t.Fatalf("demo page does not mount checkout: %s", page)
+	}
+}
+
 func TestApplyWritesAndNeverOverwrites(t *testing.T) {
 	dir := t.TempDir()
 	write(t, dir, "package.json", `{"dependencies":{"next":"16"}}`)

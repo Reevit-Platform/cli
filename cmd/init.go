@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 
 	"github.com/Reevit-Platform/cli/internal/api"
@@ -22,6 +24,7 @@ var (
 	initCheckoutPath    string
 	initClientPath      string
 	initRegisterWebhook string
+	initRotateTestKeys  bool
 )
 
 var initCmd = &cobra.Command{
@@ -36,25 +39,8 @@ Existing files and env values are never overwritten.`,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		out := cmd.OutOrStdout()
 
-		// --- 1. Auth: reuse the browser pairing flow when logged out ---
-		cfg, err := config.Load()
-		if err != nil {
-			return err
-		}
-
-		if cfg.APIKey == "" {
-			fmt.Fprintln(out, "No API key configured yet — starting browser login first.")
-
-			if err := browserLogin(cmd, true); err != nil {
-				return err
-			}
-
-			if cfg, err = config.Load(); err != nil {
-				return err
-			}
-		}
-
-		// --- 2. Detect the stack ---
+		// Detect before authentication so unsupported projects never cause a
+		// login or any other mutation.
 		root, err := os.Getwd()
 		if err != nil {
 			return fmt.Errorf("resolve working directory: %w", err)
@@ -77,7 +63,7 @@ Existing files and env values are never overwritten.`,
 
 		available := scaffold.TargetsFor(project)
 
-		// --- 3. Pick what to scaffold ---
+		// Resolve the adapter's complete recommendation.
 		targets, err := pickTargets(cmd, available)
 		if err != nil {
 			return err
@@ -100,7 +86,93 @@ Existing files and env values are never overwritten.`,
 			return printPlan(out, project, targets)
 		}
 
-		// --- 4. Install SDKs ---
+		if !initYes {
+			ok, confirmErr := confirm(out, cmd.InOrStdin(), "\nApply this recommended setup?", true)
+			if confirmErr != nil {
+				return confirmErr
+			}
+			if !ok {
+				return fmt.Errorf("setup cancelled")
+			}
+		}
+
+		cfg, err := config.Load()
+		if err != nil {
+			return err
+		}
+		if cfg.APIKey == "" {
+			fmt.Fprintln(out, "\nSign in to Reevit to connect this project.")
+			if err := browserLogin(cmd, true); err != nil {
+				return err
+			}
+			if cfg, err = config.Load(); err != nil {
+				return err
+			}
+		}
+
+		manifest, err := scaffold.ReadManifest(project)
+		if err != nil {
+			return err
+		}
+		if manifest.ProjectID == "" {
+			manifest.ProjectID = "rvproj_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+		}
+		manifest.Status = "pending"
+		manifest.Adapter = string(project.Stack)
+		manifest.Origin = localOrigin(project)
+		if err := scaffold.WriteManifest(project, manifest); err != nil {
+			return err
+		}
+
+		serverKey := scaffold.ReadEnvValue(project, "REEVIT_API_KEY")
+		checkoutVar := scaffold.ClientKeyVar(project.Stack)
+		checkoutKey := scaffold.ReadEnvValue(project, checkoutVar)
+		request := api.BootstrapRequest{
+			ProjectID:         manifest.ProjectID,
+			ProjectName:       filepath.Base(project.Root),
+			Capabilities:      bootstrapCapabilities(targets),
+			Origin:            manifest.Origin,
+			RotateCredentials: initRotateTestKeys,
+		}
+		if serverKey != "" {
+			request.ExistingServerKeyID = manifest.ServerKeyID
+		}
+		if checkoutKey != "" {
+			request.ExistingCheckoutKeyID = manifest.CheckoutKeyID
+		}
+
+		fmt.Fprintln(out, "\nConfiguring Reevit test mode…")
+		bootstrap, err := api.New(cfg).BootstrapProject(cmd.Context(), request)
+		if err != nil {
+			return fmt.Errorf("configure Reevit project: %w", err)
+		}
+		if bootstrap.Credentials.Server != nil {
+			manifest.ServerKeyID = bootstrap.Credentials.Server.ID
+			if bootstrap.Credentials.Server.Raw != "" {
+				serverKey = bootstrap.Credentials.Server.Raw
+			}
+		}
+		if bootstrap.Credentials.Checkout != nil {
+			manifest.CheckoutKeyID = bootstrap.Credentials.Checkout.ID
+			if bootstrap.Credentials.Checkout.Raw != "" {
+				checkoutKey = bootstrap.Credentials.Checkout.Raw
+			}
+		}
+
+		webhookSecret := scaffold.ReadEnvValue(project, "REEVIT_WEBHOOK_SECRET")
+		if webhookSecret == "" && hasTarget(targets, scaffold.TargetWebhook) {
+			webhookSecret = "whsec_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+		}
+		envRes, err := scaffold.WriteEnv(project, scaffold.ProjectCredentials{
+			ServerKey: serverKey, CheckoutKey: checkoutKey,
+			OrgID: bootstrap.Project.OrganizationID, WebhookSecret: webhookSecret,
+		})
+		if err != nil {
+			return err
+		}
+
+		// Install SDKs with output hidden only after project credentials are
+		// safely persisted to the local env file.
 		for _, plan := range scaffold.NpmInstallPlans(project, targets) {
 			fmt.Fprintf(out, "\n$ %s\n", strings.Join(plan, " "))
 
@@ -129,15 +201,13 @@ Existing files and env values are never overwritten.`,
 			}
 		}
 
-		// --- 5. Env wiring ---
-		envRes, err := scaffold.WriteEnv(project, cfg.APIKey, cfg.OrgID, hasTarget(targets, scaffold.TargetCheckout))
+		// Starter files.
+		files, err := scaffold.Apply(project, targets)
 		if err != nil {
 			return err
 		}
-
-		// --- 6. Starter files ---
-		files, err := scaffold.Apply(project, targets)
-		if err != nil {
+		manifest.Status = "complete"
+		if err := scaffold.WriteManifest(project, manifest); err != nil {
 			return err
 		}
 
@@ -212,12 +282,24 @@ func pickTargets(cmd *cobra.Command, available []scaffold.Target) ([]scaffold.Ta
 		return available, nil
 	}
 
+	fmt.Fprintln(cmd.OutOrStdout(), "\nRecommended setup:")
+	for _, target := range available {
+		fmt.Fprintf(cmd.OutOrStdout(), "  ✓ %s\n", target.Label)
+	}
+	customize, err := confirm(cmd.OutOrStdout(), cmd.InOrStdin(), "\nCustomize setup?", false)
+	if err != nil {
+		return nil, err
+	}
+	if !customize {
+		return available, nil
+	}
+
 	labels := make([]string, len(available))
 	for i, t := range available {
 		labels[i] = t.Label
 	}
 
-	picks, err := choose(cmd.OutOrStdout(), cmd.InOrStdin(), "What should Reevit set up?", labels, true)
+	picks, err := choose(cmd.OutOrStdout(), cmd.InOrStdin(), "Choose advanced capabilities", labels, true)
 	if err != nil {
 		return nil, err
 	}
@@ -228,6 +310,26 @@ func pickTargets(cmd *cobra.Command, available []scaffold.Target) ([]scaffold.Ta
 	}
 
 	return picked, nil
+}
+
+func bootstrapCapabilities(targets []scaffold.Target) []string {
+	var capabilities []string
+	if hasTarget(targets, scaffold.TargetClient) {
+		capabilities = append(capabilities, "server")
+	}
+	if hasTarget(targets, scaffold.TargetCheckout) {
+		capabilities = append(capabilities, "checkout")
+	}
+	return capabilities
+}
+
+func localOrigin(project scaffold.Project) string {
+	switch project.Stack {
+	case scaffold.StackNext, scaffold.StackReact, scaffold.StackVue, scaffold.StackSvelte:
+		return "http://localhost:3000"
+	default:
+		return ""
+	}
 }
 
 // applyPathOverrides remaps each target's single output file when the
@@ -405,6 +507,7 @@ func init() {
 	initCmd.Flags().StringVar(&initCheckoutPath, "checkout-path", "", "custom output path for the checkout component")
 	initCmd.Flags().StringVar(&initClientPath, "client-path", "", "custom output path for the server client")
 	initCmd.Flags().StringVar(&initRegisterWebhook, "register-webhook", "", "register this production webhook endpoint in your dashboard")
+	initCmd.Flags().BoolVar(&initRotateTestKeys, "rotate-test-keys", false, "replace project test credentials after local secrets were lost")
 
 	rootCmd.AddCommand(initCmd)
 }
