@@ -1,19 +1,22 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
+	"io"
+	"net/url"
 	"os"
-	"os/exec"
-	"path/filepath"
+	"slices"
 	"strings"
 
-	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 
 	"github.com/Reevit-Platform/cli/internal/api"
 	"github.com/Reevit-Platform/cli/internal/config"
 	"github.com/Reevit-Platform/cli/internal/scaffold"
+	"github.com/Reevit-Platform/cli/internal/setup"
 	"github.com/Reevit-Platform/cli/internal/telemetry"
+	"github.com/Reevit-Platform/cli/internal/ui"
 )
 
 var (
@@ -25,6 +28,11 @@ var (
 	initClientPath      string
 	initRegisterWebhook string
 	initRotateTestKeys  bool
+	initVerbose         bool
+	initGoal            string
+	initOrigin          string
+	initKeepLogs        bool
+	initAccessible      bool
 )
 
 var initCmd = &cobra.Command{
@@ -48,20 +56,63 @@ Existing files and env values are never overwritten.`,
 
 		project := scaffold.Detect(root)
 		if project.Stack == scaffold.StackUnknown {
-			return fmt.Errorf("couldn't detect a project here — run `reevit init` inside a project with a package.json, go.mod, composer.json, or pyproject.toml")
+			return fmt.Errorf(
+				"couldn't detect a supported project here — use Next.js, React, Nuxt, Vue, SvelteKit, Svelte, Express/Node, Go modules, FastAPI, Flask, Django, Laravel/Composer, or Python with pyproject.toml, requirements.txt, setup.py, or Pipfile",
+			)
+		}
+		if strings.TrimSpace(initOrigin) != "" {
+			if err := validateInitOrigin(initOrigin); err != nil {
+				return err
+			}
+		}
+		if err := validateInitGoal(initGoal); err != nil {
+			return err
 		}
 
-		fmt.Fprintf(out, "\nDetected: %s project", project.Stack)
-
-		if len(project.Managers) > 1 {
-			fmt.Fprintf(out, " (lockfiles: %s — all will be kept in sync)", joinManagers(project.Managers))
-		}
-
-		fmt.Fprintln(out)
+		printDetectedProject(out, project)
 
 		telemetry.SetContext(string(project.Stack), nil)
 
-		available := scaffold.TargetsFor(project)
+		available := setup.RecommendedTargets(project)
+		if !initYes && !initDryRun && len(initTargets) == 0 && !cmd.Flags().Changed("goal") && !isInteractiveInput(cmd.InOrStdin()) {
+			return fmt.Errorf("interactive setup needs a terminal — rerun with `reevit init --yes` (recommended) or an explicit --goal/--target")
+		}
+
+		var cfg config.Config
+		if !initDryRun {
+			didLogin := false
+			cfg, err = config.Load()
+			if err != nil {
+				return err
+			}
+			if cfg.APIKey == "" {
+				fmt.Fprintln(out, "\nSign in to Reevit to connect this project.")
+				if err := browserLogin(cmd, true); err != nil {
+					return err
+				}
+				didLogin = true
+				if cfg, err = config.Load(); err != nil {
+					return err
+				}
+			}
+			if !didLogin {
+				accountName, accountID := cfg.OrgName, cfg.OrgID
+				if account, accountErr := api.New(cfg).AccountSummary(
+					cmd.Context(),
+				); accountErr == nil {
+					accountName = account.OrganizationName
+					accountID = account.OrganizationID
+				}
+				switch {
+				case accountName != "":
+					fmt.Fprintf(out, "\n✓ Signed in to %s\n", accountName)
+				case accountID != "":
+					fmt.Fprintf(out, "\n✓ Signed in to organization %s\n", accountID)
+				default:
+					fmt.Fprintf(out, "\n✓ Signed in to Reevit (%s mode)\n", cfg.Mode)
+				}
+			}
+		}
 
 		// Resolve the adapter's complete recommendation.
 		targets, err := pickTargets(cmd, available)
@@ -82,157 +133,107 @@ Existing files and env values are never overwritten.`,
 
 		telemetry.SetContext(string(project.Stack), chosen)
 
-		if initDryRun {
-			return printPlan(out, project, targets)
-		}
-
-		if !initYes {
-			ok, confirmErr := confirm(out, cmd.InOrStdin(), "\nApply this recommended setup?", true)
-			if confirmErr != nil {
-				return confirmErr
-			}
-			if !ok {
-				return fmt.Errorf("setup cancelled")
-			}
-		}
-
-		cfg, err := config.Load()
-		if err != nil {
-			return err
-		}
-		if cfg.APIKey == "" {
-			fmt.Fprintln(out, "\nSign in to Reevit to connect this project.")
-			if err := browserLogin(cmd, true); err != nil {
-				return err
-			}
-			if cfg, err = config.Load(); err != nil {
-				return err
-			}
-		}
-
 		manifest, err := scaffold.ReadManifest(project)
 		if err != nil {
 			return err
 		}
-		if manifest.ProjectID == "" {
-			manifest.ProjectID = "rvproj_" + strings.ReplaceAll(uuid.NewString(), "-", "")
-		}
-		manifest.Status = "pending"
-		manifest.Adapter = string(project.Stack)
-		manifest.Origin = localOrigin(project)
-		if err := scaffold.WriteManifest(project, manifest); err != nil {
-			return err
-		}
 
-		serverKey := scaffold.ReadEnvValue(project, "REEVIT_API_KEY")
-		checkoutVar := scaffold.ClientKeyVar(project.Stack)
-		checkoutKey := scaffold.ReadEnvValue(project, checkoutVar)
-		request := api.BootstrapRequest{
-			ProjectID:         manifest.ProjectID,
-			ProjectName:       filepath.Base(project.Root),
-			Capabilities:      bootstrapCapabilities(targets),
-			Origin:            manifest.Origin,
-			RotateCredentials: initRotateTestKeys,
+		origin := ""
+		if hasTarget(targets, scaffold.TargetCheckout) {
+			origin = localOrigin(project)
 		}
-		if serverKey != "" {
-			request.ExistingServerKeyID = manifest.ServerKeyID
-		}
-		if checkoutKey != "" {
-			request.ExistingCheckoutKeyID = manifest.CheckoutKeyID
-		}
-
-		fmt.Fprintln(out, "\nConfiguring Reevit test mode…")
-		bootstrap, err := api.New(cfg).BootstrapProject(cmd.Context(), request)
-		if err != nil {
-			return fmt.Errorf("configure Reevit project: %w", err)
-		}
-		if bootstrap.Credentials.Server != nil {
-			manifest.ServerKeyID = bootstrap.Credentials.Server.ID
-			if bootstrap.Credentials.Server.Raw != "" {
-				serverKey = bootstrap.Credentials.Server.Raw
-			}
-		}
-		if bootstrap.Credentials.Checkout != nil {
-			manifest.CheckoutKeyID = bootstrap.Credentials.Checkout.ID
-			if bootstrap.Credentials.Checkout.Raw != "" {
-				checkoutKey = bootstrap.Credentials.Checkout.Raw
+		if strings.TrimSpace(initOrigin) != "" {
+			origin = strings.TrimRight(strings.TrimSpace(initOrigin), "/")
+		} else if !initYes && !initDryRun && isInteractiveInput(cmd.InOrStdin()) &&
+			hasTarget(targets, scaffold.TargetCheckout) {
+			origin, err = ui.PromptOrigin(
+				cmd.Context(), cmd.InOrStdin(), out, origin,
+				ui.Accessible(initAccessible), validateInitOrigin,
+			)
+			if err != nil {
+				if errors.Is(err, ui.ErrCancelled) {
+					return ExitError{Code: 130, Err: err}
+				}
+				return err
 			}
 		}
 
-		webhookSecret := scaffold.ReadEnvValue(project, "REEVIT_WEBHOOK_SECRET")
-		if webhookSecret == "" && hasTarget(targets, scaffold.TargetWebhook) {
-			webhookSecret = "whsec_" + strings.ReplaceAll(uuid.NewString(), "-", "")
-		}
-		envRes, err := scaffold.WriteEnv(project, scaffold.ProjectCredentials{
-			ServerKey: serverKey, CheckoutKey: checkoutKey,
-			OrgID: bootstrap.Project.OrganizationID, WebhookSecret: webhookSecret,
+		resolved, err := setup.Resolve(setup.ResolveInput{
+			Project: project, Goal: setup.Goal(initGoal), Targets: targets,
+			LocalOrigin: origin, Manifest: manifest,
 		})
 		if err != nil {
 			return err
 		}
-
-		// Install SDKs with output hidden only after project credentials are
-		// safely persisted to the local env file.
-		for _, plan := range scaffold.NpmInstallPlans(project, targets) {
-			fmt.Fprintf(out, "\n$ %s\n", strings.Join(plan, " "))
-
-			install := exec.CommandContext(cmd.Context(), plan[0], plan[1:]...)
-			install.Dir = project.Root
-			install.Stdout = out
-			install.Stderr = cmd.ErrOrStderr()
-
-			if err := install.Run(); err != nil {
-				return fmt.Errorf("install failed (%s): %w", strings.Join(plan, " "), err)
-			}
+		if len(resolved.Conflicts) > 0 {
+			return &scaffold.ConflictError{Paths: resolved.Conflicts}
 		}
-
-		runCmds, showCmds := scaffold.OtherInstallCmds(targets)
-
-		for _, plan := range runCmds {
-			fmt.Fprintf(out, "\n$ %s\n", strings.Join(plan, " "))
-
-			install := exec.CommandContext(cmd.Context(), plan[0], plan[1:]...)
-			install.Dir = project.Root
-			install.Stdout = out
-			install.Stderr = cmd.ErrOrStderr()
-
-			if err := install.Run(); err != nil {
-				return fmt.Errorf("install failed (%s): %w", strings.Join(plan, " "), err)
-			}
+		if initDryRun {
+			return printPlan(out, resolved)
 		}
-
-		// Starter files.
-		files, err := scaffold.Apply(project, targets)
-		if err != nil {
+		if err := printMutationPlan(out, resolved); err != nil {
 			return err
 		}
-		manifest.Status = "complete"
-		if err := scaffold.WriteManifest(project, manifest); err != nil {
+
+		if !initYes {
+			if confirmErr := ui.ConfirmApply(
+				cmd.Context(), cmd.InOrStdin(), out, ui.Accessible(initAccessible),
+			); confirmErr != nil {
+				if errors.Is(confirmErr, ui.ErrCancelled) {
+					return ExitError{Code: 130, Err: confirmErr}
+				}
+				return confirmErr
+			}
+		}
+
+		client := api.New(cfg)
+		resolved.CLIVersion = Version
+		resolved.LoginKey = cfg.APIKey
+		resolved.BaseURL = cfg.BaseURL
+		resolved.RotateCredentials = initRotateTestKeys
+		resolved.Verbose = initVerbose
+		result, err := setup.Apply(cmd.Context(), resolved, setup.Dependencies{
+			Bootstrapper: client,
+			Runner: setup.CommandRunner{
+				Output: out, KeepLogs: initKeepLogs,
+			},
+			Writer:   setup.FileWriter{},
+			Secrets:  setup.CryptoSecretGenerator{},
+			Verifier: setup.SandboxVerifier{},
+			Emit: func(event setup.Event) {
+				printSetupEvent(out, event)
+			},
+		})
+		if err != nil {
 			return err
 		}
 
 		// --- 7. Summary + next steps ---
 		fmt.Fprintln(out)
 
-		if envRes.KeyAlreadySet {
-			fmt.Fprintf(out, "• %s already had REEVIT_API_KEY — left untouched\n", envRes.EnvFile)
+		if hasTarget(targets, scaffold.TargetClient) {
+			if result.Env.KeyAlreadySet {
+				fmt.Fprintf(out, "• %s already had REEVIT_API_KEY — left untouched\n", result.Env.EnvFile)
+			} else {
+				fmt.Fprintf(out, "✔ %s — REEVIT_API_KEY (test mode) + REEVIT_ORG_ID\n", result.Env.EnvFile)
+			}
 		} else {
-			fmt.Fprintf(out, "✔ %s — REEVIT_API_KEY (test mode) + REEVIT_ORG_ID\n", envRes.EnvFile)
+			fmt.Fprintf(out, "✔ %s — REEVIT_ORG_ID\n", result.Env.EnvFile)
 		}
 
-		if envRes.EnvExample != "" {
-			fmt.Fprintf(out, "✔ %s — placeholders added\n", envRes.EnvExample)
+		if result.Env.EnvExample != "" {
+			fmt.Fprintf(out, "✔ %s — placeholders added\n", result.Env.EnvExample)
 		}
 
-		if envRes.ClientKeyVar != "" {
-			fmt.Fprintf(out, "✔ %s — %s (browser-exposed, test mode)\n", envRes.EnvFile, envRes.ClientKeyVar)
+		if result.Env.ClientKeyVar != "" {
+			fmt.Fprintf(out, "✔ %s — %s (browser-exposed, test mode)\n", result.Env.EnvFile, result.Env.ClientKeyVar)
 		}
 
-		if envRes.GitignoreNoted {
-			fmt.Fprintf(out, "✔ .gitignore — %s added\n", envRes.EnvFile)
+		if result.Env.GitignoreNoted {
+			fmt.Fprintf(out, "✔ .gitignore — %s added\n", result.Env.EnvFile)
 		}
 
-		for _, f := range files {
+		for _, f := range result.Files {
 			if f.Skipped {
 				fmt.Fprintf(out, "• %s exists — skipped\n", f.Path)
 			} else {
@@ -240,7 +241,7 @@ Existing files and env values are never overwritten.`,
 			}
 		}
 
-		for _, plan := range showCmds {
+		for _, plan := range result.ShowCmds {
 			fmt.Fprintf(out, "\nInstall the SDK in your environment:  %s\n", strings.Join(plan, " "))
 		}
 
@@ -250,6 +251,19 @@ Existing files and env values are never overwritten.`,
 
 		return nil
 	},
+}
+
+func printSetupEvent(out io.Writer, event setup.Event) {
+	switch {
+	case event.Stage == "bootstrap" && event.Status == "running":
+		fmt.Fprintln(out, "\nConfiguring Reevit test mode…")
+	case event.Stage == "install" && event.Status == "running":
+		fmt.Fprintf(out, "  Installing dependencies (%s)…\n", event.Detail)
+	case event.Stage == "install" && event.Status == "complete" && event.LogPath != "":
+		fmt.Fprintf(out, "    Log retained at %s\n", event.LogPath)
+	case event.Stage == "verify" && event.Status == "running":
+		fmt.Fprintln(out, "  Verifying project credentials against the sandbox…")
+	}
 }
 
 // pickTargets resolves --target flags or prompts interactively.
@@ -278,7 +292,24 @@ func pickTargets(cmd *cobra.Command, available []scaffold.Target) ([]scaffold.Ta
 		return picked, nil
 	}
 
-	if initYes || len(available) == 1 {
+	if initGoal != "" && initGoal != "auto" {
+		key := map[string]scaffold.TargetKey{
+			"checkout": scaffold.TargetCheckout,
+			"webhook":  scaffold.TargetWebhook,
+			"server":   scaffold.TargetClient,
+		}[initGoal]
+		if initGoal == "full" {
+			return available, nil
+		}
+		for _, target := range available {
+			if target.Key == key {
+				return []scaffold.Target{target}, nil
+			}
+		}
+		return nil, fmt.Errorf("--goal %s is not available for this project", initGoal)
+	}
+
+	if initYes || initDryRun || len(available) == 1 {
 		return available, nil
 	}
 
@@ -286,49 +317,102 @@ func pickTargets(cmd *cobra.Command, available []scaffold.Target) ([]scaffold.Ta
 	for _, target := range available {
 		fmt.Fprintf(cmd.OutOrStdout(), "  ✓ %s\n", target.Label)
 	}
-	customize, err := confirm(cmd.OutOrStdout(), cmd.InOrStdin(), "\nCustomize setup?", false)
+	picked, err := ui.Customize(
+		cmd.Context(), cmd.InOrStdin(), cmd.OutOrStdout(),
+		available, ui.Accessible(initAccessible),
+	)
 	if err != nil {
+		if errors.Is(err, ui.ErrCancelled) {
+			return nil, ExitError{Code: 130, Err: err}
+		}
 		return nil, err
-	}
-	if !customize {
-		return available, nil
-	}
-
-	labels := make([]string, len(available))
-	for i, t := range available {
-		labels[i] = t.Label
-	}
-
-	picks, err := choose(cmd.OutOrStdout(), cmd.InOrStdin(), "Choose advanced capabilities", labels, true)
-	if err != nil {
-		return nil, err
-	}
-
-	var picked []scaffold.Target
-	for _, i := range picks {
-		picked = append(picked, available[i])
 	}
 
 	return picked, nil
 }
 
-func bootstrapCapabilities(targets []scaffold.Target) []string {
-	var capabilities []string
-	if hasTarget(targets, scaffold.TargetClient) {
-		capabilities = append(capabilities, "server")
+func validateInitGoal(goal string) error {
+	if slices.Contains([]string{"", "auto", "full", "checkout", "webhook", "server"}, goal) {
+		return nil
 	}
-	if hasTarget(targets, scaffold.TargetCheckout) {
-		capabilities = append(capabilities, "checkout")
+
+	return fmt.Errorf("invalid --goal %q — use auto, full, checkout, webhook, or server", goal)
+}
+
+func isInteractiveInput(in io.Reader) bool {
+	file, ok := in.(*os.File)
+	if !ok {
+		return false
 	}
-	return capabilities
+	info, err := file.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
+}
+
+func validateInitOrigin(raw string) error {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil ||
+		parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+		return fmt.Errorf("invalid --origin: provide an origin only, such as http://localhost:3000")
+	}
+	host := strings.ToLower(parsed.Hostname())
+	if parsed.Scheme == "http" && host != "localhost" && host != "127.0.0.1" {
+		return fmt.Errorf("invalid --origin: HTTP is allowed only for localhost; use HTTPS otherwise")
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("invalid --origin: scheme must be http or https")
+	}
+	return nil
 }
 
 func localOrigin(project scaffold.Project) string {
-	switch project.Stack {
-	case scaffold.StackNext, scaffold.StackReact, scaffold.StackVue, scaffold.StackSvelte:
-		return "http://localhost:3000"
+	if port := scaffold.DefaultPort(project); port != 0 {
+		return fmt.Sprintf("http://localhost:%d", port)
+	}
+
+	return ""
+}
+
+func printDetectedProject(out io.Writer, project scaffold.Project) {
+	parts := []string{displayFramework(project)}
+	if project.TypeScript {
+		parts = append(parts, "TypeScript")
+	} else if project.Stack == scaffold.StackNext || project.Stack == scaffold.StackReact ||
+		project.Stack == scaffold.StackVue || project.Stack == scaffold.StackSvelte ||
+		project.Stack == scaffold.StackNode {
+		parts = append(parts, "JavaScript")
+	}
+	if project.Stack == scaffold.StackNext {
+		if project.NextRouter == scaffold.NextRouterPages {
+			parts = append(parts, "Pages Router")
+		} else {
+			parts = append(parts, "App Router")
+		}
+	}
+	installer := string(project.Installer)
+	if installer == "" {
+		installer = string(project.Manager)
+	}
+	if installer != "" {
+		parts = append(parts, installer)
+	}
+	fmt.Fprintf(out, "\nReevit setup\n\nFound %s\n", strings.Join(parts, " · "))
+}
+
+func displayFramework(project scaffold.Project) string {
+	switch project.Framework {
+	case scaffold.FrameworkNext:
+		return "Next.js"
+	case scaffold.FrameworkSvelteKit:
+		return "SvelteKit"
+	case scaffold.FrameworkFastAPI:
+		return "FastAPI"
 	default:
-		return ""
+		if project.Framework != "" && project.Framework != scaffold.FrameworkGeneric {
+			name := string(project.Framework)
+			return strings.ToUpper(name[:1]) + name[1:]
+		}
+		name := string(project.Stack)
+		return strings.ToUpper(name[:1]) + name[1:]
 	}
 }
 
@@ -348,12 +432,39 @@ func applyPathOverrides(targets []scaffold.Target) {
 		}
 
 		remapped := make(map[string]string, len(targets[i].Files))
-		for tmpl := range targets[i].Files {
-			remapped[tmpl] = override
+		overrideTemplate := customizableTemplate(targets[i])
+		for tmpl, path := range targets[i].Files {
+			if tmpl == overrideTemplate {
+				path = override
+			}
+			remapped[tmpl] = path
 		}
 
 		targets[i].Files = remapped
 	}
+}
+
+func customizableTemplate(target scaffold.Target) string {
+	if len(target.Files) == 1 {
+		for name := range target.Files {
+			return name
+		}
+	}
+	if target.Key == scaffold.TargetCheckout {
+		for name := range target.Files {
+			if strings.Contains(name, "checkout") {
+				return name
+			}
+		}
+	}
+	if target.Key == scaffold.TargetClient {
+		for name := range target.Files {
+			if strings.Contains(name, "client") {
+				return name
+			}
+		}
+	}
+	return ""
 }
 
 // registerWebhookEndpoint optionally registers a production webhook endpoint
@@ -417,49 +528,71 @@ func registerWebhookEndpoint(cmd *cobra.Command, out interface{ Write([]byte) (i
 	}
 }
 
-func printPlan(out interface{ Write([]byte) (int, error) }, project scaffold.Project, targets []scaffold.Target) error {
+func printPlan(out io.Writer, plan setup.Plan) error {
 	fmt.Fprintln(out, "\nDry run — would do the following:")
+	return printPlanOperations(out, plan)
+}
 
-	for _, plan := range scaffold.NpmInstallPlans(project, targets) {
-		fmt.Fprintf(out, "  $ %s\n", strings.Join(plan, " "))
+func printMutationPlan(out io.Writer, plan setup.Plan) error {
+	fmt.Fprintln(out, "\nSetup plan:")
+	return printPlanOperations(out, plan)
+}
+
+func printPlanOperations(out io.Writer, plan setup.Plan) error {
+	for _, warning := range plan.Warnings {
+		fmt.Fprintf(out, "  ! %s\n", warning)
 	}
-
-	runCmds, showCmds := scaffold.OtherInstallCmds(targets)
-	for _, plan := range append(runCmds, showCmds...) {
-		fmt.Fprintf(out, "  $ %s\n", strings.Join(plan, " "))
-	}
-
-	fmt.Fprintf(out, "  write %s (REEVIT_API_KEY, REEVIT_ORG_ID, REEVIT_WEBHOOK_SECRET) + .env.example + .gitignore\n", "env file")
-
-	for _, t := range targets {
-		for _, path := range t.Files {
-			fmt.Fprintf(out, "  write %s\n", path)
+	for _, operation := range plan.Operations {
+		prefix := "•"
+		if operation.Kind == setup.WriteFile || operation.Kind == setup.WriteEnv {
+			prefix = "+"
 		}
+		fmt.Fprintf(out, "  %s %s\n    %s\n", prefix, operation.Detail, operation.Reason)
 	}
-
 	return nil
 }
 
 func printNextSteps(out interface{ Write([]byte) (int, error) }, project scaffold.Project, targets []scaffold.Target) {
 	fmt.Fprintln(out, "\nNext steps:")
 
+	if command := scaffold.DevCommand(project); len(command) > 0 {
+		fmt.Fprintf(out, "  1. Start your app: %s\n", strings.Join(command, " "))
+	}
+	if path, port := scaffold.DemoPath(project), scaffold.DefaultPort(project); path != "" && port != 0 {
+		fmt.Fprintf(out, "  2. Open the runnable checkout: http://localhost:%d%s\n", port, path)
+	}
+
 	for _, t := range targets {
 		switch t.Key {
 		case scaffold.TargetWebhook:
+			if instruction := scaffold.WebhookMountInstruction(project); instruction != "" {
+				fmt.Fprintf(out, "  • Mount the generated webhook: %s\n", instruction)
+			}
 			path := "/<your webhook path>"
 			if _, handlerPath := scaffold.WebhookHandler(project); handlerPath != "" {
 				path = handlerPath
 			}
 
 			fmt.Fprintln(out, "  • Forward signed test events to your webhook handler:")
-			fmt.Fprintf(out, "      reevit listen --forward-to http://localhost:<port>%s\n", path)
-			fmt.Fprintln(out, "    and put the printed signing secret in REEVIT_WEBHOOK_SECRET.")
+			port := scaffold.DefaultPort(project)
+			if port == 0 {
+				fmt.Fprintf(out, "      reevit listen --forward-to http://localhost:<port>%s\n", path)
+			} else {
+				fmt.Fprintf(out, "      reevit listen --forward-to http://localhost:%d%s\n", port, path)
+			}
+			fmt.Fprintln(out, "    It automatically uses REEVIT_WEBHOOK_SECRET from your project env.")
 			fmt.Fprintln(out, "  • Then verify the whole setup (signature check included):")
-			fmt.Fprintf(out, "      reevit doctor --webhook-url http://localhost:<port>%s\n", path)
+			if port == 0 {
+				fmt.Fprintf(out, "      reevit doctor --webhook-url http://localhost:<port>%s\n", path)
+			} else {
+				fmt.Fprintf(out, "      reevit doctor --webhook-url http://localhost:%d%s\n", port, path)
+			}
 		case scaffold.TargetCheckout:
 			fmt.Fprintln(out, "  • Render the checkout component with an amount in the smallest currency unit.")
 		case scaffold.TargetClient:
-			fmt.Fprintln(out, "  • Create a test payment with the server client, then check `reevit payments list`.")
+			fmt.Fprintln(out, "  • Run another real simulator payment whenever you need one:")
+			fmt.Fprintln(out, "      reevit trigger payment.succeeded")
+			fmt.Fprintln(out, "    Then inspect it with `reevit payments list`.")
 		}
 	}
 
@@ -490,15 +623,6 @@ func availableKeys(targets []scaffold.Target) string {
 	return strings.Join(keys, ", ")
 }
 
-func joinManagers(managers []scaffold.PackageManager) string {
-	names := make([]string, len(managers))
-	for i, m := range managers {
-		names[i] = string(m)
-	}
-
-	return strings.Join(names, ", ")
-}
-
 func init() {
 	initCmd.Flags().StringSliceVar(&initTargets, "target", nil, "what to scaffold (webhook, checkout, client) — skips the prompt")
 	initCmd.Flags().BoolVarP(&initYes, "yes", "y", false, "scaffold everything available without prompting")
@@ -508,6 +632,12 @@ func init() {
 	initCmd.Flags().StringVar(&initClientPath, "client-path", "", "custom output path for the server client")
 	initCmd.Flags().StringVar(&initRegisterWebhook, "register-webhook", "", "register this production webhook endpoint in your dashboard")
 	initCmd.Flags().BoolVar(&initRotateTestKeys, "rotate-test-keys", false, "replace project test credentials after local secrets were lost")
+	initCmd.Flags().BoolVar(&initVerbose, "verbose", false, "stream package-manager output")
+	initCmd.Flags().StringVar(&initGoal, "goal", "auto", "setup goal: auto, full, checkout, webhook, or server")
+	initCmd.Flags().StringVar(&initOrigin, "origin", "", "local checkout origin (defaults to the detected framework port)")
+	initCmd.Flags().BoolVar(&initKeepLogs, "keep-logs", false, "keep successful setup logs")
+	initCmd.Flags().BoolVar(&initAccessible, "accessible", false, "use screen-reader-friendly prompts")
+	initCmd.MarkFlagsMutuallyExclusive("goal", "target")
 
 	rootCmd.AddCommand(initCmd)
 }

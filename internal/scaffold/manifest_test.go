@@ -1,6 +1,9 @@
 package scaffold
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 func TestManifestRoundTripContainsIDsButNoSecrets(t *testing.T) {
 	t.Parallel()
@@ -8,7 +11,8 @@ func TestManifestRoundTripContainsIDsButNoSecrets(t *testing.T) {
 	project := Project{Root: t.TempDir(), Stack: StackNext}
 	want := Manifest{
 		Status: "complete", ProjectID: "rvproj_123", Adapter: "nextjs",
-		ServerKeyID: "pfk_test_server", CheckoutKeyID: "pfk_test_checkout",
+		Capabilities: []string{"webhook", "server", "checkout"},
+		ServerKeyID:  "pfk_test_server", CheckoutKeyID: "pfk_test_checkout",
 		Origin: "http://localhost:3000",
 	}
 	if err := WriteManifest(project, want); err != nil {
@@ -18,12 +22,16 @@ func TestManifestRoundTripContainsIDsButNoSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadManifest() error = %v", err)
 	}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("manifest = %#v, want %#v", got, want)
 	}
 	raw := readFile(t, project.Root, ".reevit/manifest.json")
 	if containsSecret(raw) {
 		t.Fatalf("manifest contains a raw secret: %s", raw)
+	}
+	gitignore := readFile(t, project.Root, ".gitignore")
+	if !contains(gitignore, ".reevit/logs/") {
+		t.Fatalf("installer logs are not ignored: %s", gitignore)
 	}
 }
 

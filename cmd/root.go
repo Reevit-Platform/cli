@@ -2,6 +2,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -15,6 +16,30 @@ import (
 
 // Version is stamped by goreleaser at build time (-X …/cmd.Version=v1.2.3).
 var Version = "dev"
+
+// ExitError lets commands request a conventional process exit code while
+// preserving an inspectable cause for tests and embedders.
+type ExitError struct {
+	Code int
+	Err  error
+}
+
+func (e ExitError) Error() string {
+	if e.Err == nil {
+		return ""
+	}
+	return e.Err.Error()
+}
+
+func (e ExitError) Unwrap() error { return e.Err }
+
+func ExitCode(err error) int {
+	var exitErr ExitError
+	if errors.As(err, &exitErr) && exitErr.Code > 0 {
+		return exitErr.Code
+	}
+	return 1
+}
 
 var rootCmd = &cobra.Command{
 	Use:           "reevit",

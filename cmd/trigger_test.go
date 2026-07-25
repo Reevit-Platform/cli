@@ -34,24 +34,21 @@ func TestTriggerAmountsMatchSimulatorContract(t *testing.T) {
 }
 
 func TestEnsureSimulatorConnection(t *testing.T) {
-	var createdBody map[string]any
+	var bootstrap api.BootstrapRequest
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/v1/connections":
-			// No simulator yet.
-			_ = json.NewEncoder(w).Encode(map[string]any{"connections": []any{}})
-		case r.Method == http.MethodPost && r.URL.Path == "/v1/connections":
-			if r.Header.Get("Idempotency-Key") == "" {
-				t.Error("connection create must carry an Idempotency-Key")
-			}
-
-			_ = json.NewDecoder(r.Body).Decode(&createdBody)
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": "conn_sim_1"})
-		default:
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/cli/bootstrap" {
 			t.Errorf("unexpected call %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
+			return
 		}
+		if r.Header.Get("Idempotency-Key") == "" {
+			t.Error("bootstrap must carry an Idempotency-Key")
+		}
+		_ = json.NewDecoder(r.Body).Decode(&bootstrap)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"simulator": map[string]any{"connection_id": "conn_sim_1", "ready": true},
+		})
 	}))
 	defer server.Close()
 
@@ -66,8 +63,8 @@ func TestEnsureSimulatorConnection(t *testing.T) {
 		t.Fatalf("id = %s", id)
 	}
 
-	if createdBody["provider"] != "stub" || createdBody["mode"] != "sandbox" {
-		t.Fatalf("created %v — simulator must be provider=stub mode=sandbox", createdBody)
+	if bootstrap.ProjectID == "" || bootstrap.ProjectName == "" || len(bootstrap.Capabilities) != 0 {
+		t.Fatalf("bootstrap = %#v; trigger should request only simulator setup", bootstrap)
 	}
 }
 

@@ -3,7 +3,7 @@
   import "@reevit/svelte/styles.css";
 
   // Amounts are in the smallest currency unit (e.g. 5000 = GHS 50.00).
-  // Set VITE_REEVIT_KEY in your env — use a test-mode key (pfk_test_…)
+  // Set VITE_REEVIT_CHECKOUT_KEY in your env — use a test-mode key (pfk_test_…)
   // while integrating.
   export let amount{{if .TS}}: number{{end}};
   export let currency = "GHS";
@@ -23,7 +23,7 @@
 <button type="button" on:click={() => (open = true)}>Pay now</button>
 
 <ReevitCheckout
-    publicKey={import.meta.env.VITE_REEVIT_CHECKOUT_KEY ?? ""}
+  publicKey={import.meta.env.VITE_REEVIT_CHECKOUT_KEY ?? ""}
   {amount}
   {currency}
   paymentMethods={["card", "mobile_money"]}

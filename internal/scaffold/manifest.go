@@ -9,12 +9,15 @@ import (
 )
 
 type Manifest struct {
-	Status        string `json:"status"`
-	ProjectID     string `json:"project_id"`
-	Adapter       string `json:"adapter"`
-	ServerKeyID   string `json:"server_key_id,omitempty"`
-	CheckoutKeyID string `json:"checkout_key_id,omitempty"`
-	Origin        string `json:"origin,omitempty"`
+	Status         string   `json:"status"`
+	CLIVersion     string   `json:"cli_version"`
+	ProjectID      string   `json:"project_id"`
+	Adapter        string   `json:"adapter"`
+	Capabilities   []string `json:"capabilities,omitempty"`
+	ServerKeyID    string   `json:"server_key_id,omitempty"`
+	CheckoutKeyID  string   `json:"checkout_key_id,omitempty"`
+	Origin         string   `json:"origin,omitempty"`
+	GeneratedFiles []string `json:"generated_files,omitempty"`
 }
 
 func ReadManifest(project Project) (Manifest, error) {
@@ -62,6 +65,9 @@ func WriteManifest(project Project, manifest Manifest) error {
 	}
 	if err := os.Rename(tmpPath, filepath.Join(dir, "manifest.json")); err != nil {
 		return fmt.Errorf("replace manifest: %w", err)
+	}
+	if _, err := ensureGitignored(project.Root, ".reevit/logs/"); err != nil {
+		return err
 	}
 	return nil
 }

@@ -20,10 +20,12 @@ type EnvResult struct {
 }
 
 type ProjectCredentials struct {
-	ServerKey     string
-	CheckoutKey   string
-	OrgID         string
-	WebhookSecret string
+	ServerKey           string
+	CheckoutKey         string
+	PreviousServerKey   string
+	PreviousCheckoutKey string
+	OrgID               string
+	WebhookSecret       string
 }
 
 // ClientKeyVar returns the browser-exposed env var the checkout templates
@@ -65,22 +67,66 @@ func WriteEnv(project Project, credentials ProjectCredentials) (EnvResult, error
 
 	existing, _ := os.ReadFile(envPath)
 	current := string(existing)
-	if strings.Contains(current, "REEVIT_API_KEY=") {
+	_, serverWasSet := envKeyState(current, "REEVIT_API_KEY")
+	var replaced bool
+	if credentials.PreviousServerKey != "" {
+		var changed bool
+		current, changed = replaceExactEnvValue(
+			current, "REEVIT_API_KEY", credentials.PreviousServerKey, credentials.ServerKey,
+		)
+		replaced = replaced || changed
+	}
+	if clientVar != "" && credentials.PreviousCheckoutKey != "" {
+		var changed bool
+		current, changed = replaceExactEnvValue(
+			current, clientVar, credentials.PreviousCheckoutKey, credentials.CheckoutKey,
+		)
+		replaced = replaced || changed
+	}
+	if serverWasSet && credentials.PreviousServerKey == "" {
 		res.KeyAlreadySet = true
+	}
+	replacements := map[string]string{
+		"REEVIT_API_KEY":        credentials.ServerKey,
+		"REEVIT_ORG_ID":         credentials.OrgID,
+		"REEVIT_WEBHOOK_SECRET": credentials.WebhookSecret,
+	}
+	if clientVar != "" {
+		replacements[clientVar] = credentials.CheckoutKey
+	}
+	for key, value := range replacements {
+		if value == "" {
+			continue
+		}
+		var changed bool
+		current, changed = fillBlankEnvValue(current, key, value)
+		replaced = replaced || changed
+	}
+	if replaced {
+		if err := os.WriteFile(envPath, []byte(current), 0o644); err != nil {
+			return res, fmt.Errorf("fill blank values in %s: %w", res.EnvFile, err)
+		}
+		existing = []byte(current)
 	}
 
 	var lines []string
-	if !res.KeyAlreadySet && credentials.ServerKey != "" {
+	serverFound, _ := envKeyState(current, "REEVIT_API_KEY")
+	if !serverFound && credentials.ServerKey != "" {
 		lines = append(lines, "REEVIT_API_KEY="+credentials.ServerKey)
 	}
-	if !strings.Contains(current, "REEVIT_ORG_ID=") && credentials.OrgID != "" {
+	orgFound, _ := envKeyState(current, "REEVIT_ORG_ID")
+	if !orgFound && credentials.OrgID != "" {
 		lines = append(lines, "REEVIT_ORG_ID="+credentials.OrgID)
 	}
-	if !strings.Contains(current, "REEVIT_WEBHOOK_SECRET=") && credentials.WebhookSecret != "" {
+	webhookFound, _ := envKeyState(current, "REEVIT_WEBHOOK_SECRET")
+	if !webhookFound && credentials.WebhookSecret != "" {
 		lines = append(lines, "REEVIT_WEBHOOK_SECRET="+credentials.WebhookSecret)
 	}
-	if clientVar != "" && credentials.CheckoutKey != "" && !strings.Contains(current, clientVar+"=") {
+	clientFound, clientSet := envKeyState(current, clientVar)
+	if clientVar != "" && credentials.CheckoutKey != "" && !clientFound {
 		lines = append(lines, "# Browser checkout credential — test mode only", clientVar+"="+credentials.CheckoutKey)
+		res.ClientKeyVar = clientVar
+	} else if clientSet && !strings.Contains(string(existing), clientVar+"="+credentials.CheckoutKey) {
 		res.ClientKeyVar = clientVar
 	}
 	if len(lines) > 0 {
@@ -93,16 +139,31 @@ func WriteEnv(project Project, credentials ProjectCredentials) (EnvResult, error
 		}
 	}
 
-	// Placeholders only — the example file is committed.
+	// Placeholders only for capabilities this project actually uses — the
+	// example file is committed, so it must never contain credential values.
 	examplePath := filepath.Join(project.Root, ".env.example")
 	if example, err := os.ReadFile(examplePath); err == nil || os.IsNotExist(err) {
-		if !strings.Contains(string(example), "REEVIT_API_KEY") {
-			clientLine := ""
-			if credentials.CheckoutKey != "" && clientVar != "" {
-				clientLine = clientVar + "=\n"
-			}
-
-			block := fmt.Sprintf("\n%s\nREEVIT_API_KEY=\nREEVIT_ORG_ID=\nREEVIT_WEBHOOK_SECRET=\n%s", envHeader, clientLine)
+		exampleText := string(example)
+		var exampleLines []string
+		if credentials.ServerKey != "" &&
+			!strings.Contains(exampleText, "REEVIT_API_KEY=") {
+			exampleLines = append(exampleLines, "REEVIT_API_KEY=")
+		}
+		if credentials.OrgID != "" &&
+			!strings.Contains(exampleText, "REEVIT_ORG_ID=") {
+			exampleLines = append(exampleLines, "REEVIT_ORG_ID=")
+		}
+		if credentials.WebhookSecret != "" &&
+			!strings.Contains(exampleText, "REEVIT_WEBHOOK_SECRET=") {
+			exampleLines = append(exampleLines, "REEVIT_WEBHOOK_SECRET=")
+		}
+		if credentials.CheckoutKey != "" && clientVar != "" &&
+			!strings.Contains(exampleText, clientVar+"=") {
+			exampleLines = append(exampleLines, clientVar+"=")
+		}
+		if len(exampleLines) > 0 {
+			block := "\n" + envHeader + "\n" +
+				strings.Join(exampleLines, "\n") + "\n"
 			if len(example) == 0 {
 				block = strings.TrimPrefix(block, "\n")
 			}
@@ -123,6 +184,60 @@ func WriteEnv(project Project, credentials ProjectCredentials) (EnvResult, error
 	res.GitignoreNoted = noted
 
 	return res, nil
+}
+
+func envKeyState(content, key string) (found, nonEmpty bool) {
+	if key == "" {
+		return false, false
+	}
+	prefix := key + "="
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, prefix) {
+			continue
+		}
+		value := strings.TrimSpace(strings.TrimPrefix(trimmed, prefix))
+		value = strings.Trim(value, `"'`)
+		return true, value != ""
+	}
+	return false, false
+}
+
+func fillBlankEnvValue(content, key, value string) (string, bool) {
+	found, nonEmpty := envKeyState(content, key)
+	if !found || nonEmpty {
+		return content, false
+	}
+	lines := strings.Split(content, "\n")
+	prefix := key + "="
+	for index, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), prefix) {
+			lines[index] = prefix + value
+			return strings.Join(lines, "\n"), true
+		}
+	}
+	return content, false
+}
+
+func replaceExactEnvValue(content, key, previous, replacement string) (string, bool) {
+	if key == "" || previous == "" || replacement == "" {
+		return content, false
+	}
+	lines := strings.Split(content, "\n")
+	prefix := key + "="
+	for index, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, prefix) {
+			continue
+		}
+		current := strings.Trim(strings.TrimSpace(strings.TrimPrefix(trimmed, prefix)), `"'`)
+		if current != previous {
+			return content, false
+		}
+		lines[index] = prefix + replacement
+		return strings.Join(lines, "\n"), true
+	}
+	return content, false
 }
 
 // ensureGitignored adds the env file to .gitignore unless a pattern already

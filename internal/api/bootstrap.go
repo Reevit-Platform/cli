@@ -3,12 +3,23 @@ package api
 import (
 	"context"
 	"net/http"
+	"net/url"
 )
 
 type BootstrapCredential struct {
 	ID     string   `json:"id"`
 	Raw    string   `json:"raw,omitempty"`
 	Scopes []string `json:"scopes"`
+}
+
+func (c *Client) BootstrapStatus(ctx context.Context, projectID, origin string) (BootstrapResult, error) {
+	query := url.Values{"project_id": []string{projectID}}
+	if origin != "" {
+		query.Set("origin", origin)
+	}
+	var result BootstrapResult
+	err := c.Do(ctx, Request{Path: "/cli/bootstrap", Query: query}, &result)
+	return result, err
 }
 
 type BootstrapRequest struct {

@@ -3,13 +3,15 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"net/url"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/Reevit-Platform/cli/internal/api"
+	"github.com/Reevit-Platform/cli/internal/scaffold"
 )
 
 // Magic simulator amounts — mirrors the backend's stub-provider MagicOutcomes
@@ -108,46 +110,26 @@ func triggerSimulatorEvent(ctx context.Context, c *api.Client, event string, amo
 
 // ensureSimulatorConnection finds or creates the sandbox simulator connection.
 func ensureSimulatorConnection(ctx context.Context, c *api.Client) (string, error) {
-	var listed struct {
-		Connections []struct {
-			ID       string `json:"id"`
-			Provider string `json:"provider"`
-			Status   string `json:"status"`
-		} `json:"connections"`
-	}
-
-	if err := c.Do(ctx, api.Request{Path: "/connections", Query: url.Values{"provider": {"stub"}}}, &listed); err != nil {
-		return "", err
-	}
-
-	for _, conn := range listed.Connections {
-		if conn.Provider == "stub" {
-			return conn.ID, nil
+	projectID := "rvproj_cli_trigger"
+	projectName := "reevit-cli-trigger"
+	if root, err := os.Getwd(); err == nil {
+		project := scaffold.Detect(root)
+		if manifest, readErr := scaffold.ReadManifest(project); readErr == nil && manifest.ProjectID != "" {
+			projectID = manifest.ProjectID
+			projectName = filepath.Base(root)
 		}
 	}
 
-	var created struct {
-		ID string `json:"id"`
-	}
-
-	err := c.Do(ctx, api.Request{
-		Method:     "POST",
-		Path:       "/connections",
-		Idempotent: true,
-		// The API rejects unknown fields; connections are identified by
-		// provider + labels (no name field).
-		Body: map[string]any{
-			"provider":    "stub",
-			"mode":        "sandbox",
-			"credentials": map[string]any{"simulator": true},
-			"labels":      []string{"simulator"},
-		},
-	}, &created)
+	result, err := c.BootstrapProject(ctx, api.BootstrapRequest{
+		ProjectID: projectID, ProjectName: projectName,
+	})
 	if err != nil {
-		return "", fmt.Errorf("create simulator connection: %w", err)
+		return "", fmt.Errorf("prepare sandbox simulator: %w", err)
 	}
-
-	return created.ID, nil
+	if !result.Simulator.Ready || result.Simulator.ConnectionID == "" {
+		return "", fmt.Errorf("prepare sandbox simulator: platform did not report a ready simulator")
+	}
+	return result.Simulator.ConnectionID, nil
 }
 
 func triggerEventNames() []string {

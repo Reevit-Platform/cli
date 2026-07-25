@@ -1,0 +1,14 @@
+import { ReevitCheckoutButton } from "../components/reevit-checkout-button";
+
+export default function ReevitDemoPage() {
+  return (
+    <main>
+      <section>
+        <p>Reevit test checkout</p>
+        <h1>GHS 50.00</h1>
+        <p>No real money will move. The sandbox simulator handles this payment.</p>
+        <ReevitCheckoutButton amount={5000} currency="GHS" />
+      </section>
+    </main>
+  );
+}

@@ -1,0 +1,16 @@
+import type { RequestHandler } from "./$types";
+import { verifyWebhookSignature } from "@reevit/node";
+import { env } from "$env/dynamic/private";
+
+export const POST: RequestHandler = async ({ request }) => {
+  const rawBody = await request.text();
+  const signature = request.headers.get("x-reevit-signature");
+  if (!verifyWebhookSignature(rawBody, signature, env.REEVIT_WEBHOOK_SECRET ?? "")) {
+    return new Response("invalid signature", { status: 401 });
+  }
+  const event = JSON.parse(rawBody);
+  if (event.type === "payment.succeeded") {
+    // Fulfil the order represented by event.data.
+  }
+  return new Response("ok", { status: 200 });
+};

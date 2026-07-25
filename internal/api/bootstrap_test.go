@@ -20,6 +20,12 @@ func TestBootstrapProjectUsesLoginKeyOnlyForAuthorization(t *testing.T) {
 		if got := r.Header.Get("X-Reevit-Key"); got != "pfk_test_login.secret" {
 			t.Fatalf("authorization key = %q", got)
 		}
+		if r.Header.Get("Idempotency-Key") == "" {
+			t.Fatal("bootstrap request is missing an idempotency key")
+		}
+		if got := r.Header.Get("X-Reevit-Mode"); got != "test" {
+			t.Fatalf("mode header = %q", got)
+		}
 		var body BootstrapRequest
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatalf("decode request: %v", err)
@@ -56,5 +62,35 @@ func TestBootstrapProjectUsesLoginKeyOnlyForAuthorization(t *testing.T) {
 	if got.Credentials.Server.Raw != "pfk_test_server.secret" ||
 		got.Credentials.Checkout.Raw != "pfk_test_checkout.secret" {
 		t.Fatalf("credentials = %#v", got.Credentials)
+	}
+}
+
+func TestBootstrapStatusEncodesProjectAndOrigin(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/cli/bootstrap" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.URL.Query().Get("project_id"); got != "rvproj_123" {
+			t.Fatalf("project_id = %q", got)
+		}
+		if got := r.URL.Query().Get("origin"); got != "http://localhost:5173" {
+			t.Fatalf("origin = %q", got)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"project": map[string]any{"id": "rvproj_123"},
+			"mode":    "test",
+		})
+	}))
+	defer server.Close()
+
+	client := New(config.Config{APIKey: "pfk_test_login.secret", BaseURL: server.URL, Mode: "test"})
+	got, err := client.BootstrapStatus(context.Background(), "rvproj_123", "http://localhost:5173")
+	if err != nil {
+		t.Fatalf("BootstrapStatus() error = %v", err)
+	}
+	if got.Project.ID != "rvproj_123" || got.Mode != "test" {
+		t.Fatalf("result = %#v", got)
 	}
 }

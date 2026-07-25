@@ -78,6 +78,23 @@ func TestNextCheckoutCreatesRunnableDemoRoute(t *testing.T) {
 	}
 }
 
+func TestSPAAdaptersCreateRoutableDemoEntries(t *testing.T) {
+	t.Parallel()
+
+	for _, stack := range []Stack{StackReact, StackVue, StackSvelte} {
+		t.Run(string(stack), func(t *testing.T) {
+			project := Project{Root: t.TempDir(), Stack: stack, TypeScript: true}
+			if _, err := Apply(project, TargetsFor(project)); err != nil {
+				t.Fatalf("Apply() error = %v", err)
+			}
+			html := readFile(t, project.Root, "reevit-demo.html")
+			if !strings.Contains(html, "src/reevit-demo") {
+				t.Fatalf("demo HTML is not wired to an entry: %s", html)
+			}
+		})
+	}
+}
+
 func TestApplyWritesAndNeverOverwrites(t *testing.T) {
 	dir := t.TempDir()
 	write(t, dir, "package.json", `{"dependencies":{"next":"16"}}`)
@@ -158,7 +175,7 @@ func TestApplyHonorsSrcDirAndJS(t *testing.T) {
 	}
 }
 
-func TestNpmInstallPlansCoversEveryLockfile(t *testing.T) {
+func TestNpmInstallPlansUsesOneDetectedManager(t *testing.T) {
 	dir := t.TempDir()
 	write(t, dir, "package.json", `{"dependencies":{"next":"16"}}`)
 	write(t, dir, "bun.lock", "")
@@ -167,8 +184,8 @@ func TestNpmInstallPlansCoversEveryLockfile(t *testing.T) {
 	project := Detect(dir)
 	plans := NpmInstallPlans(project, TargetsFor(project))
 
-	if len(plans) != 2 {
-		t.Fatalf("plans = %v, want one per lockfile manager", plans)
+	if len(plans) != 1 || plans[0][0] != "bun" {
+		t.Fatalf("plans = %v, want one command for the selected manager", plans)
 	}
 
 	// @reevit/node appears in two targets but must be installed once per plan.
@@ -198,5 +215,105 @@ func TestGoTargetsNeedNoNpm(t *testing.T) {
 	run, show := OtherInstallCmds(targets)
 	if len(run) != 1 || !strings.Contains(strings.Join(run[0], " "), "go get") {
 		t.Errorf("go get must be runnable, got run=%v show=%v", run, show)
+	}
+}
+
+func TestRuntimeHintsUseFrameworkAndPackageManager(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "package.json", `{
+		"packageManager": "pnpm@10.0.0",
+		"scripts": {"dev": "vite"},
+		"dependencies": {"react": "19.0.0"}
+	}`)
+
+	project := Detect(root)
+	if got := DefaultPort(project); got != 5173 {
+		t.Fatalf("DefaultPort() = %d, want 5173", got)
+	}
+	if got := strings.Join(DevCommand(project), " "); got != "pnpm dev" {
+		t.Fatalf("DevCommand() = %q, want pnpm dev", got)
+	}
+	if got := DemoPath(project); got != "/reevit-demo.html" {
+		t.Fatalf("DemoPath() = %q, want /reevit-demo.html", got)
+	}
+}
+
+func TestPythonWebhookUsesDetectedFramework(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		framework Framework
+		template  string
+		needle    string
+	}{
+		{FrameworkFastAPI, "python-fastapi-webhook.py.tmpl", "APIRouter"},
+		{FrameworkFlask, "python-flask-webhook.py.tmpl", "Blueprint"},
+		{FrameworkDjango, "python-django-webhook.py.tmpl", "HttpResponse"},
+		{FrameworkGeneric, "python-webhook.py.tmpl", "handle_reevit_event"},
+	}
+
+	for _, test := range tests {
+		t.Run(string(test.framework), func(t *testing.T) {
+			project := Project{
+				Root: t.TempDir(), Stack: StackPython,
+				Framework: test.framework, Installer: InstallerPip,
+			}
+			var webhook Target
+			for _, target := range TargetsFor(project) {
+				if target.Key == TargetWebhook {
+					webhook = target
+				}
+			}
+			if _, ok := webhook.Files[test.template]; !ok {
+				t.Fatalf("webhook files = %#v, want template %s", webhook.Files, test.template)
+			}
+			if _, err := Apply(project, []Target{webhook}); err != nil {
+				t.Fatal(err)
+			}
+			if got := readFile(t, project.Root, "reevit_webhook.py"); !strings.Contains(got, test.needle) {
+				t.Fatalf("generated webhook missing %q:\n%s", test.needle, got)
+			}
+		})
+	}
+}
+
+func TestServerAdaptersExposeExactWebhookMountingInstructions(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		project Project
+		needle  string
+	}{
+		{Project{Stack: StackNode, Framework: FrameworkExpress}, "mountReevitWebhook(app)"},
+		{Project{Stack: StackGo, Framework: FrameworkGeneric}, `http.HandleFunc("/webhooks/reevit"`},
+		{Project{Stack: StackPython, Framework: FrameworkFastAPI}, "app.include_router(router)"},
+		{Project{Stack: StackPython, Framework: FrameworkFlask}, "app.register_blueprint(reevit_webhooks)"},
+		{Project{Stack: StackPython, Framework: FrameworkDjango}, "urlpatterns"},
+		{Project{Stack: StackPHP, Framework: FrameworkLaravel}, "routes/reevit.php"},
+		{Project{Stack: StackPHP, Framework: FrameworkGeneric}, "standalone"},
+	}
+
+	for _, test := range tests {
+		if got := WebhookMountInstruction(test.project); !strings.Contains(got, test.needle) {
+			t.Errorf("%s instruction = %q, want %q", test.project.Framework, got, test.needle)
+		}
+	}
+}
+
+func TestLaravelGetsFrameworkRouteInsteadOfStandalonePHPHandler(t *testing.T) {
+	t.Parallel()
+
+	project := Project{
+		Root: t.TempDir(), Stack: StackPHP,
+		Framework: FrameworkLaravel, Installer: InstallerComposer,
+	}
+	var webhook Target
+	for _, target := range TargetsFor(project) {
+		if target.Key == TargetWebhook {
+			webhook = target
+		}
+	}
+	if got := webhook.Files["laravel-webhook.php.tmpl"]; got != "routes/reevit.php" {
+		t.Fatalf("Laravel webhook files = %#v", webhook.Files)
 	}
 }

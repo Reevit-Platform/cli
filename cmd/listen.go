@@ -10,12 +10,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/Reevit-Platform/cli/internal/api"
+	"github.com/Reevit-Platform/cli/internal/scaffold"
 )
 
 var (
@@ -31,8 +33,9 @@ event to your local endpoint, signed exactly like production webhooks
 (X-Reevit-Signature: sha256=<hex HMAC-SHA256 of the raw body>), so your
 verification code runs unchanged.
 
-The signing secret is fetched from your webhook configuration when the key
-has webhooks:read; otherwise an ephemeral secret is generated and printed.`,
+The signing secret comes from --signing-secret, then the current project's
+REEVIT_WEBHOOK_SECRET, then your webhook configuration. Only the final
+fallback is ephemeral.`,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		if listenForwardTo == "" {
 			return fmt.Errorf("--forward-to is required, e.g. --forward-to http://localhost:3000/webhooks")
@@ -47,10 +50,8 @@ has webhooks:read; otherwise an ephemeral secret is generated and printed.`,
 			return fmt.Errorf("listen only runs in test mode (REEVIT_MODE=%s)", c.Mode())
 		}
 
-		secret := listenSecret
-		if secret == "" {
-			secret = fetchOrMintSecret(cmd, c)
-		}
+		root, _ := os.Getwd()
+		secret := resolveListenSecret(cmd, c, root)
 
 		fmt.Fprintf(cmd.OutOrStdout(), "Forwarding test-mode events to %s\n", listenForwardTo)
 
@@ -78,6 +79,25 @@ has webhooks:read; otherwise an ephemeral secret is generated and printed.`,
 			}
 		}
 	},
+}
+
+func resolveListenSecret(cmd *cobra.Command, c *api.Client, root string) string {
+	if listenSecret != "" {
+		return listenSecret
+	}
+	if root != "" {
+		project := scaffold.Detect(root)
+		if project.Stack != scaffold.StackUnknown {
+			if secret := scaffold.ReadEnvValue(project, "REEVIT_WEBHOOK_SECRET"); secret != "" {
+				fmt.Fprintln(cmd.OutOrStdout(), "Using signing secret from "+scaffold.EnvFileName(project)+".")
+				return secret
+			}
+		}
+	}
+	if c != nil {
+		return fetchOrMintSecret(cmd, c)
+	}
+	return ""
 }
 
 // fetchOrMintSecret prefers the org's real signing secret so existing verify
@@ -178,5 +198,6 @@ func SignBody(secret string, body []byte) string {
 func init() {
 	listenCmd.Flags().StringVar(&listenForwardTo, "forward-to", "", "local endpoint to POST events to (required)")
 	listenCmd.Flags().StringVar(&listenSecret, "secret", "", "override the signing secret")
+	listenCmd.Flags().StringVar(&listenSecret, "signing-secret", "", "override the signing secret")
 	rootCmd.AddCommand(listenCmd)
 }

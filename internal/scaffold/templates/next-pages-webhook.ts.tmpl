@@ -1,0 +1,31 @@
+import { verifyWebhookSignature } from "@reevit/node";
+{{if .TS}}import type { NextApiRequest, NextApiResponse } from "next";{{end}}
+
+export const config = { api: { bodyParser: false } };
+
+async function readRawBody(request{{if .TS}}: NextApiRequest{{end}}) {
+  const chunks = [];
+  for await (const chunk of request) chunks.push(chunk);
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+export default async function handler(
+  request{{if .TS}}: NextApiRequest{{end}},
+  response{{if .TS}}: NextApiResponse{{end}},
+) {
+  if (request.method !== "POST") {
+    response.setHeader("Allow", "POST");
+    return response.status(405).end();
+  }
+  const rawBody = await readRawBody(request);
+  const rawSignature = request.headers["x-reevit-signature"];
+  const signature = Array.isArray(rawSignature) ? rawSignature[0] : rawSignature;
+  if (!verifyWebhookSignature(rawBody, signature, process.env.REEVIT_WEBHOOK_SECRET ?? "")) {
+    return response.status(401).json({ error: "invalid signature" });
+  }
+  const event = JSON.parse(rawBody);
+  if (event.type === "payment.succeeded") {
+    // Fulfil the order represented by event.data.
+  }
+  return response.status(200).json({ received: true });
+}

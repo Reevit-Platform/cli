@@ -1,0 +1,10 @@
+<script lang="ts">
+  import ReevitCheckoutButton from "$lib/ReevitCheckoutButton.svelte";
+</script>
+
+<svelte:head><title>Reevit test checkout</title></svelte:head>
+<main>
+  <h1>Reevit test checkout · GHS 50.00</h1>
+  <p>No real money will move.</p>
+  <ReevitCheckoutButton amount={5000} currency="GHS" />
+</main>
