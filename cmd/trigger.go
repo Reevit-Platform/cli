@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 
 	"github.com/Reevit-Platform/cli/internal/api"
@@ -97,6 +98,7 @@ func triggerSimulatorEvent(ctx context.Context, c *api.Client, event string, amo
 			"currency":    strings.ToUpper(currency),
 			"method":      "mobile_money",
 			"country":     "GH",
+			"customer_id": "reevit_cli_trigger_" + uuid.NewString(),
 			"description": "reevit trigger " + event,
 			"metadata":    map[string]any{"created_via": "reevit-cli", "trigger": event},
 		},

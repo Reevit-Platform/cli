@@ -68,6 +68,46 @@ func TestEnsureSimulatorConnection(t *testing.T) {
 	}
 }
 
+func TestTriggerSimulatorEventsUseDistinctCustomers(t *testing.T) {
+	t.Parallel()
+
+	var customerIDs []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/cli/bootstrap":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"simulator": map[string]any{"connection_id": "conn_sim_1", "ready": true},
+			})
+		case "/v1/payments/intents":
+			var body struct {
+				CustomerID string `json:"customer_id"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode trigger body: %v", err)
+			}
+			customerIDs = append(customerIDs, body.CustomerID)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "pmt_1", "status": "succeeded"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	c := api.New(config.Config{APIKey: "rk_test", BaseURL: server.URL, Mode: "test"})
+	for range 2 {
+		if _, _, err := triggerSimulatorEvent(
+			context.Background(), c, "payment.succeeded", 4000, "GHS",
+		); err != nil {
+			t.Fatalf("trigger simulator event: %v", err)
+		}
+	}
+
+	if len(customerIDs) != 2 || customerIDs[0] == "" || customerIDs[1] == "" ||
+		customerIDs[0] == customerIDs[1] {
+		t.Fatalf("trigger customer IDs must be distinct and non-empty: %#v", customerIDs)
+	}
+}
+
 func TestClientSendsAuthHeaders(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-Reevit-Key") != "rk_test_abc" {

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/google/uuid"
+
 	"github.com/Reevit-Platform/cli/internal/api"
 	"github.com/Reevit-Platform/cli/internal/config"
 )
@@ -28,7 +30,8 @@ func VerifyServerPayment(ctx context.Context, baseURL, key string) (Result, erro
 		Body: map[string]any{
 			"amount": 4000, "currency": "GHS", "method": "mobile_money",
 			"country": "GH", "description": "Reevit init verification",
-			"metadata": map[string]any{"created_via": "reevit-init"},
+			"customer_id": verificationCustomerID(),
+			"metadata":    map[string]any{"created_via": "reevit-init"},
 		},
 	}, &response)
 	if err != nil {
@@ -52,7 +55,8 @@ func VerifyCheckout(ctx context.Context, baseURL, key string) (Result, error) {
 		Body: map[string]any{
 			"amount": 5000, "currency": "GHS", "method": "mobile_money",
 			"country": "GH", "description": "Reevit init checkout verification",
-			"metadata": map[string]any{"created_via": "reevit-init"},
+			"customer_id": verificationCustomerID(),
+			"metadata":    map[string]any{"created_via": "reevit-init"},
 		},
 	}, &response)
 	if err != nil {
@@ -62,4 +66,8 @@ func VerifyCheckout(ctx context.Context, baseURL, key string) (Result, error) {
 		return Result{}, fmt.Errorf("verify checkout initialization: API returned no usable session")
 	}
 	return Result{SessionID: response.ID}, nil
+}
+
+func verificationCustomerID() string {
+	return "reevit_cli_verify_" + uuid.NewString()
 }
