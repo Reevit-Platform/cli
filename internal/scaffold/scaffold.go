@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"text/template"
 	"time"
@@ -39,11 +40,20 @@ type Target struct {
 	// Edits are marker-delimited mutations to safely recognized application
 	// entry files. Unknown/custom layouts receive standalone output instead.
 	Edits []FileEdit
+	// Checkout configures collected fields and optional existing-page placement.
+	Checkout *CheckoutOptions
 }
 
 // templateData feeds the .tmpl files.
 type templateData struct {
-	TS bool
+	TS             bool
+	CollectAmount  bool
+	CollectName    bool
+	CollectEmail   bool
+	CollectPhone   bool
+	CollectRef     bool
+	MetadataFields []string
+	ConfigID       string
 }
 
 // ext picks the TypeScript or JavaScript extension for JS-family files.
@@ -441,7 +451,6 @@ func PrepareApply(
 func Apply(project Project, targets []Target, opts ApplyOptions) ([]FileResult, error) {
 	var results []FileResult
 
-	data := templateData{TS: project.TypeScript}
 	if !validExistingFilesPolicy(opts.ExistingFiles) {
 		return results, fmt.Errorf("invalid existing-files policy %q", opts.ExistingFiles)
 	}
@@ -486,6 +495,7 @@ func Apply(project Project, targets []Target, opts ApplyOptions) ([]FileResult, 
 	}
 
 	for _, target := range targets {
+		data := checkoutTemplateData(project.TypeScript, target.Checkout)
 		for tmplName, outRel := range target.Files {
 			if err := validateOutputPath(project.Root, outRel); err != nil {
 				return results, err
@@ -616,7 +626,9 @@ func backupFile(root, backupRoot, relative string) (string, error) {
 }
 
 func render(name string, data templateData) (string, error) {
-	tmpl, err := template.ParseFS(templateFS, "templates/"+name)
+	tmpl, err := template.New(name).Funcs(template.FuncMap{
+		"quote": strconv.Quote,
+	}).ParseFS(templateFS, "templates/"+name)
 	if err != nil {
 		return "", fmt.Errorf("parse template %s: %w", name, err)
 	}
@@ -627,6 +639,29 @@ func render(name string, data templateData) (string, error) {
 	}
 
 	return sb.String(), nil
+}
+
+func checkoutTemplateData(ts bool, options *CheckoutOptions) templateData {
+	data := templateData{TS: ts, ConfigID: checkoutConfigID(options)}
+	if options == nil {
+		return data
+	}
+	for _, field := range options.Fields {
+		switch field {
+		case CheckoutFieldAmount:
+			data.CollectAmount = true
+		case CheckoutFieldName:
+			data.CollectName = true
+		case CheckoutFieldEmail:
+			data.CollectEmail = true
+		case CheckoutFieldPhone:
+			data.CollectPhone = true
+		case CheckoutFieldReference:
+			data.CollectRef = true
+		}
+	}
+	data.MetadataFields = append([]string(nil), options.MetadataFields...)
+	return data
 }
 
 // NpmInstallPlans returns one install command for the package manager selected

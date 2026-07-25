@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"bufio"
 	"fmt"
 	"io"
 	"strconv"
@@ -25,9 +24,7 @@ func choose(out io.Writer, in io.Reader, title string, options []string, multi b
 
 	fmt.Fprintf(out, "  [%s — Enter for 1] ", hint)
 
-	reader := bufio.NewReader(in)
-
-	line, err := reader.ReadString('\n')
+	line, err := readPromptLine(in)
 	if err != nil && line == "" {
 		return nil, fmt.Errorf("read choice: %w", err)
 	}
@@ -70,9 +67,7 @@ func promptString(out io.Writer, in io.Reader, question, def string) (string, er
 		fmt.Fprintf(out, "%s ", question)
 	}
 
-	reader := bufio.NewReader(in)
-
-	line, err := reader.ReadString('\n')
+	line, err := readPromptLine(in)
 	if err != nil && line == "" {
 		return "", fmt.Errorf("read input: %w", err)
 	}
@@ -94,9 +89,7 @@ func confirm(out io.Writer, in io.Reader, question string, def bool) (bool, erro
 
 	fmt.Fprintf(out, "%s %s ", question, suffix)
 
-	reader := bufio.NewReader(in)
-
-	line, err := reader.ReadString('\n')
+	line, err := readPromptLine(in)
 	if err != nil && line == "" {
 		return false, fmt.Errorf("read answer: %w", err)
 	}
@@ -108,5 +101,27 @@ func confirm(out io.Writer, in io.Reader, question string, def bool) (bool, erro
 		return true, nil
 	default:
 		return false, nil
+	}
+}
+
+// readPromptLine reads one byte at a time. A new buffered reader for every
+// prompt can consume later piped answers and strand them in a discarded buffer.
+func readPromptLine(in io.Reader) (string, error) {
+	var line strings.Builder
+	var one [1]byte
+	for {
+		n, err := in.Read(one[:])
+		if n == 1 {
+			if one[0] == '\n' {
+				return line.String(), nil
+			}
+			line.WriteByte(one[0])
+		}
+		if err != nil {
+			if err == io.EOF && line.Len() > 0 {
+				return line.String(), nil
+			}
+			return line.String(), err
+		}
 	}
 }
