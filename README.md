@@ -138,16 +138,26 @@ The wizard defaults to the complete recommended setup. “Customize” reveals
 advanced capability choices. It resolves the organization attached to an
 existing login key so the account is visible before confirmation. Use
 `reevit init --yes` for deterministic CI or scripts; piped execution without
-an explicit goal/target is rejected instead of hanging. Unmanaged files and
-non-empty env values are not overwritten. Reevit can update its own
-marker-delimited blocks and replace previously managed credentials only when
-`--rotate-test-keys` is explicit.
-File conflicts are reported before installation, and
-`.reevit/manifest.json` makes interrupted runs recoverable. If a one-time
-project secret was lost, replacement requires
-`reevit init --rotate-test-keys`. Installer output stays quiet on success;
-use `--verbose` to stream it or `--keep-logs` to retain successful logs under
-the gitignored `.reevit/logs/` directory.
+an explicit goal/target is rejected instead of hanging.
+
+When the wizard finds an existing Reevit setup or a generated-file collision,
+it asks whether to:
+
+- **Keep existing files** and create only what is missing.
+- **Replace generated integration files** after backing up every replaced file
+  under `.reevit/backups/`.
+- **Start fresh** by backing up and regenerating integration files and rotating
+  the project's test credentials.
+
+Non-interactive runs remain conservative: use `--overwrite` to replace
+generated files or `--fresh` to replace them and rotate test credentials.
+Non-empty unmanaged env values are preserved. Reevit updates only its own
+marker-delimited blocks in recognized entry files.
+
+`.reevit/manifest.json` makes interrupted runs recoverable. If only a one-time
+project secret was lost, use `reevit init --rotate-test-keys`. Installer output
+stays quiet on success; use `--verbose` to stream it or `--keep-logs` to retain
+successful logs under the gitignored `.reevit/logs/` directory.
 
 ### `doctor`
 
