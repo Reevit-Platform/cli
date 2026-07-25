@@ -119,7 +119,7 @@ app.use(express.json());
 app.listen(3000);
 `)
 			}
-			if _, err := Apply(test.project, TargetsFor(test.project)); err != nil {
+			if _, err := Apply(test.project, TargetsFor(test.project), ApplyOptions{}); err != nil {
 				t.Fatal(err)
 			}
 
@@ -156,7 +156,7 @@ func main() {
 }
 `)
 	project := Detect(root)
-	if _, err := Apply(project, TargetsFor(project)); err != nil {
+	if _, err := Apply(project, TargetsFor(project), ApplyOptions{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -219,7 +219,7 @@ func TestExternalGeneratedPythonImports(t *testing.T) {
 				entry = "shop/urls.py"
 				write(t, projectRoot, entry, "from __future__ import annotations\nfrom django.urls import path\nurlpatterns = []\n")
 			}
-			if _, err := Apply(project, TargetsFor(project)); err != nil {
+			if _, err := Apply(project, TargetsFor(project), ApplyOptions{}); err != nil {
 				t.Fatal(err)
 			}
 			compileFiles := []string{"reevit_client.py", "reevit_webhook.py"}
@@ -248,7 +248,7 @@ func TestExternalGeneratedPHPSyntax(t *testing.T) {
 	root := t.TempDir()
 	write(t, root, "composer.json", `{"require":{"php":">=8.1"}}`)
 	project := Detect(root)
-	if _, err := Apply(project, TargetsFor(project)); err != nil {
+	if _, err := Apply(project, TargetsFor(project), ApplyOptions{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -279,7 +279,7 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )->create();
 `)
-	if _, err := Apply(project, TargetsFor(project)); err != nil {
+	if _, err := Apply(project, TargetsFor(project), ApplyOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	for _, file := range []string{"routes/reevit.php", "bootstrap/app.php"} {
@@ -356,7 +356,7 @@ func TestExternalGeneratedVueAndSvelteCompile(t *testing.T) {
 			for rel, content := range test.extraFiles {
 				write(t, root, rel, content)
 			}
-			if _, err := Apply(test.project, TargetsFor(test.project)); err != nil {
+			if _, err := Apply(test.project, TargetsFor(test.project), ApplyOptions{}); err != nil {
 				t.Fatal(err)
 			}
 
@@ -448,7 +448,7 @@ export default { preprocess: vitePreprocess() };
 			for rel, content := range test.extraFiles {
 				write(t, root, rel, content)
 			}
-			if _, err := Apply(test.project, TargetsFor(test.project)); err != nil {
+			if _, err := Apply(test.project, TargetsFor(test.project), ApplyOptions{}); err != nil {
 				t.Fatal(err)
 			}
 

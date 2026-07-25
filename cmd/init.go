@@ -28,6 +28,8 @@ var (
 	initClientPath      string
 	initRegisterWebhook string
 	initRotateTestKeys  bool
+	initOverwrite       bool
+	initFresh           bool
 	initVerbose         bool
 	initGoal            string
 	initOrigin          string
@@ -43,7 +45,8 @@ key), installs the matching Reevit SDK, wires REEVIT_* environment variables,
 and writes integration starter files — a webhook handler, a checkout
 component, or a server-side client, depending on the project.
 
-Existing files and env values are never overwritten.`,
+Existing files are preserved by default. Interactive setup can replace
+generated integration files after creating a backup.`,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		out := cmd.OutOrStdout()
 
@@ -67,6 +70,9 @@ Existing files and env values are never overwritten.`,
 		}
 		if err := validateInitGoal(initGoal); err != nil {
 			return err
+		}
+		if initOverwrite && initFresh {
+			return fmt.Errorf("--overwrite and --fresh cannot be used together")
 		}
 
 		printDetectedProject(out, project)
@@ -165,9 +171,45 @@ Existing files and env values are never overwritten.`,
 		if err != nil {
 			return err
 		}
-		if len(resolved.Conflicts) > 0 {
+
+		hasExistingSetup := manifest.ProjectID != "" || len(manifest.GeneratedFiles) > 0
+		existingFiles := scaffold.ExistingFilesReject
+		rotateCredentials := initRotateTestKeys
+		switch {
+		case initFresh:
+			existingFiles = scaffold.ExistingFilesFresh
+			rotateCredentials = true
+		case initOverwrite:
+			existingFiles = scaffold.ExistingFilesOverwrite
+		case !initDryRun && !initYes && isInteractiveInput(cmd.InOrStdin()) &&
+			(hasExistingSetup || len(resolved.Conflicts) > 0):
+			action, promptErr := ui.ResolveExistingSetup(
+				cmd.Context(),
+				cmd.InOrStdin(),
+				out,
+				ui.Accessible(initAccessible),
+				resolved.Conflicts,
+				hasExistingSetup,
+			)
+			if promptErr != nil {
+				if errors.Is(promptErr, ui.ErrCancelled) {
+					return ExitError{Code: 130, Err: promptErr}
+				}
+				return promptErr
+			}
+			switch action {
+			case ui.ExistingSetupKeep:
+				existingFiles = scaffold.ExistingFilesKeep
+			case ui.ExistingSetupOverwrite:
+				existingFiles = scaffold.ExistingFilesOverwrite
+			case ui.ExistingSetupFresh:
+				existingFiles = scaffold.ExistingFilesFresh
+				rotateCredentials = true
+			}
+		case len(resolved.Conflicts) > 0:
 			return &scaffold.ConflictError{Paths: resolved.Conflicts}
 		}
+		configureExistingSetupPlan(&resolved, existingFiles, rotateCredentials)
 		if initDryRun {
 			return printPlan(out, resolved)
 		}
@@ -190,7 +232,6 @@ Existing files and env values are never overwritten.`,
 		resolved.CLIVersion = Version
 		resolved.LoginKey = cfg.APIKey
 		resolved.BaseURL = cfg.BaseURL
-		resolved.RotateCredentials = initRotateTestKeys
 		resolved.Verbose = initVerbose
 		result, err := setup.Apply(cmd.Context(), resolved, setup.Dependencies{
 			Bootstrapper: client,
@@ -234,10 +275,18 @@ Existing files and env values are never overwritten.`,
 		}
 
 		for _, f := range result.Files {
-			if f.Skipped {
+			if f.Removed {
+				fmt.Fprintf(out, "− %s — removed stale generated file\n", f.Path)
+				if f.BackupPath != "" {
+					fmt.Fprintf(out, "  Backup: %s\n", f.BackupPath)
+				}
+			} else if f.Skipped {
 				fmt.Fprintf(out, "• %s exists — skipped\n", f.Path)
 			} else {
 				fmt.Fprintf(out, "✔ %s\n", f.Path)
+				if f.BackupPath != "" {
+					fmt.Fprintf(out, "  Backup: %s\n", f.BackupPath)
+				}
 			}
 		}
 
@@ -528,6 +577,41 @@ func registerWebhookEndpoint(cmd *cobra.Command, out interface{ Write([]byte) (i
 	}
 }
 
+func configureExistingSetupPlan(
+	plan *setup.Plan,
+	policy scaffold.ExistingFilesPolicy,
+	rotateCredentials bool,
+) {
+	plan.ExistingFiles = policy
+	plan.RotateCredentials = rotateCredentials
+	switch policy {
+	case scaffold.ExistingFilesKeep:
+		plan.Warnings = append(
+			plan.Warnings,
+			"existing integration files will be kept; only missing outputs will be created",
+		)
+	case scaffold.ExistingFilesOverwrite:
+		plan.Operations = append(plan.Operations, setup.Operation{
+			Kind:   setup.WriteFile,
+			Detail: "back up and replace existing generated integration files",
+			Reason: "apply the developer's explicit overwrite choice recoverably",
+		})
+	case scaffold.ExistingFilesFresh:
+		plan.Operations = append(plan.Operations, setup.Operation{
+			Kind:   setup.WriteFile,
+			Detail: "back up prior generated files, remove stale outputs, and regenerate the selection",
+			Reason: "start the local Reevit integration from a clean generated state",
+		})
+	}
+	if rotateCredentials {
+		plan.Operations = append(plan.Operations, setup.Operation{
+			Kind:   setup.BootstrapPlatform,
+			Detail: "rotate project test credentials",
+			Reason: "replace the project's managed test credentials explicitly",
+		})
+	}
+}
+
 func printPlan(out io.Writer, plan setup.Plan) error {
 	fmt.Fprintln(out, "\nDry run — would do the following:")
 	return printPlanOperations(out, plan)
@@ -632,6 +716,8 @@ func init() {
 	initCmd.Flags().StringVar(&initClientPath, "client-path", "", "custom output path for the server client")
 	initCmd.Flags().StringVar(&initRegisterWebhook, "register-webhook", "", "register this production webhook endpoint in your dashboard")
 	initCmd.Flags().BoolVar(&initRotateTestKeys, "rotate-test-keys", false, "replace project test credentials after local secrets were lost")
+	initCmd.Flags().BoolVar(&initOverwrite, "overwrite", false, "replace generated integration files after backing them up")
+	initCmd.Flags().BoolVar(&initFresh, "fresh", false, "replace generated integration files and rotate project test credentials")
 	initCmd.Flags().BoolVar(&initVerbose, "verbose", false, "stream package-manager output")
 	initCmd.Flags().StringVar(&initGoal, "goal", "auto", "setup goal: auto, full, checkout, webhook, or server")
 	initCmd.Flags().StringVar(&initOrigin, "origin", "", "local checkout origin (defaults to the detected framework port)")

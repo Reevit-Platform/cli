@@ -31,7 +31,7 @@ type Bootstrapper interface {
 
 type Writer interface {
 	WriteEnv(scaffold.Project, scaffold.ProjectCredentials) (scaffold.EnvResult, error)
-	Apply(scaffold.Project, []scaffold.Target) ([]scaffold.FileResult, error)
+	Apply(scaffold.Project, []scaffold.Target, scaffold.ApplyOptions) ([]scaffold.FileResult, error)
 }
 
 type SecretGenerator interface {
@@ -62,6 +62,7 @@ type Plan struct {
 	LoginKey          string
 	BaseURL           string
 	RotateCredentials bool
+	ExistingFiles     scaffold.ExistingFilesPolicy
 	Verbose           bool
 }
 
@@ -86,7 +87,21 @@ func Apply(ctx context.Context, plan Plan, deps Dependencies) (Result, error) {
 	if err := validateDependencies(deps); err != nil {
 		return result, err
 	}
-	if err := scaffold.Preflight(plan.Project, plan.Targets, plan.Manifest); err != nil {
+	if err := scaffold.PreflightWithOptions(
+		plan.Project,
+		plan.Targets,
+		plan.Manifest,
+		scaffold.PreflightOptions{ExistingFiles: plan.ExistingFiles},
+	); err != nil {
+		return result, err
+	}
+	preparation, err := scaffold.PrepareApply(
+		plan.Project,
+		plan.Targets,
+		plan.Manifest,
+		plan.ExistingFiles,
+	)
+	if err != nil {
 		return result, err
 	}
 
@@ -113,7 +128,6 @@ func Apply(ctx context.Context, plan Plan, deps Dependencies) (Result, error) {
 	}
 	manifest.Capabilities = manifestCapabilities(plan.Targets)
 	manifest.Origin = strings.TrimRight(strings.TrimSpace(plan.LocalOrigin), "/")
-	manifest.GeneratedFiles = plannedFiles(plan.Targets)
 	if err := scaffold.WriteManifest(plan.Project, manifest); err != nil {
 		return result, err
 	}
@@ -184,9 +198,21 @@ func Apply(ctx context.Context, plan Plan, deps Dependencies) (Result, error) {
 		})
 	}
 
-	result.Files, err = deps.Writer.Apply(plan.Project, plan.Targets)
+	result.Files, err = deps.Writer.Apply(
+		plan.Project,
+		plan.Targets,
+		scaffold.ApplyOptions{
+			ExistingFiles: plan.ExistingFiles,
+			Preparation:   preparation,
+		},
+	)
 	if err != nil {
 		return result, markIncomplete(plan.Project, manifest, err)
+	}
+	manifest.GeneratedFiles = reconcileGeneratedFiles(manifest.GeneratedFiles, result.Files)
+	manifest.GeneratedEdits = reconcileGeneratedEdits(manifest.GeneratedEdits, result.Files)
+	if err := scaffold.WriteManifest(plan.Project, manifest); err != nil {
+		return result, err
 	}
 	emit(deps, Event{Stage: "write", Status: "complete", Detail: "environment and integration files written"})
 
@@ -362,15 +388,61 @@ func manifestCapabilities(targets []scaffold.Target) []string {
 	return result
 }
 
-func plannedFiles(targets []scaffold.Target) []string {
-	var files []string
-	for _, target := range targets {
-		for _, path := range target.Files {
-			files = append(files, filepath.ToSlash(filepath.Clean(path)))
+func reconcileGeneratedFiles(previous []string, results []scaffold.FileResult) []string {
+	owned := make(map[string]bool, len(previous)+len(results))
+	for _, path := range previous {
+		owned[filepath.ToSlash(filepath.Clean(path))] = true
+	}
+	for _, result := range results {
+		if result.ManagedEdit {
+			continue
+		}
+		path := filepath.ToSlash(filepath.Clean(result.Path))
+		switch {
+		case result.Removed:
+			delete(owned, path)
+		case !result.Skipped:
+			owned[path] = true
 		}
 	}
+	files := make([]string, 0, len(owned))
+	for path := range owned {
+		files = append(files, path)
+	}
 	slices.Sort(files)
-	return slices.Compact(files)
+	return files
+}
+
+func reconcileGeneratedEdits(
+	previous []scaffold.GeneratedEdit,
+	results []scaffold.FileResult,
+) []scaffold.GeneratedEdit {
+	owned := make(map[string]scaffold.GeneratedEdit, len(previous)+len(results))
+	for _, edit := range previous {
+		edit.Path = filepath.ToSlash(filepath.Clean(edit.Path))
+		owned[edit.Path] = edit
+	}
+	for _, result := range results {
+		if !result.ManagedEdit {
+			continue
+		}
+		path := filepath.ToSlash(filepath.Clean(result.Path))
+		if result.Removed {
+			delete(owned, path)
+		} else if result.Edit != nil {
+			edit := *result.Edit
+			edit.Path = path
+			owned[path] = edit
+		}
+	}
+	edits := make([]scaffold.GeneratedEdit, 0, len(owned))
+	for _, edit := range owned {
+		edits = append(edits, edit)
+	}
+	slices.SortFunc(edits, func(left, right scaffold.GeneratedEdit) int {
+		return strings.Compare(left.Path, right.Path)
+	})
+	return edits
 }
 
 func hasTarget(targets []scaffold.Target, key scaffold.TargetKey) bool {
@@ -422,8 +494,12 @@ func (FileWriter) WriteEnv(
 	return scaffold.WriteEnv(project, credentials)
 }
 
-func (FileWriter) Apply(project scaffold.Project, targets []scaffold.Target) ([]scaffold.FileResult, error) {
-	return scaffold.Apply(project, targets)
+func (FileWriter) Apply(
+	project scaffold.Project,
+	targets []scaffold.Target,
+	options scaffold.ApplyOptions,
+) ([]scaffold.FileResult, error) {
+	return scaffold.Apply(project, targets, options)
 }
 
 type CryptoSecretGenerator struct{}

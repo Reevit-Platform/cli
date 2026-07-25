@@ -38,6 +38,60 @@ func TestConfirmApplyCanCancel(t *testing.T) {
 	}
 }
 
+func TestResolveExistingSetupCanReplaceGeneratedFiles(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	got, err := ResolveExistingSetup(
+		context.Background(),
+		strings.NewReader("2\n"),
+		&bytes.Buffer{},
+		true,
+		[]string{"components/reevit-checkout-button.tsx"},
+		true,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != ExistingSetupOverwrite {
+		t.Fatalf("action = %q, want %q", got, ExistingSetupOverwrite)
+	}
+}
+
+func TestResolveExistingSetupDefaultsToKeepingFiles(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	got, err := ResolveExistingSetup(
+		context.Background(),
+		strings.NewReader("\n"),
+		&bytes.Buffer{},
+		true,
+		[]string{"components/reevit-checkout-button.tsx"},
+		false,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != ExistingSetupKeep {
+		t.Fatalf("action = %q, want %q", got, ExistingSetupKeep)
+	}
+}
+
+func TestResolveExistingSetupCanStartFresh(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	got, err := ResolveExistingSetup(
+		context.Background(),
+		strings.NewReader("3\n"),
+		&bytes.Buffer{},
+		true,
+		nil,
+		true,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != ExistingSetupFresh {
+		t.Fatalf("action = %q, want %q", got, ExistingSetupFresh)
+	}
+}
+
 func TestAccessibleModeFromEnvironment(t *testing.T) {
 	t.Setenv("REEVIT_ACCESSIBLE", "1")
 	if !Accessible(false) {

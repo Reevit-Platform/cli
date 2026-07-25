@@ -62,7 +62,7 @@ the detected stack:
 | Webhooks | A framework-native endpoint that verifies `X-Reevit-Signature` against the raw request body |
 | Server API | A server-only Reevit client configured with the project API key and organization ID |
 | Test environment | Scoped server and checkout credentials, a webhook secret, simulator connection, local origin, and stack-aware env variables |
-| Recovery | `.reevit/manifest.json`, preflight conflict detection, idempotent file markers, and optional retained setup logs |
+| Recovery | `.reevit/manifest.json`, interactive conflict resolution, recoverable file backups, idempotent markers, and optional retained setup logs |
 
 Choose **Customize setup** in the wizard or use a goal directly:
 
@@ -174,15 +174,28 @@ production webhooks.
 
 `reevit init` is designed for existing projects:
 
-- Unmanaged files and non-empty environment values are not overwritten.
+- The interactive wizard detects existing setup and generated-file collisions.
+- **Keep existing files** preserves them and creates only missing outputs.
+- **Replace generated integration files** backs up each replaced file under
+  `.reevit/backups/` before writing.
+- **Start fresh** backs up prior generated files, removes stale generated
+  outputs and Reevit-managed mount blocks, regenerates the selected integration,
+  and rotates the project's test credentials.
 - Reevit updates only its marker-delimited blocks in recognized entry files.
-- File conflicts are reported before dependencies or project files are changed.
+- Non-empty unmanaged environment values remain untouched.
 - Interrupted setup can resume from `.reevit/manifest.json`.
 - Successful reruns reuse the project and credentials.
 - Lost one-time project secrets and managed env values can be replaced explicitly with
   `reevit init --rotate-test-keys`.
 - Installer output stays quiet on success; use `--verbose` to stream it or
   `--keep-logs` to retain successful logs.
+
+For scripts and CI, make replacement behavior explicit:
+
+```sh
+reevit init --yes --overwrite # backup and replace generated files
+reevit init --yes --fresh     # also rotate project test credentials
+```
 
 Use custom paths when your project has its own layout:
 

@@ -30,6 +30,9 @@ func TestNPMPackageShipsCompleteGettingStartedDocumentation(t *testing.T) {
 		"reevit trigger payment.succeeded",
 		"reevit listen",
 		"--rotate-test-keys",
+		"--overwrite",
+		"--fresh",
+		".reevit/backups/",
 		"Node.js 18 or newer",
 	}
 

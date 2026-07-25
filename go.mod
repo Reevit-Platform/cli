@@ -4,6 +4,7 @@ go 1.24.2
 
 require (
 	charm.land/huh/v2 v2.0.0
+	github.com/creack/pty v1.1.24
 	github.com/google/uuid v1.6.0
 	github.com/spf13/cobra v1.8.1
 )

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"charm.land/huh/v2"
 
@@ -13,6 +14,14 @@ import (
 )
 
 var ErrCancelled = errors.New("setup cancelled")
+
+type ExistingSetupAction string
+
+const (
+	ExistingSetupKeep      ExistingSetupAction = "keep"
+	ExistingSetupOverwrite ExistingSetupAction = "overwrite"
+	ExistingSetupFresh     ExistingSetupAction = "fresh"
+)
 
 func Accessible(explicit bool) bool {
 	return explicit || os.Getenv("REEVIT_ACCESSIBLE") == "1" || os.Getenv("ACCESSIBLE") == "1"
@@ -92,6 +101,49 @@ func ConfirmApply(ctx context.Context, in io.Reader, out io.Writer, accessible b
 		return ErrCancelled
 	}
 	return nil
+}
+
+// ResolveExistingSetup lets an interactive user decide how init should handle
+// generated output paths that already exist.
+func ResolveExistingSetup(
+	ctx context.Context,
+	in io.Reader,
+	out io.Writer,
+	accessible bool,
+	conflicts []string,
+	hasManifest bool,
+) (ExistingSetupAction, error) {
+	action := ExistingSetupKeep
+	options := []huh.Option[ExistingSetupAction]{
+		huh.NewOption(
+			"Keep existing files",
+			ExistingSetupKeep,
+		),
+		huh.NewOption(
+			"Replace generated integration files (creates a backup)",
+			ExistingSetupOverwrite,
+		),
+	}
+	if hasManifest {
+		options = append(options, huh.NewOption(
+			"Start fresh (backup files and rotate test keys)",
+			ExistingSetupFresh,
+		))
+	}
+
+	description := "Reevit found an existing setup."
+	if len(conflicts) > 0 {
+		description = "Existing output paths:\n" + strings.Join(conflicts, "\n")
+	}
+	field := huh.NewSelect[ExistingSetupAction]().
+		Title("How should Reevit continue?").
+		Description(description).
+		Options(options...).
+		Value(&action)
+	if err := runForm(ctx, in, out, accessible, field); err != nil {
+		return "", err
+	}
+	return action, nil
 }
 
 // PromptOrigin asks for the local checkout origin and validates it before the
