@@ -20,7 +20,7 @@ go install github.com/Reevit-Platform/cli@latest   # binary: cli → alias as re
 Prebuilt binaries for every platform are on the
 [releases page](https://github.com/Reevit-Platform/cli/releases).
 
-## Quickstart
+## Quickstart: project to test payment
 
 ```bash
 cd your-project
@@ -33,14 +33,55 @@ the matching SDKs, wires your env, creates a runnable checkout example, and
 verifies the new credentials against the sandbox.
 
 ```bash
-pnpm dev
-# open http://localhost:3000/reevit-demo
+# run the dev command printed by the wizard (for example, pnpm dev)
+# open the demo URL printed by the wizard
 reevit doctor
 ```
 
-For a Next.js App Router project using pnpm, those are the exact handoff
-commands printed by `init`. Vite projects use port 5173 and
-`/reevit-demo.html`.
+The wizard prints the correct dev command and demo URL for the detected
+project. Next.js projects normally use `/reevit-demo` on port `3000`;
+Vite-based projects normally use `/reevit-demo.html` on port `5173`.
+
+### What `init` sets up
+
+The recommended **Complete test setup** includes every capability supported by
+the project:
+
+| Capability | Result |
+| --- | --- |
+| Checkout | Framework-native checkout component, runnable demo route, origin-restricted browser credential, and a verified sandbox checkout session |
+| Webhooks | Framework-native endpoint with raw-body signature verification and a project webhook secret |
+| Server API | Server-only Reevit client wired to the scoped project key and organization |
+| Test resources | Project credentials, sandbox simulator connection, allowed local origin, and `.reevit/manifest.json` |
+
+Choose **Customize setup** in the wizard when you only need part of the
+integration, or state the goal directly:
+
+```bash
+reevit init --goal full       # checkout + webhook + server client
+reevit init --goal checkout   # checkout component and runnable demo
+reevit init --goal webhook    # signed webhook receiver
+reevit init --goal server     # server API client
+```
+
+`reevit init --dry-run` previews local files, dependencies, environment
+changes, and remote resources without writing anything.
+
+### Supported projects and installers
+
+| Ecosystem | Frameworks | Installers |
+| --- | --- | --- |
+| React | Next.js App/Pages Routers, React with Vite | npm, pnpm, Yarn, Bun |
+| Vue | Nuxt, Vue with Vite | npm, pnpm, Yarn, Bun |
+| Svelte | SvelteKit, Svelte with Vite | npm, pnpm, Yarn, Bun |
+| Node.js | Express, generic Node | npm, pnpm, Yarn, Bun |
+| Go | Go modules, standard HTTP servers | `go get` |
+| Python | FastAPI, Flask, Django, generic Python | uv, Poetry, Pipenv, pip |
+| PHP | Laravel, generic PHP | Composer |
+
+For JavaScript projects, the `packageManager` declaration wins. Otherwise the
+nearest lockfile is used. Reevit never runs multiple installers because a
+repository happens to contain stale lockfiles.
 
 ## Commands
 
@@ -97,9 +138,11 @@ The wizard defaults to the complete recommended setup. “Customize” reveals
 advanced capability choices. It resolves the organization attached to an
 existing login key so the account is visible before confirmation. Use
 `reevit init --yes` for deterministic CI or scripts; piped execution without
-an explicit goal/target is rejected instead of hanging. Existing files and
-non-empty env values are never overwritten.
-Conflicts are reported before installation, and
+an explicit goal/target is rejected instead of hanging. Unmanaged files and
+non-empty env values are not overwritten. Reevit can update its own
+marker-delimited blocks and replace previously managed credentials only when
+`--rotate-test-keys` is explicit.
+File conflicts are reported before installation, and
 `.reevit/manifest.json` makes interrupted runs recoverable. If a one-time
 project secret was lost, replacement requires
 `reevit init --rotate-test-keys`. Installer output stays quiet on success;
