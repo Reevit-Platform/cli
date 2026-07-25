@@ -28,6 +28,8 @@ var (
 	initClientPath      string
 	initRegisterWebhook string
 	initRotateTestKeys  bool
+	initOverwrite       bool
+	initFresh           bool
 	initVerbose         bool
 	initGoal            string
 	initOrigin          string
@@ -43,7 +45,8 @@ key), installs the matching Reevit SDK, wires REEVIT_* environment variables,
 and writes integration starter files — a webhook handler, a checkout
 component, or a server-side client, depending on the project.
 
-Existing files and env values are never overwritten.`,
+Existing files are preserved by default. Interactive setup can replace
+generated integration files after creating a backup.`,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		out := cmd.OutOrStdout()
 
@@ -67,6 +70,9 @@ Existing files and env values are never overwritten.`,
 		}
 		if err := validateInitGoal(initGoal); err != nil {
 			return err
+		}
+		if initOverwrite && initFresh {
+			return fmt.Errorf("--overwrite and --fresh cannot be used together")
 		}
 
 		printDetectedProject(out, project)
@@ -165,7 +171,41 @@ Existing files and env values are never overwritten.`,
 		if err != nil {
 			return err
 		}
-		if len(resolved.Conflicts) > 0 {
+
+		hasExistingSetup := manifest.ProjectID != "" || len(manifest.GeneratedFiles) > 0
+		switch {
+		case initFresh:
+			resolved.AllowExistingFiles = true
+			resolved.OverwriteFiles = true
+			initRotateTestKeys = true
+		case initOverwrite:
+			resolved.AllowExistingFiles = true
+			resolved.OverwriteFiles = true
+		case !initDryRun && !initYes && isInteractiveInput(cmd.InOrStdin()) &&
+			(hasExistingSetup || len(resolved.Conflicts) > 0):
+			action, promptErr := ui.ResolveExistingSetup(
+				cmd.Context(),
+				cmd.InOrStdin(),
+				out,
+				ui.Accessible(initAccessible),
+				resolved.Conflicts,
+				hasExistingSetup,
+			)
+			if promptErr != nil {
+				if errors.Is(promptErr, ui.ErrCancelled) {
+					return ExitError{Code: 130, Err: promptErr}
+				}
+				return promptErr
+			}
+			resolved.AllowExistingFiles = true
+			switch action {
+			case ui.ExistingSetupOverwrite:
+				resolved.OverwriteFiles = true
+			case ui.ExistingSetupFresh:
+				resolved.OverwriteFiles = true
+				initRotateTestKeys = true
+			}
+		case len(resolved.Conflicts) > 0:
 			return &scaffold.ConflictError{Paths: resolved.Conflicts}
 		}
 		if initDryRun {
@@ -238,6 +278,9 @@ Existing files and env values are never overwritten.`,
 				fmt.Fprintf(out, "• %s exists — skipped\n", f.Path)
 			} else {
 				fmt.Fprintf(out, "✔ %s\n", f.Path)
+				if f.BackupPath != "" {
+					fmt.Fprintf(out, "  Backup: %s\n", f.BackupPath)
+				}
 			}
 		}
 
@@ -632,6 +675,8 @@ func init() {
 	initCmd.Flags().StringVar(&initClientPath, "client-path", "", "custom output path for the server client")
 	initCmd.Flags().StringVar(&initRegisterWebhook, "register-webhook", "", "register this production webhook endpoint in your dashboard")
 	initCmd.Flags().BoolVar(&initRotateTestKeys, "rotate-test-keys", false, "replace project test credentials after local secrets were lost")
+	initCmd.Flags().BoolVar(&initOverwrite, "overwrite", false, "replace generated integration files after backing them up")
+	initCmd.Flags().BoolVar(&initFresh, "fresh", false, "replace generated integration files and rotate project test credentials")
 	initCmd.Flags().BoolVar(&initVerbose, "verbose", false, "stream package-manager output")
 	initCmd.Flags().StringVar(&initGoal, "goal", "auto", "setup goal: auto, full, checkout, webhook, or server")
 	initCmd.Flags().StringVar(&initOrigin, "origin", "", "local checkout origin (defaults to the detected framework port)")

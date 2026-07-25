@@ -223,6 +223,41 @@ func TestApplyBootstrapFailureLeavesSecretFreePendingManifest(t *testing.T) {
 	}
 }
 
+func TestApplyHonorsExplicitExistingFileResolution(t *testing.T) {
+	t.Parallel()
+
+	project, allTargets := setupFixture(t)
+	targets := []scaffold.Target{allTargets[1]}
+	if err := os.WriteFile(
+		filepath.Join(project.Root, "reevit_client.py"),
+		[]byte("existing"),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	writer := &fakeWriter{}
+
+	_, err := Apply(context.Background(), Plan{
+		Project: project, Targets: targets, CLIVersion: "test",
+		LoginKey: "pfk_test_login.secret", AllowExistingFiles: true,
+		OverwriteFiles: true,
+	}, Dependencies{
+		Bootstrapper: fakeBootstrapper{run: func(
+			_ context.Context, request api.BootstrapRequest,
+		) (api.BootstrapResult, error) {
+			return bootstrapResult(request.ProjectID), nil
+		}},
+		Runner: fakeRunner{}, Writer: writer,
+		Secrets: fakeSecrets{secret: "whsec_project"}, Verifier: fakeVerifier{},
+	})
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !writer.overwrite {
+		t.Fatal("writer did not receive overwrite decision")
+	}
+}
+
 func setupFixture(t *testing.T) (scaffold.Project, []scaffold.Target) {
 	t.Helper()
 	project := scaffold.Project{
@@ -285,6 +320,7 @@ type fakeWriter struct {
 	calls       *[]string
 	envCalls    int
 	applyCalls  int
+	overwrite   bool
 	credentials scaffold.ProjectCredentials
 }
 
@@ -303,8 +339,10 @@ func (fake *fakeWriter) WriteEnv(
 func (fake *fakeWriter) Apply(
 	_ scaffold.Project,
 	_ []scaffold.Target,
+	options scaffold.ApplyOptions,
 ) ([]scaffold.FileResult, error) {
 	fake.applyCalls++
+	fake.overwrite = options.Overwrite
 	if fake.calls != nil {
 		*fake.calls = append(*fake.calls, "source")
 	}

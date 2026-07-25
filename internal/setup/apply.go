@@ -31,7 +31,7 @@ type Bootstrapper interface {
 
 type Writer interface {
 	WriteEnv(scaffold.Project, scaffold.ProjectCredentials) (scaffold.EnvResult, error)
-	Apply(scaffold.Project, []scaffold.Target) ([]scaffold.FileResult, error)
+	Apply(scaffold.Project, []scaffold.Target, scaffold.ApplyOptions) ([]scaffold.FileResult, error)
 }
 
 type SecretGenerator interface {
@@ -50,19 +50,21 @@ type Event struct {
 }
 
 type Plan struct {
-	Project           scaffold.Project
-	Targets           []scaffold.Target
-	Manifest          scaffold.Manifest
-	Goal              Goal
-	Operations        []Operation
-	Warnings          []string
-	Conflicts         []string
-	CLIVersion        string
-	LocalOrigin       string
-	LoginKey          string
-	BaseURL           string
-	RotateCredentials bool
-	Verbose           bool
+	Project            scaffold.Project
+	Targets            []scaffold.Target
+	Manifest           scaffold.Manifest
+	Goal               Goal
+	Operations         []Operation
+	Warnings           []string
+	Conflicts          []string
+	CLIVersion         string
+	LocalOrigin        string
+	LoginKey           string
+	BaseURL            string
+	RotateCredentials  bool
+	AllowExistingFiles bool
+	OverwriteFiles     bool
+	Verbose            bool
 }
 
 type Result struct {
@@ -86,7 +88,12 @@ func Apply(ctx context.Context, plan Plan, deps Dependencies) (Result, error) {
 	if err := validateDependencies(deps); err != nil {
 		return result, err
 	}
-	if err := scaffold.Preflight(plan.Project, plan.Targets, plan.Manifest); err != nil {
+	if err := scaffold.PreflightWithOptions(
+		plan.Project,
+		plan.Targets,
+		plan.Manifest,
+		scaffold.PreflightOptions{AllowExistingOutputs: plan.AllowExistingFiles},
+	); err != nil {
 		return result, err
 	}
 
@@ -184,7 +191,11 @@ func Apply(ctx context.Context, plan Plan, deps Dependencies) (Result, error) {
 		})
 	}
 
-	result.Files, err = deps.Writer.Apply(plan.Project, plan.Targets)
+	result.Files, err = deps.Writer.Apply(
+		plan.Project,
+		plan.Targets,
+		scaffold.ApplyOptions{Overwrite: plan.OverwriteFiles},
+	)
 	if err != nil {
 		return result, markIncomplete(plan.Project, manifest, err)
 	}
@@ -422,8 +433,12 @@ func (FileWriter) WriteEnv(
 	return scaffold.WriteEnv(project, credentials)
 }
 
-func (FileWriter) Apply(project scaffold.Project, targets []scaffold.Target) ([]scaffold.FileResult, error) {
-	return scaffold.Apply(project, targets)
+func (FileWriter) Apply(
+	project scaffold.Project,
+	targets []scaffold.Target,
+	options scaffold.ApplyOptions,
+) ([]scaffold.FileResult, error) {
+	return scaffold.Apply(project, targets, options)
 }
 
 type CryptoSecretGenerator struct{}

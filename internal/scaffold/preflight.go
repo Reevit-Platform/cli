@@ -12,6 +12,10 @@ type ConflictError struct {
 	Paths []string
 }
 
+type PreflightOptions struct {
+	AllowExistingOutputs bool
+}
+
 func (e *ConflictError) Error() string {
 	return "existing files would be overwritten:\n  " + strings.Join(e.Paths, "\n  ")
 }
@@ -19,22 +23,30 @@ func (e *ConflictError) Error() string {
 // Preflight discovers every unmanaged output conflict before init performs
 // authentication, platform bootstrap, package installation, or file writes.
 func Preflight(project Project, targets []Target, manifest Manifest) error {
+	return PreflightWithOptions(project, targets, manifest, PreflightOptions{})
+}
+
+func PreflightWithOptions(
+	project Project,
+	targets []Target,
+	manifest Manifest,
+	options PreflightOptions,
+) error {
 	conflicts, err := ConflictPaths(project, targets, manifest)
 	if err != nil {
 		return err
 	}
-	if len(conflicts) == 0 {
-		for _, target := range targets {
-			for _, edit := range target.Edits {
-				if err := validateFileEdit(project, edit); err != nil {
-					return err
-				}
+	if len(conflicts) > 0 && !options.AllowExistingOutputs {
+		return &ConflictError{Paths: conflicts}
+	}
+	for _, target := range targets {
+		for _, edit := range target.Edits {
+			if err := validateFileEdit(project, edit); err != nil {
+				return err
 			}
 		}
-
-		return nil
 	}
-	return &ConflictError{Paths: conflicts}
+	return nil
 }
 
 // ConflictPaths returns every unmanaged output that already exists.

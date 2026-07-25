@@ -25,3 +25,21 @@ func TestPreflightReportsAllUnmanagedConflicts(t *testing.T) {
 		t.Fatalf("error does not contain every conflict: %s", message)
 	}
 }
+
+func TestPreflightAllowsExistingOutputsAfterExplicitResolution(t *testing.T) {
+	t.Parallel()
+
+	project := Project{Root: t.TempDir(), Stack: StackNext, TypeScript: true}
+	targets := TargetsFor(project)
+	write(t, project.Root, "components/reevit-checkout-button.tsx", "user code")
+
+	err := PreflightWithOptions(
+		project,
+		targets,
+		Manifest{},
+		PreflightOptions{AllowExistingOutputs: true},
+	)
+	if err != nil {
+		t.Fatalf("PreflightWithOptions() error = %v", err)
+	}
+}

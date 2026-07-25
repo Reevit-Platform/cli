@@ -148,6 +148,42 @@ func TestApplyWritesAndNeverOverwrites(t *testing.T) {
 	}
 }
 
+func TestApplyCanReplaceGeneratedFilesWithBackup(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "package.json", `{"dependencies":{"next":"16"}}`)
+	write(t, dir, "tsconfig.json", "{}")
+
+	project := Detect(dir)
+	targets := TargetsFor(project)
+	checkout := []Target{targets[1]}
+	component := "components/reevit-checkout-button.tsx"
+	write(t, dir, component, "user edited checkout")
+
+	results, err := Apply(project, checkout, ApplyOptions{Overwrite: true})
+	if err != nil {
+		t.Fatalf("Apply overwrite: %v", err)
+	}
+
+	var backupPath string
+	for _, result := range results {
+		if result.Path == component {
+			backupPath = result.BackupPath
+		}
+	}
+	if backupPath == "" {
+		t.Fatal("overwritten component did not report a backup")
+	}
+	if got := readFile(t, dir, backupPath); got != "user edited checkout" {
+		t.Fatalf("backup = %q", got)
+	}
+	if got := readFile(t, dir, component); got == "user edited checkout" {
+		t.Fatal("component was not replaced")
+	}
+	if gitignore := readFile(t, dir, ".gitignore"); !strings.Contains(gitignore, ".reevit/backups/") {
+		t.Fatalf("backup directory is not gitignored:\n%s", gitignore)
+	}
+}
+
 func TestApplyHonorsSrcDirAndJS(t *testing.T) {
 	dir := t.TempDir()
 	write(t, dir, "package.json", `{"dependencies":{"next":"16"}}`)

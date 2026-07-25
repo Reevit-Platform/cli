@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"text/template"
+	"time"
 )
 
 //go:embed templates/*.tmpl
@@ -305,25 +306,39 @@ func pythonInstallCommand(installer Installer) []string {
 
 // FileResult reports one written (or skipped) file.
 type FileResult struct {
-	Path    string
-	Skipped bool // an existing file is never overwritten
+	Path       string
+	Skipped    bool
+	BackupPath string
+}
+
+type ApplyOptions struct {
+	Overwrite bool
 }
 
 // Apply renders the targets' templates into the project. Existing files are
-// left untouched and reported as skipped.
-func Apply(project Project, targets []Target) ([]FileResult, error) {
+// left untouched unless overwrite is explicit; replaced files are backed up
+// under .reevit/backups first.
+func Apply(project Project, targets []Target, options ...ApplyOptions) ([]FileResult, error) {
 	var results []FileResult
 
 	data := templateData{TS: project.TypeScript}
+	var opts ApplyOptions
+	if len(options) > 0 {
+		opts = options[0]
+	}
+	backupRoot := filepath.Join(
+		".reevit", "backups", time.Now().UTC().Format("20060102T150405.000000000Z"),
+	)
 
 	for _, target := range targets {
 		for tmplName, outRel := range target.Files {
 			outPath := filepath.Join(project.Root, outRel)
 
 			if _, err := os.Stat(outPath); err == nil {
-				results = append(results, FileResult{Path: outRel, Skipped: true})
-
-				continue
+				if !opts.Overwrite {
+					results = append(results, FileResult{Path: outRel, Skipped: true})
+					continue
+				}
 			}
 
 			content, err := render(tmplName, data)
@@ -331,6 +346,15 @@ func Apply(project Project, targets []Target) ([]FileResult, error) {
 				return results, err
 			}
 
+			backupPath := ""
+			if opts.Overwrite {
+				if _, statErr := os.Stat(outPath); statErr == nil {
+					backupPath, err = backupFile(project.Root, backupRoot, outRel)
+					if err != nil {
+						return results, err
+					}
+				}
+			}
 			if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
 				return results, fmt.Errorf("create %s: %w", filepath.Dir(outRel), err)
 			}
@@ -339,7 +363,7 @@ func Apply(project Project, targets []Target) ([]FileResult, error) {
 				return results, fmt.Errorf("write %s: %w", outRel, err)
 			}
 
-			results = append(results, FileResult{Path: outRel})
+			results = append(results, FileResult{Path: outRel, BackupPath: backupPath})
 		}
 		for _, edit := range target.Edits {
 			result, err := applyFileEdit(project, edit)
@@ -351,6 +375,30 @@ func Apply(project Project, targets []Target) ([]FileResult, error) {
 	}
 
 	return results, nil
+}
+
+func backupFile(root, backupRoot, relative string) (string, error) {
+	source := filepath.Join(root, relative)
+	content, err := os.ReadFile(source)
+	if err != nil {
+		return "", fmt.Errorf("read %s for backup: %w", relative, err)
+	}
+	info, err := os.Stat(source)
+	if err != nil {
+		return "", fmt.Errorf("inspect %s for backup: %w", relative, err)
+	}
+	if _, err := ensureGitignored(root, ".reevit/backups/"); err != nil {
+		return "", fmt.Errorf("ignore Reevit backups: %w", err)
+	}
+	backupRelative := filepath.Join(backupRoot, relative)
+	backupPath := filepath.Join(root, backupRelative)
+	if err := os.MkdirAll(filepath.Dir(backupPath), 0o755); err != nil {
+		return "", fmt.Errorf("create backup directory for %s: %w", relative, err)
+	}
+	if err := os.WriteFile(backupPath, content, info.Mode().Perm()); err != nil {
+		return "", fmt.Errorf("back up %s: %w", relative, err)
+	}
+	return filepath.ToSlash(backupRelative), nil
 }
 
 func render(name string, data templateData) (string, error) {

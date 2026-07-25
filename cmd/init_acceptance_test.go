@@ -148,17 +148,40 @@ func TestInitFreshNextProjectAndIdempotentRerun(t *testing.T) {
 		t.Fatalf("rerun did not reuse credential ids: %#v", bootstraps)
 	}
 
-	initRotateTestKeys = true
+	componentPath := filepath.Join(root, "components/reevit-checkout-button.tsx")
+	if err := os.WriteFile(componentPath, []byte("custom checkout"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	initOverwrite = true
 	out.Reset()
 	if err := initCmd.RunE(initCmd, nil); err != nil {
-		t.Fatalf("rotation rerun: %v\n%s", err, out.String())
+		t.Fatalf("overwrite rerun: %v\n%s", err, out.String())
+	}
+	if got := acceptanceRead(t, root, "components/reevit-checkout-button.tsx"); got == "custom checkout" {
+		t.Fatal("--overwrite did not replace the generated checkout")
+	}
+	backups, err := filepath.Glob(filepath.Join(
+		root, ".reevit", "backups", "*", "components", "reevit-checkout-button.tsx",
+	))
+	if err != nil || len(backups) == 0 {
+		t.Fatalf("--overwrite backup = %v, err = %v", backups, err)
+	}
+	if got := acceptanceRead(t, root, filepath.ToSlash(strings.TrimPrefix(backups[0], root+string(os.PathSeparator)))); got != "custom checkout" {
+		t.Fatalf("backup = %q", got)
+	}
+
+	initOverwrite = false
+	initFresh = true
+	out.Reset()
+	if err := initCmd.RunE(initCmd, nil); err != nil {
+		t.Fatalf("fresh rerun: %v\n%s", err, out.String())
 	}
 	env = acceptanceRead(t, root, ".env.local")
 	if strings.Contains(env, "pfk_test_server.secret") ||
 		strings.Contains(env, "pfk_test_checkout.secret") ||
 		!strings.Contains(env, "REEVIT_API_KEY=pfk_test_server_rotated.secret") ||
 		!strings.Contains(env, "NEXT_PUBLIC_REEVIT_CHECKOUT_KEY=pfk_test_checkout_rotated.secret") {
-		t.Fatalf("rotated credentials were not applied safely:\n%s", env)
+		t.Fatalf("fresh credentials were not applied safely:\n%s", env)
 	}
 }
 
@@ -232,6 +255,31 @@ func TestInitNonTTYRequiresDeterministicFlag(t *testing.T) {
 	}
 }
 
+func TestInitRejectsOverwriteAndFreshTogether(t *testing.T) {
+	root := t.TempDir()
+	writeAcceptanceFile(t, root, "package.json", `{"dependencies":{"react":"19.0.0"}}`)
+
+	oldCWD, _ := os.Getwd()
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chdir(oldCWD) }()
+
+	resetInitTestFlags()
+	t.Cleanup(resetInitTestFlags)
+	initDryRun = true
+	initOverwrite = true
+	initFresh = true
+	initCmd.SetIn(bytes.NewBuffer(nil))
+	initCmd.SetOut(&bytes.Buffer{})
+	initCmd.SetContext(context.Background())
+
+	err := initCmd.RunE(initCmd, nil)
+	if err == nil || !strings.Contains(err.Error(), "cannot be used together") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestInitCancellationReturns130WithoutProjectMutation(t *testing.T) {
 	root := t.TempDir()
 	writeAcceptanceFile(t, root, "package.json", `{"dependencies":{"next":"16","react":"19"}}`)
@@ -279,6 +327,8 @@ func resetInitTestFlags() {
 	initClientPath = ""
 	initRegisterWebhook = ""
 	initRotateTestKeys = false
+	initOverwrite = false
+	initFresh = false
 	initVerbose = false
 	initGoal = "auto"
 	initOrigin = ""
