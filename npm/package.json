@@ -1,6 +1,6 @@
 {
   "name": "@reevit/cli",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Reevit CLI \u2014 test payments, drive the sandbox simulator, forward events locally with valid signatures",
   "license": "MIT",
   "repository": {
