@@ -443,3 +443,30 @@ mountReevitWebhookWithLogging(app);
 		t.Fatalf("DiscoverLegacyWebhookEdits error = %v", err)
 	}
 }
+
+func TestInlineInsertionOwnershipRestoresOriginalFile(t *testing.T) {
+	before := "from django.urls import path\nurlpatterns = []\n"
+	after := "from reevit_webhook import reevit_webhook\n" +
+		"from django.urls import path\n" +
+		"urlpatterns = [\n" +
+		"    # " + webhookMountMarker + "\n" +
+		"    path(\"webhooks/reevit\", reevit_webhook),]\n"
+	fragments, err := insertedFragments(before, after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	entry := "shop/urls.py"
+	write(t, root, entry, after)
+	if _, err := removeGeneratedEdit(
+		Project{Root: root},
+		GeneratedEdit{
+			Path: entry, Kind: webhookMountMarker, Fragments: fragments,
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if cleaned := readFile(t, root, entry); cleaned != before {
+		t.Fatalf("inline insertion cleanup:\n%s\nwant:\n%s", cleaned, before)
+	}
+}

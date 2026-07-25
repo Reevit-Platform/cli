@@ -457,7 +457,7 @@ func insertedFragments(before, after string) ([]string, error) {
 			match++
 		}
 		if match == len(afterLines) {
-			return nil, fmt.Errorf("entry edit replaced existing content")
+			return insertedByteFragments(before, after)
 		}
 		if match > afterIndex {
 			fragments = append(fragments, strings.Join(afterLines[afterIndex:match], ""))
@@ -466,6 +466,29 @@ func insertedFragments(before, after string) ([]string, error) {
 	}
 	if afterIndex < len(afterLines) {
 		fragments = append(fragments, strings.Join(afterLines[afterIndex:], ""))
+	}
+	if len(fragments) == 0 {
+		return nil, fmt.Errorf("entry edit produced no trackable insertion")
+	}
+	return fragments, nil
+}
+
+func insertedByteFragments(before, after string) ([]string, error) {
+	fragments := []string{}
+	afterIndex := 0
+	for beforeIndex := 0; beforeIndex < len(before); beforeIndex++ {
+		match := strings.IndexByte(after[afterIndex:], before[beforeIndex])
+		if match < 0 {
+			return nil, fmt.Errorf("entry edit replaced existing content")
+		}
+		match += afterIndex
+		if match > afterIndex {
+			fragments = append(fragments, after[afterIndex:match])
+		}
+		afterIndex = match + 1
+	}
+	if afterIndex < len(after) {
+		fragments = append(fragments, after[afterIndex:])
 	}
 	if len(fragments) == 0 {
 		return nil, fmt.Errorf("entry edit produced no trackable insertion")
