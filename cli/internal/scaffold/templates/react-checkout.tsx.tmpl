@@ -2,27 +2,117 @@ import { useState } from "react";
 import { ReevitCheckout } from "@reevit/react";
 import "@reevit/react/styles.css";
 
-// Drop-in checkout button. Amounts are in the smallest currency unit
-// (e.g. 5000 = GHS 50.00). Set VITE_REEVIT_KEY in your .env.local —
-// use a test-mode key (pfk_test_…) while integrating.
+// reevit-checkout-config: {{.ConfigID}}
+const checkoutFields = {
+  amount: {{.CollectAmount}},
+  name: {{.CollectName}},
+  email: {{.CollectEmail}},
+  phone: {{.CollectPhone}},
+  reference: {{.CollectRef}},
+};
+const metadataFields{{if .TS}}: string[]{{end}} = [{{range .MetadataFields}}{{quote .}}, {{end}}];
+const formStyle = { display: "grid", gap: 12, maxWidth: 420 }{{if .TS}} as const{{end}};
+
+// Amounts use the smallest currency unit (e.g. 5000 = GHS 50.00).
+// Customer keys match Reevit workflow variables; custom keys become
+// metadata_<key> variables in workflow templates.
 export function ReevitCheckoutButton({{if .TS}}{
-  amount,
+  amount = 5000,
   currency = "GHS",
+  metadata = {},
 }: {
-  amount: number;
+  amount?: number;
   currency?: string;
-}{{else}}{ amount, currency = "GHS" }{{end}}) {
+  metadata?: Record<string, unknown>;
+}{{else}}{ amount = 5000, currency = "GHS", metadata = {} }{{end}}) {
   const [open, setOpen] = useState(false);
+  const [checkoutAmount, setCheckoutAmount] = useState(amount);
+  const [customerName, setCustomerName] = useState("");
+  const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
+  const [reference, setReference] = useState("");
+  const [customMetadata, setCustomMetadata] = useState(
+    Object.fromEntries(metadataFields.map((field) => [field, ""])),
+  );
+
+  const paymentMetadata = {
+    ...metadata,
+    ...customMetadata,
+    ...(customerName ? { customer_name: customerName } : {}),
+    ...(email ? { customer_email: email } : {}),
+    ...(phone ? { customer_phone: phone } : {}),
+    ...(reference ? { reference } : {}),
+  };
 
   return (
     <>
-      <button type="button" onClick={() => setOpen(true)}>
-        Pay now
-      </button>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          setOpen(true);
+        }}
+        style={formStyle}
+      >
+        {checkoutFields.amount && (
+          <label>
+            Amount (smallest currency unit)
+            <input
+              type="number"
+              min="1"
+              required
+              value={checkoutAmount}
+              onChange={(event) => setCheckoutAmount(Number(event.target.value))}
+            />
+          </label>
+        )}
+        {checkoutFields.name && (
+          <label>
+            Name
+            <input required value={customerName} onChange={(event) => setCustomerName(event.target.value)} />
+          </label>
+        )}
+        {checkoutFields.email && (
+          <label>
+            Email
+            <input type="email" required value={email} onChange={(event) => setEmail(event.target.value)} />
+          </label>
+        )}
+        {checkoutFields.phone && (
+          <label>
+            Phone number
+            <input type="tel" required value={phone} onChange={(event) => setPhone(event.target.value)} />
+          </label>
+        )}
+        {checkoutFields.reference && (
+          <label>
+            Payment reference
+            <input required value={reference} onChange={(event) => setReference(event.target.value)} />
+          </label>
+        )}
+        {metadataFields.map((field) => (
+          <label key={field}>
+            {field.replaceAll("_", " ")}
+            <input
+              required
+              value={customMetadata[field] ?? ""}
+              onChange={(event) =>
+                setCustomMetadata((current) => ({ ...current, [field]: event.target.value }))
+              }
+            />
+          </label>
+        ))}
+        <button type="submit">Pay now</button>
+      </form>
+
       <ReevitCheckout
         publicKey={import.meta.env.VITE_REEVIT_KEY ?? ""}
-        amount={amount}
+        amount={checkoutAmount}
         currency={currency}
+        email={email || undefined}
+        phone={phone || undefined}
+        customerName={customerName || undefined}
+        reference={reference || undefined}
+        metadata={paymentMetadata}
         paymentMethods={["card", "mobile_money"]}
         isOpen={open}
         onOpenChange={setOpen}
@@ -30,9 +120,7 @@ export function ReevitCheckoutButton({{if .TS}}{
           // TODO: show your confirmation UI
           console.log("payment succeeded", result);
         }}
-        onError={(error) => {
-          console.error("payment failed", error);
-        }}
+        onError={(error) => console.error("payment failed", error)}
         onClose={() => setOpen(false)}
       />
     </>

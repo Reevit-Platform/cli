@@ -2,13 +2,39 @@
   import { ReevitCheckout } from "@reevit/svelte";
   import "@reevit/svelte/styles.css";
 
-  // Amounts are in the smallest currency unit (e.g. 5000 = GHS 50.00).
-  // Set VITE_REEVIT_KEY in your env — use a test-mode key (pfk_test_…)
-  // while integrating.
-  export let amount{{if .TS}}: number{{end}};
+  // reevit-checkout-config: {{.ConfigID}}
+  const checkoutFields = {
+    amount: {{.CollectAmount}},
+    name: {{.CollectName}},
+    email: {{.CollectEmail}},
+    phone: {{.CollectPhone}},
+    reference: {{.CollectRef}},
+  };
+  const metadataFields{{if .TS}}: string[]{{end}} = [{{range .MetadataFields}}{{quote .}}, {{end}}];
+
+  // Customer keys match Reevit workflow variables; custom keys become
+  // metadata_<key> variables in workflow templates.
+  export let amount{{if .TS}}: number{{end}} = 5000;
   export let currency = "GHS";
+  export let metadata{{if .TS}}: Record<string, unknown>{{end}} = {};
 
   let open = false;
+  let checkoutAmount = amount;
+  let customerName = "";
+  let email = "";
+  let phone = "";
+  let reference = "";
+  let customMetadata = Object.fromEntries(
+    metadataFields.map((field) => [field, ""]),
+  );
+  $: paymentMetadata = {
+    ...metadata,
+    ...customMetadata,
+    ...(customerName ? { customer_name: customerName } : {}),
+    ...(email ? { customer_email: email } : {}),
+    ...(phone ? { customer_phone: phone } : {}),
+    ...(reference ? { reference } : {}),
+  };
 
   function onSuccess(event{{if .TS}}: CustomEvent{{end}}) {
     // TODO: show your confirmation UI
@@ -20,12 +46,49 @@
   }
 </script>
 
-<button type="button" on:click={() => (open = true)}>Pay now</button>
+<form style="display: grid; gap: 12px; max-width: 420px" on:submit|preventDefault={() => (open = true)}>
+  {#if checkoutFields.amount}
+    <label>
+      Amount (smallest currency unit)
+      <input bind:value={checkoutAmount} type="number" min="1" required />
+    </label>
+  {/if}
+  {#if checkoutFields.name}
+    <label>Name <input bind:value={customerName} required /></label>
+  {/if}
+  {#if checkoutFields.email}
+    <label>Email <input bind:value={email} type="email" required /></label>
+  {/if}
+  {#if checkoutFields.phone}
+    <label>Phone number <input bind:value={phone} type="tel" required /></label>
+  {/if}
+  {#if checkoutFields.reference}
+    <label>Payment reference <input bind:value={reference} required /></label>
+  {/if}
+  {#each metadataFields as field}
+    <label>
+      {field.replaceAll("_", " ")}
+      <input
+        value={customMetadata[field] ?? ""}
+        on:input={(event) => {
+          customMetadata = { ...customMetadata, [field]: event.currentTarget.value };
+        }}
+        required
+      />
+    </label>
+  {/each}
+  <button type="submit">Pay now</button>
+</form>
 
 <ReevitCheckout
   publicKey={import.meta.env.VITE_REEVIT_KEY ?? ""}
-  {amount}
+  amount={checkoutAmount}
   {currency}
+  {email}
+  {phone}
+  {reference}
+  customerName={customerName}
+  metadata={paymentMetadata}
   paymentMethods={["card", "mobile_money"]}
   isOpen={open}
   on:success={onSuccess}

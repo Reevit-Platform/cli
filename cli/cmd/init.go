@@ -20,6 +20,9 @@ var (
 	initDryRun          bool
 	initWebhookPath     string
 	initCheckoutPath    string
+	initCheckoutPage    string
+	initCheckoutFields  []string
+	initCheckoutMeta    []string
 	initClientPath      string
 	initRegisterWebhook string
 )
@@ -32,7 +35,8 @@ key), installs the matching Reevit SDK, wires REEVIT_* environment variables,
 and writes integration starter files — a webhook handler, a checkout
 component, or a server-side client, depending on the project.
 
-Existing files and env values are never overwritten.`,
+Generated files and env values are never overwritten. Existing pages are only
+updated when you choose checkout placement, using an idempotent marked block.`,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		out := cmd.OutOrStdout()
 
@@ -88,6 +92,9 @@ Existing files and env values are never overwritten.`,
 		}
 
 		applyPathOverrides(targets)
+		if err := configureCheckout(cmd, project, targets); err != nil {
+			return err
+		}
 
 		chosen := make([]string, len(targets))
 		for i, t := range targets {
@@ -163,7 +170,9 @@ Existing files and env values are never overwritten.`,
 		}
 
 		for _, f := range files {
-			if f.Skipped {
+			if f.Updated {
+				fmt.Fprintf(out, "✔ %s — checkout button added\n", f.Path)
+			} else if f.Skipped {
 				fmt.Fprintf(out, "• %s exists — skipped\n", f.Path)
 			} else {
 				fmt.Fprintf(out, "✔ %s\n", f.Path)
@@ -254,6 +263,113 @@ func applyPathOverrides(targets []scaffold.Target) {
 	}
 }
 
+func configureCheckout(cmd *cobra.Command, project scaffold.Project, targets []scaffold.Target) error {
+	checkoutIndex := -1
+	for i := range targets {
+		if targets[i].Key == scaffold.TargetCheckout {
+			checkoutIndex = i
+			break
+		}
+	}
+
+	hasFlags := strings.TrimSpace(initCheckoutPage) != "" || len(initCheckoutFields) > 0 || len(initCheckoutMeta) > 0
+	if checkoutIndex < 0 {
+		if hasFlags {
+			return fmt.Errorf("--checkout-page, --checkout-fields, and --checkout-metadata require --target checkout")
+		}
+		return nil
+	}
+
+	nonInteractive := initYes
+	if nonInteractive && !hasFlags {
+		return nil
+	}
+
+	pageFlag := strings.TrimSpace(initCheckoutPage)
+	if pageFlag == "-" {
+		pageFlag = ""
+	}
+	options := &scaffold.CheckoutOptions{PagePath: pageFlag}
+	fieldValues := append([]string(nil), initCheckoutFields...)
+	metadataValues := append([]string(nil), initCheckoutMeta...)
+
+	if !nonInteractive && strings.TrimSpace(initCheckoutPage) == "" {
+		candidates := scaffold.CheckoutPageCandidates(project)
+		defaultPage := ""
+		if len(candidates) > 0 {
+			defaultPage = candidates[0]
+		}
+
+		page, err := promptString(
+			cmd.OutOrStdout(),
+			cmd.InOrStdin(),
+			"Which existing page should receive the checkout button? (Enter - to only create the component)",
+			defaultPage,
+		)
+		if err != nil {
+			return err
+		}
+		if page != "-" {
+			options.PagePath = page
+		}
+	}
+
+	if !nonInteractive && len(initCheckoutFields) == 0 {
+		labels := []string{
+			"Amount / price",
+			"Customer name",
+			"Customer email",
+			"Customer phone number",
+			"Payment reference",
+		}
+		picks, err := choose(cmd.OutOrStdout(), cmd.InOrStdin(), "What should the checkout form collect?", labels, true)
+		if err != nil {
+			return err
+		}
+		allFields := []string{"amount", "name", "email", "phone", "reference"}
+		fieldValues = fieldValues[:0]
+		for _, pick := range picks {
+			fieldValues = append(fieldValues, allFields[pick])
+		}
+	}
+
+	if !nonInteractive && len(initCheckoutMeta) == 0 {
+		custom, err := promptString(
+			cmd.OutOrStdout(),
+			cmd.InOrStdin(),
+			"Extra workflow metadata fields (comma-separated, e.g. order_id,product_sku; Enter for none):",
+			"",
+		)
+		if err != nil {
+			return err
+		}
+		if custom != "" {
+			metadataValues = strings.Split(custom, ",")
+		}
+	}
+
+	fields, err := scaffold.ParseCheckoutFields(splitCommaValues(fieldValues))
+	if err != nil {
+		return err
+	}
+	metadataFields, err := scaffold.ParseMetadataFields(splitCommaValues(metadataValues))
+	if err != nil {
+		return err
+	}
+	options.Fields = fields
+	options.MetadataFields = metadataFields
+	targets[checkoutIndex].Checkout = options
+	return nil
+}
+
+func splitCommaValues(values []string) []string {
+	var split []string
+	for _, value := range values {
+		split = append(split, strings.Split(value, ",")...)
+	}
+	return split
+}
+
 // registerWebhookEndpoint optionally registers a production webhook endpoint
 // in the dashboard. Needs webhooks:write — keys minted before that scope
 // joined the pairing defaults get a pointer to re-login instead of an error.
@@ -333,6 +449,9 @@ func printPlan(out interface{ Write([]byte) (int, error) }, project scaffold.Pro
 		for _, path := range t.Files {
 			fmt.Fprintf(out, "  write %s\n", path)
 		}
+		if t.Checkout != nil && t.Checkout.PagePath != "" {
+			fmt.Fprintf(out, "  update %s (add checkout button)\n", t.Checkout.PagePath)
+		}
 	}
 
 	return nil
@@ -403,6 +522,9 @@ func init() {
 	initCmd.Flags().BoolVar(&initDryRun, "dry-run", false, "print what would happen without writing anything")
 	initCmd.Flags().StringVar(&initWebhookPath, "webhook-path", "", "custom output path for the webhook handler")
 	initCmd.Flags().StringVar(&initCheckoutPath, "checkout-path", "", "custom output path for the checkout component")
+	initCmd.Flags().StringVar(&initCheckoutPage, "checkout-page", "", "existing page where the checkout button should be added")
+	initCmd.Flags().StringSliceVar(&initCheckoutFields, "checkout-fields", nil, "fields to collect: amount,name,email,phone,reference")
+	initCmd.Flags().StringSliceVar(&initCheckoutMeta, "checkout-metadata", nil, "custom metadata fields to collect for payments and workflows")
 	initCmd.Flags().StringVar(&initClientPath, "client-path", "", "custom output path for the server client")
 	initCmd.Flags().StringVar(&initRegisterWebhook, "register-webhook", "", "register this production webhook endpoint in your dashboard")
 

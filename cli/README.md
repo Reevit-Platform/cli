@@ -40,7 +40,7 @@ reevit doctor --webhook-url http://localhost:3000/api/webhooks/reevit
 | Command | What it does |
 | --- | --- |
 | `reevit login` | Opens the dashboard in your browser to authorize the CLI — a **test-mode** key is created for you and stored locally (0600). `--key pfk_...` pastes a key manually; `--no-browser` prints the URL instead of opening it |
-| `reevit init` | Sets Reevit up in the current project: detects the stack + package manager, installs the SDK, wires env vars (including the browser-exposed `NEXT_PUBLIC_`/`VITE_` key for checkout), scaffolds a webhook handler / checkout component / server client. `--target`, `-y`, `--dry-run`, `--webhook-path`/`--checkout-path`/`--client-path`, `--register-webhook <url>` |
+| `reevit init` | Sets Reevit up in the current project: detects the stack + package manager, installs the SDK, wires env vars (including the browser-exposed `NEXT_PUBLIC_`/`VITE_` key for checkout), scaffolds a webhook handler / checkout component / server client, and can insert checkout into an existing page. `--target`, `-y`, `--dry-run`, `--checkout-page`, `--checkout-fields`, `--checkout-metadata`, custom output paths, `--register-webhook <url>` |
 | `reevit doctor [--webhook-url url] [--e2e]` | Verifies the setup: key against the API, env wiring, SDK installed, signed + tampered webhook round-trip — and with `--e2e`, a **real** sandbox payment through the simulator delivered to your handler |
 | `reevit payments list [--status s] [--limit n]` | Recent payments in the current mode |
 | `reevit trigger <event>` | Fire a test event by creating a **real** sandbox payment through the simulator |
@@ -66,7 +66,10 @@ the stack:
 
 - **Webhook handler** — signature-verified receiver using the SDK's verify
   helper (inlined for Go, whose SDK ships no inbound verifier)
-- **Checkout component** — `ReevitCheckout` drop-in for React/Next/Vue/Svelte
+- **Checkout component** — `ReevitCheckout` drop-in for React/Next/Vue/Svelte.
+  In an interactive run, the CLI asks which existing page should receive the
+  button, which standard fields to collect (amount, name, email, phone, and
+  payment reference), and which custom payment metadata fields to add.
 - **Server client** — SDK client wired to `REEVIT_API_KEY` + `REEVIT_ORG_ID`
   with a payment-intent example
 
@@ -80,7 +83,25 @@ Place code wherever you like with `--webhook-path`, `--checkout-path`, and
 interactive prompt) registers the production endpoint in your dashboard —
 needs a key with `webhooks:write` (fresh `reevit login` keys have it).
 
-Existing files and env values are never overwritten; re-running is safe.
+Checkout can also be fully scripted:
+
+```bash
+reevit init --target checkout \
+  --checkout-page src/app/cart/page.tsx \
+  --checkout-fields price,name,email,phone,reference \
+  --checkout-metadata order_id,product_sku
+```
+
+The page update is marker-based and idempotent. Standard customer fields are
+stored under `customer_name`, `customer_email`, and `customer_phone`, matching
+workflow variables. Custom keys are attached unchanged and are available to
+workflow templates as `metadata_<key>` (for example,
+`metadata_order_id`). Enter `-` when the interactive page question appears to
+keep the component standalone.
+
+Generated integration files and env values are never overwritten. The selected
+checkout page is updated only with a clearly marked, idempotent block, so
+re-running is safe.
 
 ### `doctor`
 

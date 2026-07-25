@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"text/template"
 )
@@ -33,11 +34,20 @@ type Target struct {
 	InstallCmds [][]string
 	// Run marks InstallCmds safe to execute rather than just print.
 	Run bool
+	// Checkout configures collected fields and optional existing-page insertion.
+	Checkout *CheckoutOptions
 }
 
 // templateData feeds the .tmpl files.
 type templateData struct {
-	TS bool
+	TS             bool
+	CollectAmount  bool
+	CollectName    bool
+	CollectEmail   bool
+	CollectPhone   bool
+	CollectRef     bool
+	MetadataFields []string
+	ConfigID       string
 }
 
 // ext picks the TypeScript or JavaScript extension for JS-family files.
@@ -189,6 +199,7 @@ func TargetsFor(project Project) []Target {
 type FileResult struct {
 	Path    string
 	Skipped bool // an existing file is never overwritten
+	Updated bool // an existing page was intentionally updated with an idempotent insertion
 }
 
 // Apply renders the targets' templates into the project. Existing files are
@@ -196,9 +207,22 @@ type FileResult struct {
 func Apply(project Project, targets []Target) ([]FileResult, error) {
 	var results []FileResult
 
-	data := templateData{TS: project.TypeScript}
+	preparedTargets := make([]Target, len(targets))
+	pagePaths := make(map[int]string)
+	for i, target := range targets {
+		target = configuredCheckoutTarget(project, target)
+		preparedTargets[i] = target
+		pagePath, err := validateCheckoutIntegration(project, target)
+		if err != nil {
+			return nil, err
+		}
+		if pagePath != "" {
+			pagePaths[i] = pagePath
+		}
+	}
 
-	for _, target := range targets {
+	for i, target := range preparedTargets {
+		data := checkoutTemplateData(project.TypeScript, target.Checkout)
 		for tmplName, outRel := range target.Files {
 			outPath := filepath.Join(project.Root, outRel)
 
@@ -223,13 +247,27 @@ func Apply(project Project, targets []Target) ([]FileResult, error) {
 
 			results = append(results, FileResult{Path: outRel})
 		}
+
+		if pagePath := pagePaths[i]; pagePath != "" {
+			updated, err := injectCheckout(project, target, pagePath)
+			if err != nil {
+				return results, err
+			}
+			results = append(results, FileResult{
+				Path:    filepath.ToSlash(target.Checkout.PagePath),
+				Skipped: !updated,
+				Updated: updated,
+			})
+		}
 	}
 
 	return results, nil
 }
 
 func render(name string, data templateData) (string, error) {
-	tmpl, err := template.ParseFS(templateFS, "templates/"+name)
+	tmpl, err := template.New(name).Funcs(template.FuncMap{
+		"quote": strconv.Quote,
+	}).ParseFS(templateFS, "templates/"+name)
 	if err != nil {
 		return "", fmt.Errorf("parse template %s: %w", name, err)
 	}
@@ -240,6 +278,29 @@ func render(name string, data templateData) (string, error) {
 	}
 
 	return sb.String(), nil
+}
+
+func checkoutTemplateData(ts bool, options *CheckoutOptions) templateData {
+	data := templateData{TS: ts, ConfigID: checkoutConfigID(options)}
+	if options == nil {
+		return data
+	}
+	for _, field := range options.Fields {
+		switch field {
+		case CheckoutFieldAmount:
+			data.CollectAmount = true
+		case CheckoutFieldName:
+			data.CollectName = true
+		case CheckoutFieldEmail:
+			data.CollectEmail = true
+		case CheckoutFieldPhone:
+			data.CollectPhone = true
+		case CheckoutFieldReference:
+			data.CollectRef = true
+		}
+	}
+	data.MetadataFields = append([]string(nil), options.MetadataFields...)
+	return data
 }
 
 // NpmInstallPlans returns one install command per package manager with a
