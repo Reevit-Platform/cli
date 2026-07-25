@@ -18,6 +18,7 @@ type Manifest struct {
 	CheckoutKeyID  string   `json:"checkout_key_id,omitempty"`
 	Origin         string   `json:"origin,omitempty"`
 	GeneratedFiles []string `json:"generated_files,omitempty"`
+	GeneratedEdits []string `json:"generated_edits,omitempty"`
 }
 
 func ReadManifest(project Project) (Manifest, error) {

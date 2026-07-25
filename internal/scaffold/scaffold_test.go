@@ -69,7 +69,7 @@ func TestNextCheckoutCreatesRunnableDemoRoute(t *testing.T) {
 	if _, ok := checkout.Files["next-app-demo-page.tsx.tmpl"]; !ok {
 		t.Fatalf("checkout files = %#v; missing runnable demo page", checkout.Files)
 	}
-	if _, err := Apply(project, []Target{checkout}); err != nil {
+	if _, err := Apply(project, []Target{checkout}, ApplyOptions{}); err != nil {
 		t.Fatalf("Apply() error = %v", err)
 	}
 	page := readFile(t, project.Root, "app/reevit-demo/page.tsx")
@@ -84,7 +84,7 @@ func TestSPAAdaptersCreateRoutableDemoEntries(t *testing.T) {
 	for _, stack := range []Stack{StackReact, StackVue, StackSvelte} {
 		t.Run(string(stack), func(t *testing.T) {
 			project := Project{Root: t.TempDir(), Stack: stack, TypeScript: true}
-			if _, err := Apply(project, TargetsFor(project)); err != nil {
+			if _, err := Apply(project, TargetsFor(project), ApplyOptions{}); err != nil {
 				t.Fatalf("Apply() error = %v", err)
 			}
 			html := readFile(t, project.Root, "reevit-demo.html")
@@ -107,7 +107,7 @@ func TestApplyWritesAndNeverOverwrites(t *testing.T) {
 		t.Fatalf("next targets = %d, want 3", len(targets))
 	}
 
-	results, err := Apply(project, targets)
+	results, err := Apply(project, targets, ApplyOptions{})
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestApplyWritesAndNeverOverwrites(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	results, err = Apply(project, targets)
+	results, err = Apply(project, targets, ApplyOptions{})
 	if err != nil {
 		t.Fatalf("second Apply: %v", err)
 	}
@@ -191,6 +191,33 @@ func TestApplyCanReplaceGeneratedFilesWithBackup(t *testing.T) {
 	}
 }
 
+func TestApplyRefusesFileChangedAfterBackup(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "package.json", `{"dependencies":{"next":"16"}}`)
+	write(t, dir, "tsconfig.json", "{}")
+	project := Detect(dir)
+	checkout := []Target{TargetsFor(project)[1]}
+	component := "components/reevit-checkout-button.tsx"
+	write(t, dir, component, "before backup")
+
+	preparation, err := PrepareApply(project, checkout, Manifest{}, ExistingFilesOverwrite)
+	if err != nil {
+		t.Fatalf("PrepareApply: %v", err)
+	}
+	write(t, dir, component, "changed by installer")
+
+	_, err = Apply(project, checkout, ApplyOptions{
+		ExistingFiles: ExistingFilesOverwrite,
+		Preparation:   preparation,
+	})
+	if err == nil || !strings.Contains(err.Error(), "changed after it was backed up") {
+		t.Fatalf("Apply error = %v", err)
+	}
+	if got := readFile(t, dir, component); got != "changed by installer" {
+		t.Fatalf("changed file was overwritten: %q", got)
+	}
+}
+
 func TestFreshReconcilesPreviouslyGeneratedFiles(t *testing.T) {
 	dir := t.TempDir()
 	write(t, dir, "package.json", `{"dependencies":{"next":"16"}}`)
@@ -233,6 +260,37 @@ func TestFreshReconcilesPreviouslyGeneratedFiles(t *testing.T) {
 	}
 }
 
+func TestFreshReportsPreviouslyGeneratedFileAlreadyMissing(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "package.json", `{"dependencies":{"next":"16"}}`)
+	project := Detect(dir)
+	checkout := []Target{TargetsFor(project)[1]}
+	stale := "lib/missing-reevit-client.ts"
+
+	preparation, err := PrepareApply(
+		project,
+		checkout,
+		Manifest{GeneratedFiles: []string{stale}},
+		ExistingFilesFresh,
+	)
+	if err != nil {
+		t.Fatalf("PrepareApply: %v", err)
+	}
+	results, err := Apply(project, checkout, ApplyOptions{
+		ExistingFiles: ExistingFilesFresh,
+		Preparation:   preparation,
+	})
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	for _, result := range results {
+		if result.Path == stale && result.Removed {
+			return
+		}
+	}
+	t.Fatalf("missing stale path was not reconciled: %v", results)
+}
+
 func TestApplyHonorsSrcDirAndJS(t *testing.T) {
 	dir := t.TempDir()
 	write(t, dir, "package.json", `{"dependencies":{"next":"16"}}`)
@@ -244,7 +302,7 @@ func TestApplyHonorsSrcDirAndJS(t *testing.T) {
 		t.Fatal("project must detect as JS")
 	}
 
-	results, err := Apply(project, TargetsFor(project))
+	results, err := Apply(project, TargetsFor(project), ApplyOptions{})
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
@@ -352,7 +410,7 @@ func TestPythonWebhookUsesDetectedFramework(t *testing.T) {
 			if _, ok := webhook.Files[test.template]; !ok {
 				t.Fatalf("webhook files = %#v, want template %s", webhook.Files, test.template)
 			}
-			if _, err := Apply(project, []Target{webhook}); err != nil {
+			if _, err := Apply(project, []Target{webhook}, ApplyOptions{}); err != nil {
 				t.Fatal(err)
 			}
 			if got := readFile(t, project.Root, "reevit_webhook.py"); !strings.Contains(got, test.needle) {

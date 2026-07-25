@@ -210,6 +210,7 @@ func Apply(ctx context.Context, plan Plan, deps Dependencies) (Result, error) {
 		return result, markIncomplete(plan.Project, manifest, err)
 	}
 	manifest.GeneratedFiles = reconcileGeneratedFiles(manifest.GeneratedFiles, result.Files)
+	manifest.GeneratedEdits = reconcileGeneratedEdits(manifest.GeneratedEdits, result.Files)
 	if err := scaffold.WriteManifest(plan.Project, manifest); err != nil {
 		return result, err
 	}
@@ -393,6 +394,9 @@ func reconcileGeneratedFiles(previous []string, results []scaffold.FileResult) [
 		owned[filepath.ToSlash(filepath.Clean(path))] = true
 	}
 	for _, result := range results {
+		if result.ManagedEdit {
+			continue
+		}
 		path := filepath.ToSlash(filepath.Clean(result.Path))
 		switch {
 		case result.Removed:
@@ -407,6 +411,30 @@ func reconcileGeneratedFiles(previous []string, results []scaffold.FileResult) [
 	}
 	slices.Sort(files)
 	return files
+}
+
+func reconcileGeneratedEdits(previous []string, results []scaffold.FileResult) []string {
+	owned := make(map[string]bool, len(previous)+len(results))
+	for _, path := range previous {
+		owned[filepath.ToSlash(filepath.Clean(path))] = true
+	}
+	for _, result := range results {
+		if !result.ManagedEdit {
+			continue
+		}
+		path := filepath.ToSlash(filepath.Clean(result.Path))
+		if result.Removed {
+			delete(owned, path)
+		} else {
+			owned[path] = true
+		}
+	}
+	edits := make([]string, 0, len(owned))
+	for path := range owned {
+		edits = append(edits, path)
+	}
+	slices.Sort(edits)
+	return edits
 }
 
 func hasTarget(targets []scaffold.Target, key scaffold.TargetKey) bool {

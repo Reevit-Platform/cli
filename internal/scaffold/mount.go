@@ -15,6 +15,7 @@ type FileEdit struct {
 	Path        string
 	Description string
 	apply       func(string) (string, error)
+	remove      func(string) string
 }
 
 // WebhookMountEdits returns an entry-file edit only when the adapter can
@@ -45,8 +46,88 @@ func WebhookMountEdits(project Project) []FileEdit {
 	if edit.Path == "" {
 		return nil
 	}
+	edit.remove = func(content string) string {
+		return removeWebhookMount(content, project.Framework)
+	}
 
 	return []FileEdit{edit}
+}
+
+func WebhookMountRemovalEdits(project Project, trackedPaths []string) []FileEdit {
+	paths := append([]string(nil), trackedPaths...)
+	if len(paths) == 0 {
+		switch project.Framework {
+		case FrameworkExpress:
+			if path := javascriptEntry(project.Root); path != "" {
+				paths = append(paths, path)
+			}
+		case FrameworkFastAPI:
+			if path := pythonEntry(project.Root, "FastAPI("); path != "" {
+				paths = append(paths, path)
+			}
+		case FrameworkFlask:
+			if path := pythonEntry(project.Root, "Flask("); path != "" {
+				paths = append(paths, path)
+			}
+		case FrameworkDjango:
+			if matches, _ := filepath.Glob(filepath.Join(project.Root, "*", "urls.py")); len(matches) == 1 {
+				if path, err := filepath.Rel(project.Root, matches[0]); err == nil {
+					paths = append(paths, filepath.ToSlash(path))
+				}
+			}
+		case FrameworkLaravel:
+			paths = append(paths, "bootstrap/app.php")
+		default:
+			if project.Stack == StackGo {
+				paths = append(paths, "main.go")
+			}
+		}
+	}
+
+	edits := make([]FileEdit, 0, len(paths))
+	for _, path := range paths {
+		path = filepath.ToSlash(filepath.Clean(path))
+		edits = append(edits, FileEdit{
+			Path:        path,
+			Description: "remove the stale Reevit webhook mount",
+			remove: func(content string) string {
+				return removeWebhookMount(content, project.Framework)
+			},
+		})
+	}
+	return edits
+}
+
+func removeWebhookMount(content string, framework Framework) string {
+	lines := strings.SplitAfter(content, "\n")
+	filtered := make([]string, 0, len(lines))
+	foundMarker := false
+	for index := 0; index < len(lines); index++ {
+		if !strings.Contains(lines[index], webhookMountMarker) {
+			filtered = append(filtered, lines[index])
+			continue
+		}
+		foundMarker = true
+		following := 1
+		if framework == FrameworkLaravel {
+			following = 3
+		}
+		index += following
+	}
+	updated := strings.Join(filtered, "")
+	if foundMarker {
+		for _, generatedImport := range []string{
+			"from reevit_webhook import router as reevit_router\n",
+			"from reevit_webhook import reevit_webhooks\n",
+			"from reevit_webhook import reevit_webhook\n",
+		} {
+			updated = strings.Replace(updated, generatedImport, "", 1)
+		}
+		for strings.Contains(updated, "\n\n\n") {
+			updated = strings.ReplaceAll(updated, "\n\n\n", "\n\n")
+		}
+	}
+	return updated
 }
 
 func expressMountEdit(project Project) FileEdit {
@@ -419,7 +500,7 @@ func applyFileEdit(project Project, edit FileEdit) (FileResult, error) {
 		return FileResult{}, fmt.Errorf("edit entry file %s: %w", edit.Path, err)
 	}
 	if updated == string(raw) {
-		return FileResult{Path: edit.Path, Skipped: true}, nil
+		return FileResult{Path: edit.Path, Skipped: true, ManagedEdit: true}, nil
 	}
 	info, err := os.Stat(path)
 	if err != nil {
@@ -429,7 +510,35 @@ func applyFileEdit(project Project, edit FileEdit) (FileResult, error) {
 		return FileResult{}, fmt.Errorf("write entry file %s: %w", edit.Path, err)
 	}
 
-	return FileResult{Path: edit.Path}, nil
+	return FileResult{Path: edit.Path, ManagedEdit: true}, nil
+}
+
+func removeFileEdit(project Project, edit FileEdit) (FileResult, error) {
+	path := filepath.Join(project.Root, edit.Path)
+	raw, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return FileResult{Path: edit.Path, Removed: true, ManagedEdit: true}, nil
+	}
+	if err != nil {
+		return FileResult{}, fmt.Errorf("read entry file %s: %w", edit.Path, err)
+	}
+	if edit.remove == nil {
+		return FileResult{}, fmt.Errorf("entry edit %s cannot be removed safely", edit.Path)
+	}
+	updated := edit.remove(string(raw))
+	if updated == string(raw) {
+		return FileResult{
+			Path: edit.Path, Skipped: true, Removed: true, ManagedEdit: true,
+		}, nil
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return FileResult{}, fmt.Errorf("inspect entry file %s: %w", edit.Path, err)
+	}
+	if err := atomicWriteFile(path, []byte(updated), info.Mode().Perm()); err != nil {
+		return FileResult{}, fmt.Errorf("remove entry edit %s: %w", edit.Path, err)
+	}
+	return FileResult{Path: edit.Path, Removed: true, ManagedEdit: true}, nil
 }
 
 func atomicWriteFile(path string, content []byte, mode os.FileMode) (resultErr error) {

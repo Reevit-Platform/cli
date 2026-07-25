@@ -147,8 +147,8 @@ it asks whether to:
 - **Replace generated integration files** after backing up every replaced file
   under `.reevit/backups/`.
 - **Start fresh** by backing up prior generated files, removing stale generated
-  outputs, regenerating the selected integration, and rotating the project's
-  test credentials.
+  outputs and Reevit-managed mount blocks, regenerating the selected
+  integration, and rotating the project's test credentials.
 
 Non-interactive runs remain conservative: use `--overwrite` to replace
 generated files or `--fresh` to replace them and rotate test credentials.

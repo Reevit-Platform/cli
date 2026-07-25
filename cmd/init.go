@@ -597,18 +597,18 @@ func configureExistingSetupPlan(
 			Reason: "apply the developer's explicit overwrite choice recoverably",
 		})
 	case scaffold.ExistingFilesFresh:
-		plan.Operations = append(plan.Operations,
-			setup.Operation{
-				Kind:   setup.WriteFile,
-				Detail: "back up prior generated files, remove stale outputs, and regenerate the selection",
-				Reason: "start the local Reevit integration from a clean generated state",
-			},
-			setup.Operation{
-				Kind:   setup.BootstrapPlatform,
-				Detail: "rotate project test credentials",
-				Reason: "start the Reevit test project with fresh credentials",
-			},
-		)
+		plan.Operations = append(plan.Operations, setup.Operation{
+			Kind:   setup.WriteFile,
+			Detail: "back up prior generated files, remove stale outputs, and regenerate the selection",
+			Reason: "start the local Reevit integration from a clean generated state",
+		})
+	}
+	if rotateCredentials {
+		plan.Operations = append(plan.Operations, setup.Operation{
+			Kind:   setup.BootstrapPlatform,
+			Detail: "rotate project test credentials",
+			Reason: "replace the project's managed test credentials explicitly",
+		})
 	}
 }
 

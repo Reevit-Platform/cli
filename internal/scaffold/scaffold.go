@@ -1,6 +1,7 @@
 package scaffold
 
 import (
+	"crypto/sha256"
 	"embed"
 	"fmt"
 	"os"
@@ -307,10 +308,11 @@ func pythonInstallCommand(installer Installer) []string {
 
 // FileResult reports one written (or skipped) file.
 type FileResult struct {
-	Path       string
-	Skipped    bool
-	Removed    bool
-	BackupPath string
+	Path        string
+	Skipped     bool
+	Removed     bool
+	ManagedEdit bool
+	BackupPath  string
 }
 
 type ExistingFilesPolicy string
@@ -323,8 +325,11 @@ const (
 )
 
 type ApplyPreparation struct {
-	Backups map[string]string
-	Remove  []string
+	Backups     map[string]string
+	Digests     map[string][sha256.Size]byte
+	Missing     map[string]bool
+	Remove      []string
+	RemoveEdits []FileEdit
 }
 
 type ApplyOptions struct {
@@ -338,7 +343,11 @@ func PrepareApply(
 	manifest Manifest,
 	policy ExistingFilesPolicy,
 ) (ApplyPreparation, error) {
-	preparation := ApplyPreparation{Backups: map[string]string{}}
+	preparation := ApplyPreparation{
+		Backups: map[string]string{},
+		Digests: map[string][sha256.Size]byte{},
+		Missing: map[string]bool{},
+	}
 	if !validExistingFilesPolicy(policy) {
 		return ApplyPreparation{}, fmt.Errorf("invalid existing-files policy %q", policy)
 	}
@@ -372,6 +381,19 @@ func PrepareApply(
 				preparation.Remove = append(preparation.Remove, filepath.ToSlash(clean))
 			}
 		}
+		if containsString(manifest.Capabilities, "webhook") &&
+			!targetsContain(targets, TargetWebhook) {
+			preparation.RemoveEdits = WebhookMountRemovalEdits(
+				project,
+				manifest.GeneratedEdits,
+			)
+			for _, edit := range preparation.RemoveEdits {
+				if err := validateOutputPath(project.Root, edit.Path); err != nil {
+					return ApplyPreparation{}, err
+				}
+				candidates[filepath.Clean(edit.Path)] = true
+			}
+		}
 	}
 
 	paths := make([]string, 0, len(candidates))
@@ -385,15 +407,22 @@ func PrepareApply(
 	)
 	for _, path := range paths {
 		if _, err := os.Stat(filepath.Join(project.Root, path)); os.IsNotExist(err) {
+			preparation.Missing[filepath.ToSlash(path)] = true
 			continue
 		} else if err != nil {
 			return ApplyPreparation{}, fmt.Errorf("inspect %s for backup: %w", path, err)
+		}
+		content, err := os.ReadFile(filepath.Join(project.Root, path))
+		if err != nil {
+			return ApplyPreparation{}, fmt.Errorf("read %s for backup preparation: %w", path, err)
 		}
 		backupPath, err := backupFile(project.Root, backupRoot, path)
 		if err != nil {
 			return ApplyPreparation{}, err
 		}
-		preparation.Backups[filepath.ToSlash(path)] = backupPath
+		clean := filepath.ToSlash(path)
+		preparation.Backups[clean] = backupPath
+		preparation.Digests[clean] = sha256.Sum256(content)
 	}
 	return preparation, nil
 }
@@ -401,21 +430,28 @@ func PrepareApply(
 // Apply renders the targets' templates into the project. Existing files are
 // left untouched unless overwrite is explicit; replaced files are backed up
 // under .reevit/backups first.
-func Apply(project Project, targets []Target, options ...ApplyOptions) ([]FileResult, error) {
+func Apply(project Project, targets []Target, opts ApplyOptions) ([]FileResult, error) {
 	var results []FileResult
 
 	data := templateData{TS: project.TypeScript}
-	var opts ApplyOptions
-	if len(options) > 0 {
-		opts = options[0]
-	}
 	if !validExistingFilesPolicy(opts.ExistingFiles) {
 		return results, fmt.Errorf("invalid existing-files policy %q", opts.ExistingFiles)
+	}
+	if err := revalidatePreparation(project.Root, opts.Preparation); err != nil {
+		return results, err
 	}
 	overwrite := opts.ExistingFiles == ExistingFilesOverwrite ||
 		opts.ExistingFiles == ExistingFilesFresh
 
 	if opts.ExistingFiles == ExistingFilesFresh {
+		for _, edit := range opts.Preparation.RemoveEdits {
+			result, err := removeFileEdit(project, edit)
+			if err != nil {
+				return results, err
+			}
+			result.BackupPath = opts.Preparation.Backups[filepath.ToSlash(filepath.Clean(edit.Path))]
+			results = append(results, result)
+		}
 		for _, relative := range opts.Preparation.Remove {
 			if err := validateOutputPath(project.Root, relative); err != nil {
 				return results, err
@@ -424,6 +460,7 @@ func Apply(project Project, targets []Target, options ...ApplyOptions) ([]FileRe
 			backupPath, backedUp := opts.Preparation.Backups[clean]
 			path := filepath.Join(project.Root, relative)
 			if _, err := os.Stat(path); os.IsNotExist(err) {
+				results = append(results, FileResult{Path: clean, Removed: true})
 				continue
 			} else if err != nil {
 				return results, fmt.Errorf("inspect stale generated file %s: %w", relative, err)
@@ -491,6 +528,56 @@ func Apply(project Project, targets []Target, options ...ApplyOptions) ([]FileRe
 	}
 
 	return results, nil
+}
+
+func targetsContain(targets []Target, key TargetKey) bool {
+	for _, target := range targets {
+		if target.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
+func containsString(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func revalidatePreparation(root string, preparation ApplyPreparation) error {
+	for relative, expected := range preparation.Digests {
+		if err := validateOutputPath(root, relative); err != nil {
+			return err
+		}
+		content, err := os.ReadFile(filepath.Join(root, relative))
+		if err != nil {
+			return fmt.Errorf("revalidate %s before replacement: %w", relative, err)
+		}
+		if sha256.Sum256(content) != expected {
+			return fmt.Errorf(
+				"%s changed after it was backed up; no files were replaced — review the change and rerun init",
+				relative,
+			)
+		}
+	}
+	for relative := range preparation.Missing {
+		if err := validateOutputPath(root, relative); err != nil {
+			return err
+		}
+		if _, err := os.Lstat(filepath.Join(root, relative)); err == nil {
+			return fmt.Errorf(
+				"%s was created after overwrite preparation; no files were replaced — review it and rerun init",
+				relative,
+			)
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("revalidate missing output %s: %w", relative, err)
+		}
+	}
+	return nil
 }
 
 func backupFile(root, backupRoot, relative string) (string, error) {

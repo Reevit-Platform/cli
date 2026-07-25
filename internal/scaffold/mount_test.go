@@ -112,10 +112,10 @@ return Application::configure(basePath: dirname(__DIR__))
 			if err := Preflight(test.project, targets, Manifest{}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := Apply(test.project, targets); err != nil {
+			if _, err := Apply(test.project, targets, ApplyOptions{}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := Apply(test.project, targets); err != nil {
+			if _, err := Apply(test.project, targets, ApplyOptions{}); err != nil {
 				t.Fatal(err)
 			}
 
@@ -135,6 +135,36 @@ return Application::configure(basePath: dirname(__DIR__))
 				strings.Index(updated, "from __future__ import") >
 					strings.Index(updated, "from reevit_webhook import") {
 				t.Fatalf("Reevit import preceded Python future import:\n%s", updated)
+			}
+
+			var withoutWebhook []Target
+			for _, target := range targets {
+				if target.Key != TargetWebhook {
+					withoutWebhook = append(withoutWebhook, target)
+				}
+			}
+			preparation, err := PrepareApply(
+				test.project,
+				withoutWebhook,
+				Manifest{
+					Capabilities:   []string{"webhook"},
+					GeneratedEdits: []string{test.entry},
+				},
+				ExistingFilesFresh,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Apply(test.project, withoutWebhook, ApplyOptions{
+				ExistingFiles: ExistingFilesFresh,
+				Preparation:   preparation,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			cleaned := readFile(t, root, test.entry)
+			if strings.Contains(cleaned, webhookMountMarker) ||
+				strings.Contains(cleaned, test.want) {
+				t.Fatalf("fresh setup left a stale webhook mount:\n%s", cleaned)
 			}
 		})
 	}

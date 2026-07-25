@@ -374,6 +374,24 @@ func TestApplyFreshReconcilesPriorGeneratedFilesAndManifest(t *testing.T) {
 	}
 }
 
+func TestReconcileGeneratedOwnershipSeparatesFilesAndHostEdits(t *testing.T) {
+	results := []scaffold.FileResult{
+		{Path: "reevit_webhook.py"},
+		{Path: "main.py", ManagedEdit: true},
+		{Path: "old.py", Removed: true},
+		{Path: "old-main.py", ManagedEdit: true, Removed: true},
+	}
+
+	files := reconcileGeneratedFiles([]string{"old.py"}, results)
+	if !reflect.DeepEqual(files, []string{"reevit_webhook.py"}) {
+		t.Fatalf("generated files = %v", files)
+	}
+	edits := reconcileGeneratedEdits([]string{"old-main.py"}, results)
+	if !reflect.DeepEqual(edits, []string{"main.py"}) {
+		t.Fatalf("generated edits = %v", edits)
+	}
+}
+
 func setupFixture(t *testing.T) (scaffold.Project, []scaffold.Target) {
 	t.Helper()
 	project := scaffold.Project{
