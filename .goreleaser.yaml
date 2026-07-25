@@ -40,6 +40,30 @@ release:
     owner: Reevit-Platform
     name: cli
   draft: false
+  name_template: "Reevit CLI {{ .Version }}"
+  header: |
+    Set up Reevit in a supported project, generate a working checkout and
+    webhook integration, and test the complete payment flow locally.
+
+    ## Install
+
+    ```sh
+    npm install -g @reevit/cli@{{ .Version }}
+    # or
+    brew install reevit-platform/tap/reevit
+    ```
+
+    Get started inside your application:
+
+    ```sh
+    reevit init
+    ```
+  footer: |
+    ## Learn more
+
+    - [Five-minute quickstart](https://www.npmjs.com/package/@reevit/cli)
+    - [Complete CLI guide](https://github.com/Reevit-Platform/cli#readme)
+    - [Report an issue](https://github.com/Reevit-Platform/cli/issues)
 
 homebrew_casks:
   - name: reevit
@@ -48,8 +72,16 @@ homebrew_casks:
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     homepage: https://github.com/Reevit-Platform/cli
-    description: "Reevit CLI — test payments, drive the sandbox simulator, forward events locally"
+    description: "Set up Reevit, generate checkout and webhook integrations, and test payments locally"
     license: MIT
+    caveats: |
+      Get started inside your application:
+
+        cd your-project
+        reevit init
+
+      Documentation:
+        https://github.com/Reevit-Platform/cli#readme
     # The binary is not notarized — clear the quarantine bit on install.
     hooks:
       post:

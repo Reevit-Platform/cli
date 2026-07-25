@@ -1,7 +1,7 @@
 {
   "name": "@reevit/cli",
-  "version": "0.5.1",
-  "description": "Reevit CLI \u2014 test payments, drive the sandbox simulator, forward events locally with valid signatures",
+  "version": "0.5.3",
+  "description": "Set up Reevit in supported projects, generate checkout and webhook integrations, and test payments locally",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -12,8 +12,13 @@
     "reevit",
     "payments",
     "cli",
+    "checkout",
     "webhooks",
     "sandbox",
+    "nextjs",
+    "react",
+    "vue",
+    "svelte",
     "ghana",
     "mobile-money"
   ],
