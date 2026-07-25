@@ -1,17 +1,65 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"github.com/Reevit-Platform/cli/internal/api"
 	"github.com/Reevit-Platform/cli/internal/config"
 )
+
+func TestListenPrefersProjectSigningSecret(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(`{"dependencies":{"next":"16"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".env.local"), []byte("REEVIT_WEBHOOK_SECRET=whsec_project\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	command := &cobra.Command{}
+	command.SetOut(&out)
+
+	secret := resolveListenSecret(command, nil, dir)
+	if secret != "whsec_project" {
+		t.Fatalf("secret = %q", secret)
+	}
+	if strings.Contains(out.String(), secret) {
+		t.Fatalf("project secret was printed: %s", out.String())
+	}
+}
+
+func TestListenFlagTakesPrecedenceOverProjectSecret(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(`{"dependencies":{"next":"16"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".env.local"), []byte("REEVIT_WEBHOOK_SECRET=whsec_project\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := listenSecret
+	listenSecret = "whsec_flag"
+	defer func() { listenSecret = old }()
+
+	command := &cobra.Command{}
+	command.SetOut(&bytes.Buffer{})
+	if got := resolveListenSecret(command, nil, dir); got != "whsec_flag" {
+		t.Fatalf("secret = %q, want flag value", got)
+	}
+}
 
 // The signature must verify with the documented production scheme —
 // sha256=<hex HMAC-SHA256(raw body, secret)> — so merchant verify code

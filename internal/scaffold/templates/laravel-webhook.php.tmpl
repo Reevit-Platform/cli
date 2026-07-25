@@ -1,0 +1,35 @@
+<?php
+
+// Signed Reevit webhook route for Laravel.
+// Load this file from bootstrap/app.php's withRouting(then: ...) callback:
+// Route::middleware('api')->group(base_path('routes/reevit.php'));
+// Local dev: reevit listen --forward-to http://localhost:8000/webhooks/reevit
+
+declare(strict_types=1);
+
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Route;
+use Reevit\Webhooks\SignatureVerifier;
+
+Route::post('/webhooks/reevit', function (Request $request) {
+    $payload = $request->getContent();
+    $signature = $request->header('X-Reevit-Signature');
+    $secret = env('REEVIT_WEBHOOK_SECRET', '');
+
+    if (!SignatureVerifier::verify($payload, $signature, $secret)) {
+        return response('invalid signature', 401);
+    }
+
+    $event = json_decode($payload, true);
+
+    switch ($event['type'] ?? '') {
+        case 'payment.succeeded':
+            // TODO: fulfil the order for $event['data']
+            break;
+        case 'payment.failed':
+            // TODO: notify the customer / retry logic
+            break;
+    }
+
+    return response('ok', 200);
+});

@@ -1,6 +1,7 @@
 package scaffold
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -84,8 +85,9 @@ func WebhookHandler(project Project) (file, urlPath string) {
 
 	switch project.Stack {
 	case StackNext:
-		for _, ext := range []string{"ts", "js"} {
-			candidates[prefixSrc(project, "app/api/webhooks/reevit/route."+ext)] = "/api/webhooks/reevit"
+		for _, extension := range []string{"ts", "js"} {
+			candidates[prefixSrc(project, "app/api/webhooks/reevit/route."+extension)] = "/api/webhooks/reevit"
+			candidates[prefixSrc(project, "pages/api/webhooks/reevit."+extension)] = "/api/webhooks/reevit"
 		}
 	case StackNode:
 		for _, ext := range []string{"ts", "js"} {
@@ -98,6 +100,16 @@ func WebhookHandler(project Project) (file, urlPath string) {
 	case StackPHP:
 		candidates["reevit-webhook.php"] = "/reevit-webhook.php"
 	}
+	if project.Framework == FrameworkLaravel {
+		candidates["routes/reevit.php"] = "/webhooks/reevit"
+	}
+
+	if project.Framework == FrameworkNuxt {
+		candidates["server/api/webhooks/reevit.post.ts"] = "/api/webhooks/reevit"
+	}
+	if project.Framework == FrameworkSvelteKit {
+		candidates["src/routes/api/webhooks/reevit/+server.ts"] = "/api/webhooks/reevit"
+	}
 
 	for rel, path := range candidates {
 		if exists(project.Root, rel) {
@@ -106,6 +118,38 @@ func WebhookHandler(project Project) (file, urlPath string) {
 	}
 
 	return "", ""
+}
+
+// WebhookMountInstruction returns the exact integration step for adapters
+// where init cannot safely rewrite an arbitrary application entry file.
+func WebhookMountInstruction(project Project) string {
+	if len(WebhookMountEdits(project)) > 0 {
+		return ""
+	}
+
+	switch project.Framework {
+	case FrameworkExpress:
+		return `Import mountReevitWebhook from reevit/webhook and call mountReevitWebhook(app) before app.use(express.json()).`
+	case FrameworkFastAPI:
+		return `Import router from reevit_webhook and call app.include_router(router).`
+	case FrameworkFlask:
+		return `Import reevit_webhooks from reevit_webhook and call app.register_blueprint(reevit_webhooks).`
+	case FrameworkDjango:
+		return `Import reevit_webhook and add path("webhooks/reevit", reevit_webhook) to urlpatterns.`
+	case FrameworkLaravel:
+		return `Load routes/reevit.php in bootstrap/app.php's withRouting(then: ...) under Route::middleware("api").`
+	}
+
+	switch project.Stack {
+	case StackGo:
+		return `Register http.HandleFunc("/webhooks/reevit", HandleReevitWebhook) on your server mux.`
+	case StackPython:
+		return `Call handle_reevit_event with the raw request body and X-Reevit-Signature header from your framework.`
+	case StackPHP:
+		return `reevit-webhook.php is a standalone handler; route POST /reevit-webhook.php to it.`
+	default:
+		return ""
+	}
 }
 
 // CheckoutComponent returns the scaffolded checkout component file if present.
@@ -122,8 +166,15 @@ func CheckoutComponent(project Project) string {
 			candidates = append(candidates, "src/components/ReevitCheckoutButton."+ext)
 		}
 	case StackVue:
-		candidates = append(candidates, "src/components/ReevitCheckoutButton.vue")
+		candidates = append(candidates, "src/components/ReevitCheckoutButton.vue", "components/ReevitCheckoutButton.vue")
 	case StackSvelte:
+		candidates = append(candidates, "src/lib/ReevitCheckoutButton.svelte")
+	}
+
+	if project.Framework == FrameworkNuxt {
+		candidates = append(candidates, "components/ReevitCheckoutButton.vue")
+	}
+	if project.Framework == FrameworkSvelteKit {
 		candidates = append(candidates, "src/lib/ReevitCheckoutButton.svelte")
 	}
 
@@ -134,6 +185,71 @@ func CheckoutComponent(project Project) string {
 	}
 
 	return ""
+}
+
+// DemoPath is the URL path init scaffolds for a runnable checkout example.
+func DemoPath(project Project) string {
+	switch project.Framework {
+	case FrameworkNext, FrameworkNuxt, FrameworkSvelteKit:
+		return "/reevit-demo"
+	case FrameworkReact, FrameworkVue, FrameworkSvelte:
+		return "/reevit-demo.html"
+	default:
+		return ""
+	}
+}
+
+// DefaultPort returns the conventional development port for the detected
+// framework. It is used for exact post-init commands, never as configuration.
+func DefaultPort(project Project) int {
+	switch project.Framework {
+	case FrameworkReact, FrameworkVue, FrameworkSvelte, FrameworkSvelteKit:
+		return 5173
+	case FrameworkNext, FrameworkNuxt:
+		return 3000
+	case FrameworkFlask:
+		return 5000
+	case FrameworkFastAPI, FrameworkDjango, FrameworkLaravel:
+		return 8000
+	default:
+		return 0
+	}
+}
+
+// DevCommand returns the detected package manager's command for the project's
+// dev script. Empty means init cannot safely infer how the app starts.
+func DevCommand(project Project) []string {
+	if !hasPackageScript(project.Root, "dev") {
+		return nil
+	}
+
+	switch project.Manager {
+	case PMPnpm:
+		return []string{"pnpm", "dev"}
+	case PMYarn:
+		return []string{"yarn", "dev"}
+	case PMBun:
+		return []string{"bun", "run", "dev"}
+	default:
+		return []string{"npm", "run", "dev"}
+	}
+}
+
+func hasPackageScript(root, name string) bool {
+	raw, err := os.ReadFile(filepath.Join(root, "package.json"))
+	if err != nil {
+		return false
+	}
+
+	var pkg struct {
+		Scripts map[string]json.RawMessage `json:"scripts"`
+	}
+	if json.Unmarshal(raw, &pkg) != nil {
+		return false
+	}
+	_, ok := pkg.Scripts[name]
+
+	return ok
 }
 
 func fileContains(root, rel, needle string) bool {

@@ -1,0 +1,7 @@
+import { env } from "$env/dynamic/private";
+import { Reevit } from "@reevit/node";
+
+export const reevit = new Reevit(
+  env.REEVIT_API_KEY ?? "",
+  env.REEVIT_ORG_ID ?? "",
+);

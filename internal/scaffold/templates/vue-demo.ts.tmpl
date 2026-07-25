@@ -1,0 +1,10 @@
+import { createApp, h } from "vue";
+import ReevitCheckoutButton from "./components/ReevitCheckoutButton.vue";
+
+createApp({
+  render: () => h("main", [
+    h("h1", "Reevit test checkout · GHS 50.00"),
+    h("p", "No real money will move."),
+    h(ReevitCheckoutButton, { amount: 5000, currency: "GHS" }),
+  ]),
+}).mount("#reevit-demo");

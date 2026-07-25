@@ -89,6 +89,7 @@ func browserLogin(cmd *cobra.Command, openBrowser bool) error {
 
 	if result.Org != nil {
 		cfg.OrgID = result.Org.ID
+		cfg.OrgName = result.Org.Name
 	}
 
 	p, err := config.Save(cfg)

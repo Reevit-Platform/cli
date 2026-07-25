@@ -18,7 +18,8 @@ type Config struct {
 	Mode    string `json:"mode,omitempty"`
 	// OrgID is recorded by the browser login flow; SDK constructors need it
 	// alongside the key, so `reevit init` writes it into project env files.
-	OrgID string `json:"org_id,omitempty"`
+	OrgID   string `json:"org_id,omitempty"`
+	OrgName string `json:"org_name,omitempty"`
 	// TelemetryID is a random per-install UUID for anonymous usage events —
 	// minted on first use alongside the one-time notice, never derived from
 	// hardware or user identifiers. See internal/telemetry.

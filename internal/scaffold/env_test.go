@@ -22,7 +22,12 @@ func TestWriteEnvFreshNextProject(t *testing.T) {
 	dir := t.TempDir()
 	project := Project{Root: dir, Stack: StackNext}
 
-	res, err := WriteEnv(project, "pfk_test_abc.secret", "org_123", true)
+	res, err := WriteEnv(project, ProjectCredentials{
+		ServerKey:     "pfk_test_server.secret",
+		CheckoutKey:   "pfk_test_checkout.secret",
+		OrgID:         "org_123",
+		WebhookSecret: "whsec_local",
+	})
 	if err != nil {
 		t.Fatalf("WriteEnv: %v", err)
 	}
@@ -32,7 +37,7 @@ func TestWriteEnvFreshNextProject(t *testing.T) {
 	}
 
 	env := readFile(t, dir, ".env.local")
-	if !strings.Contains(env, "REEVIT_API_KEY=pfk_test_abc.secret") {
+	if !strings.Contains(env, "REEVIT_API_KEY=pfk_test_server.secret") {
 		t.Errorf(".env.local missing key: %s", env)
 	}
 
@@ -41,7 +46,7 @@ func TestWriteEnvFreshNextProject(t *testing.T) {
 	}
 
 	example := readFile(t, dir, ".env.example")
-	if strings.Contains(example, "pfk_test_abc") {
+	if strings.Contains(example, "pfk_test_") {
 		t.Error(".env.example must contain placeholders, never the real key")
 	}
 
@@ -49,15 +54,19 @@ func TestWriteEnvFreshNextProject(t *testing.T) {
 		t.Error(".env.example missing placeholder")
 	}
 
-	if res.ClientKeyVar != "NEXT_PUBLIC_REEVIT_KEY" {
-		t.Errorf("client var = %q, want NEXT_PUBLIC_REEVIT_KEY for Next.js", res.ClientKeyVar)
+	if res.ClientKeyVar != "NEXT_PUBLIC_REEVIT_CHECKOUT_KEY" {
+		t.Errorf("client var = %q, want NEXT_PUBLIC_REEVIT_CHECKOUT_KEY for Next.js", res.ClientKeyVar)
 	}
 
-	if !strings.Contains(env, "NEXT_PUBLIC_REEVIT_KEY=pfk_test_abc.secret") {
+	if !strings.Contains(env, "NEXT_PUBLIC_REEVIT_CHECKOUT_KEY=pfk_test_checkout.secret") {
 		t.Errorf(".env.local missing browser key: %s", env)
 	}
 
-	if !strings.Contains(example, "NEXT_PUBLIC_REEVIT_KEY=") {
+	if !strings.Contains(env, "REEVIT_WEBHOOK_SECRET=whsec_local") {
+		t.Errorf(".env.local missing webhook secret: %s", env)
+	}
+
+	if !strings.Contains(example, "NEXT_PUBLIC_REEVIT_CHECKOUT_KEY=") {
 		t.Error(".env.example missing client-key placeholder")
 	}
 
@@ -71,13 +80,40 @@ func TestWriteEnvFreshNextProject(t *testing.T) {
 	}
 }
 
+func TestWriteEnvCheckoutOnlyExampleOmitsServerAndWebhookKeys(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	_, err := WriteEnv(Project{
+		Root: dir, Stack: StackReact,
+	}, ProjectCredentials{
+		CheckoutKey: "pfk_test_checkout.secret",
+		OrgID:       "org_123",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	example := readFile(t, dir, ".env.example")
+	if strings.Contains(example, "REEVIT_API_KEY=") ||
+		strings.Contains(example, "REEVIT_WEBHOOK_SECRET=") {
+		t.Fatalf("checkout-only example contains server placeholders:\n%s", example)
+	}
+	if !strings.Contains(example, "REEVIT_ORG_ID=") ||
+		!strings.Contains(example, "VITE_REEVIT_CHECKOUT_KEY=") {
+		t.Fatalf("checkout-only example is incomplete:\n%s", example)
+	}
+}
+
 func TestWriteEnvNeverOverwritesExistingKey(t *testing.T) {
 	dir := t.TempDir()
 	write(t, dir, ".env", "REEVIT_API_KEY=existing_key\n")
 
 	project := Project{Root: dir, Stack: StackNode}
 
-	res, err := WriteEnv(project, "pfk_test_new.secret", "org_123", false)
+	res, err := WriteEnv(project, ProjectCredentials{
+		ServerKey: "pfk_test_new.secret", OrgID: "org_123",
+	})
 	if err != nil {
 		t.Fatalf("WriteEnv: %v", err)
 	}
@@ -89,6 +125,54 @@ func TestWriteEnvNeverOverwritesExistingKey(t *testing.T) {
 	env := readFile(t, dir, ".env")
 	if strings.Contains(env, "pfk_test_new") {
 		t.Error("existing REEVIT_API_KEY must never be overwritten")
+	}
+}
+
+func TestWriteEnvFillsBlankPlaceholdersWithoutDuplicatingKeys(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	write(t, dir, ".env.local", "REEVIT_API_KEY=\nNEXT_PUBLIC_REEVIT_CHECKOUT_KEY=\n")
+	_, err := WriteEnv(Project{Root: dir, Stack: StackNext}, ProjectCredentials{
+		ServerKey: "pfk_test_server.secret", CheckoutKey: "pfk_test_checkout.secret",
+		OrgID: "org_123",
+	})
+	if err != nil {
+		t.Fatalf("WriteEnv() error = %v", err)
+	}
+	env := readFile(t, dir, ".env.local")
+	if strings.Count(env, "REEVIT_API_KEY=") != 1 ||
+		!strings.Contains(env, "REEVIT_API_KEY=pfk_test_server.secret") {
+		t.Fatalf("server key was not filled safely: %s", env)
+	}
+	if strings.Count(env, "NEXT_PUBLIC_REEVIT_CHECKOUT_KEY=") != 1 ||
+		!strings.Contains(env, "NEXT_PUBLIC_REEVIT_CHECKOUT_KEY=pfk_test_checkout.secret") {
+		t.Fatalf("checkout key was not filled safely: %s", env)
+	}
+}
+
+func TestWriteEnvReplacesOnlyKnownLegacyLoginCredential(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	project := Project{Root: root, Stack: StackNext}
+	write(t, root, ".env.local", "REEVIT_API_KEY=pfk_test_login.secret\nNEXT_PUBLIC_REEVIT_CHECKOUT_KEY=pfk_test_login.secret\n")
+
+	_, err := WriteEnv(project, ProjectCredentials{
+		ServerKey:           "pfk_test_server.secret",
+		CheckoutKey:         "pfk_test_checkout.secret",
+		PreviousServerKey:   "pfk_test_login.secret",
+		PreviousCheckoutKey: "pfk_test_login.secret",
+		OrgID:               "org_123",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := readFile(t, root, ".env.local")
+	if strings.Contains(raw, "pfk_test_login.secret") ||
+		!strings.Contains(raw, "REEVIT_API_KEY=pfk_test_server.secret") ||
+		!strings.Contains(raw, "NEXT_PUBLIC_REEVIT_CHECKOUT_KEY=pfk_test_checkout.secret") {
+		t.Fatalf("legacy credential migration failed:\n%s", raw)
 	}
 }
 
@@ -110,7 +194,7 @@ func TestWriteEnvRespectsExistingGitignorePatterns(t *testing.T) {
 			write(t, dir, ".gitignore", tc.pattern+"\n")
 
 			project := Project{Root: dir, Stack: StackNext}
-			res, err := WriteEnv(project, "k", "org_123", false)
+			res, err := WriteEnv(project, ProjectCredentials{ServerKey: "k", OrgID: "org_123"})
 			if err != nil {
 				t.Fatalf("WriteEnv: %v", err)
 			}

@@ -4,8 +4,8 @@ Signature: X-Reevit-Signature: sha256=<hex HMAC-SHA256 of the raw body>.
 Install: pip install reevit
 Local dev: reevit listen --forward-to http://localhost:8000/webhooks/reevit
 
-Shown with FastAPI; `handle_reevit_event` is framework-agnostic — call it
-with the raw body and the signature header from any framework.
+Call `handle_reevit_event` with the unmodified request body and the
+X-Reevit-Signature header from your HTTP framework.
 """
 
 import json
@@ -27,21 +27,3 @@ def handle_reevit_event(raw_body: bytes, signature: str | None) -> bool:
         pass  # TODO: notify the customer / retry logic
 
     return True
-
-
-# --- FastAPI wiring (delete if you use another framework) ---
-try:
-    from fastapi import APIRouter, Request, Response
-
-    router = APIRouter()
-
-    @router.post("/webhooks/reevit")
-    async def reevit_webhook(request: Request) -> Response:
-        raw_body = await request.body()
-
-        if not handle_reevit_event(raw_body, request.headers.get("x-reevit-signature")):
-            return Response(content="invalid signature", status_code=401)
-
-        return Response(content="ok", status_code=200)
-except ImportError:
-    pass

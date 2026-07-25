@@ -1,0 +1,28 @@
+{{if .TS}}import type { NextApiRequest, NextApiResponse } from "next";
+{{end}}
+
+import { reevit } from "../../../lib/reevit";
+
+// Optional server-created checkout flow. The generated browser component can
+// also initialize directly with its checkout-scoped public key.
+export default async function handler(
+  request{{if .TS}}: NextApiRequest{{end}},
+  response{{if .TS}}: NextApiResponse{{end}},
+) {
+  if (request.method !== "POST") {
+    response.status(405).json({ error: "method not allowed" });
+    return;
+  }
+
+  const payment = await reevit.payments.createIntent(
+    {
+      amount: Number(request.body?.amount ?? 5000),
+      currency: String(request.body?.currency ?? "GHS"),
+      country: String(request.body?.country ?? "GH"),
+      method: String(request.body?.method ?? "mobile_money"),
+    },
+    { idempotencyKey: crypto.randomUUID() },
+  );
+
+  response.status(200).json(payment);
+}

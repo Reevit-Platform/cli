@@ -1,0 +1,31 @@
+"""Signed Reevit webhook route for FastAPI.
+
+Mount with: app.include_router(router)
+Local dev: reevit listen --forward-to http://localhost:8000/webhooks/reevit
+"""
+
+import json
+import os
+
+from fastapi import APIRouter, Request, Response
+from reevit import verify_webhook_signature
+
+router = APIRouter()
+
+
+@router.post("/webhooks/reevit")
+async def reevit_webhook(request: Request) -> Response:
+    raw_body = await request.body()
+    signature = request.headers.get("x-reevit-signature")
+    secret = os.environ.get("REEVIT_WEBHOOK_SECRET", "")
+
+    if not verify_webhook_signature(raw_body, signature, secret):
+        return Response(content="invalid signature", status_code=401)
+
+    event = json.loads(raw_body)
+    if event.get("type") == "payment.succeeded":
+        pass  # TODO: fulfil the order for event["data"]
+    elif event.get("type") == "payment.failed":
+        pass  # TODO: notify the customer / retry logic
+
+    return Response(content="ok", status_code=200)

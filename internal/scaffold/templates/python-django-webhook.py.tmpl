@@ -1,0 +1,34 @@
+"""Signed Reevit webhook view for Django.
+
+Add to urlpatterns:
+    path("webhooks/reevit", reevit_webhook)
+Local dev: reevit listen --forward-to http://localhost:8000/webhooks/reevit
+"""
+
+import json
+import os
+
+from django.http import HttpRequest, HttpResponse
+from django.views.decorators.csrf import csrf_exempt
+from reevit import verify_webhook_signature
+
+
+@csrf_exempt
+def reevit_webhook(request: HttpRequest) -> HttpResponse:
+    if request.method != "POST":
+        return HttpResponse("method not allowed", status=405)
+
+    raw_body = request.body
+    signature = request.headers.get("X-Reevit-Signature")
+    secret = os.environ.get("REEVIT_WEBHOOK_SECRET", "")
+
+    if not verify_webhook_signature(raw_body, signature, secret):
+        return HttpResponse("invalid signature", status=401)
+
+    event = json.loads(raw_body)
+    if event.get("type") == "payment.succeeded":
+        pass  # TODO: fulfil the order for event["data"]
+    elif event.get("type") == "payment.failed":
+        pass  # TODO: notify the customer / retry logic
+
+    return HttpResponse("ok", status=200)

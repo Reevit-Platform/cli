@@ -11,6 +11,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/Reevit-Platform/cli/internal/api"
+	"github.com/Reevit-Platform/cli/internal/scaffold"
 )
 
 // verifyingHandler mimics the scaffolded webhook templates: sha256=hex
@@ -95,5 +98,109 @@ func TestCheckWebhookEndToEndUnreachableServer(t *testing.T) {
 
 	if res.failures == 0 {
 		t.Fatal("unreachable server must be reported as a failure")
+	}
+}
+
+func TestCheckBootstrapStatusPassesCompleteProject(t *testing.T) {
+	manifest := scaffold.Manifest{
+		ProjectID: "rvproj_test", ServerKeyID: "pfk_test_server",
+		CheckoutKeyID: "pfk_test_checkout", Origin: "http://localhost:5173",
+	}
+	var status api.BootstrapResult
+	status.Project.ID = manifest.ProjectID
+	status.Mode = "test"
+	status.Credentials.Server = &api.BootstrapCredential{
+		ID: manifest.ServerKeyID, Scopes: []string{"payments:read", "payments:write"},
+	}
+	status.Credentials.Checkout = &api.BootstrapCredential{
+		ID: manifest.CheckoutKeyID, Scopes: []string{"checkout:write"},
+	}
+	status.Simulator.Ready = true
+	status.Checkout.OriginAllowed = true
+
+	var buf bytes.Buffer
+	res := &doctorResult{}
+	checkBootstrapStatus(&buf, res, manifest, status)
+	if res.failures != 0 {
+		t.Fatalf("complete project should pass; output:\n%s", buf.String())
+	}
+}
+
+func TestCheckBootstrapStatusRejectsMismatchedCredential(t *testing.T) {
+	manifest := scaffold.Manifest{ProjectID: "rvproj_test", ServerKeyID: "pfk_test_expected"}
+	var status api.BootstrapResult
+	status.Project.ID = manifest.ProjectID
+	status.Mode = "test"
+	status.Credentials.Server = &api.BootstrapCredential{ID: "pfk_test_other"}
+	status.Simulator.Ready = true
+
+	var buf bytes.Buffer
+	res := &doctorResult{}
+	checkBootstrapStatus(&buf, res, manifest, status)
+	if res.failures == 0 {
+		t.Fatalf("mismatched credential must fail; output:\n%s", buf.String())
+	}
+}
+
+func TestCheckAppURL(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	var buf bytes.Buffer
+	res := &doctorResult{}
+	checkAppURL(context.Background(), &buf, res, server.URL)
+	if res.failures != 0 {
+		t.Fatalf("reachable app should pass; output:\n%s", buf.String())
+	}
+}
+
+func TestManifestCapabilitiesDistinguishCheckoutOnlyProjects(t *testing.T) {
+	t.Parallel()
+
+	manifest := scaffold.Manifest{Capabilities: []string{"checkout"}}
+	if manifestHasCapability(manifest, "server") || manifestHasCapability(manifest, "webhook") {
+		t.Fatal("checkout-only manifest unexpectedly requires server or webhook configuration")
+	}
+	if !manifestHasCapability(manifest, "checkout") {
+		t.Fatal("checkout capability was not detected")
+	}
+}
+
+func TestOptionalAppCheckPrintsExactDevCommand(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	res := &doctorResult{}
+	checkOptionalAppURL(
+		context.Background(), &out, res,
+		"http://127.0.0.1:1/reevit-demo", []string{"pnpm", "dev"},
+	)
+	if res.warnings != 1 || !strings.Contains(out.String(), "`pnpm dev`") {
+		t.Fatalf("output = %q warnings=%d", out.String(), res.warnings)
+	}
+}
+
+func TestRunningInCIEnablesStrictMode(t *testing.T) {
+	t.Setenv("CI", "true")
+	if !runningInCI() {
+		t.Fatal("CI=true did not enable strict doctor behavior")
+	}
+}
+
+func TestPythonSDKProbeUsesDetectedEnvironmentManager(t *testing.T) {
+	t.Parallel()
+
+	tests := map[scaffold.Installer]string{
+		scaffold.InstallerUV:     "uv run python -c import reevit",
+		scaffold.InstallerPoetry: "poetry run python -c import reevit",
+		scaffold.InstallerPipenv: "pipenv run python -c import reevit",
+		scaffold.InstallerPip:    "python -c import reevit",
+	}
+	for installer, want := range tests {
+		if got := strings.Join(pythonSDKProbeCommand(installer), " "); got != want {
+			t.Errorf("%s probe = %q, want %q", installer, got, want)
+		}
 	}
 }

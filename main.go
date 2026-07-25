@@ -11,7 +11,12 @@ import (
 
 func main() {
 	if err := cmd.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
+		code := cmd.ExitCode(err)
+		if code == 130 {
+			fmt.Fprintln(os.Stderr, err)
+		} else {
+			fmt.Fprintln(os.Stderr, "error:", err)
+		}
+		os.Exit(code)
 	}
 }

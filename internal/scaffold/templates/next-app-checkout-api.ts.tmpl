@@ -1,0 +1,20 @@
+import { NextResponse } from "next/server";
+
+import { reevit } from "../../../../lib/reevit";
+
+// Optional server-created checkout flow. The generated browser component can
+// also initialize directly with its checkout-scoped public key.
+export async function POST(request{{if .TS}}: Request{{end}}) {
+  const body = await request.json();
+  const payment = await reevit.payments.createIntent(
+    {
+      amount: Number(body.amount ?? 5000),
+      currency: String(body.currency ?? "GHS"),
+      country: String(body.country ?? "GH"),
+      method: String(body.method ?? "mobile_money"),
+    },
+    { idempotencyKey: crypto.randomUUID() },
+  );
+
+  return NextResponse.json(payment);
+}

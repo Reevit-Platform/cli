@@ -28,20 +28,27 @@ reevit init
 ```
 
 `init` opens your browser to log in (no keys to copy), detects your stack,
-installs the matching SDK, wires your env, and writes working integration
-code. Then prove the whole setup:
+creates separate least-privilege test credentials for this project, installs
+the matching SDKs, wires your env, creates a runnable checkout example, and
+verifies the new credentials against the sandbox.
 
 ```bash
-reevit doctor --webhook-url http://localhost:3000/api/webhooks/reevit
+pnpm dev
+# open http://localhost:3000/reevit-demo
+reevit doctor
 ```
+
+For a Next.js App Router project using pnpm, those are the exact handoff
+commands printed by `init`. Vite projects use port 5173 and
+`/reevit-demo.html`.
 
 ## Commands
 
 | Command | What it does |
 | --- | --- |
 | `reevit login` | Opens the dashboard in your browser to authorize the CLI — a **test-mode** key is created for you and stored locally (0600). `--key pfk_...` pastes a key manually; `--no-browser` prints the URL instead of opening it |
-| `reevit init` | Sets Reevit up in the current project: detects the stack + package manager, installs the SDK, wires env vars (including the browser-exposed `NEXT_PUBLIC_`/`VITE_` key for checkout), scaffolds a webhook handler / checkout component / server client. `--target`, `-y`, `--dry-run`, `--webhook-path`/`--checkout-path`/`--client-path`, `--register-webhook <url>` |
-| `reevit doctor [--webhook-url url] [--e2e]` | Verifies the setup: key against the API, env wiring, SDK installed, signed + tampered webhook round-trip — and with `--e2e`, a **real** sandbox payment through the simulator delivered to your handler |
+| `reevit init` | Detects the framework, router, source layout, and installer; creates project test credentials; configures the simulator/origin; installs SDKs; writes env and runnable integration files; and performs API-level payment/checkout verification. `--yes` accepts the recommendation without prompts; `--goal`/`--target` customize it |
+| `reevit doctor [--app-url url] [--webhook-url url] [--strict] [--e2e]` | Verifies the manifest, scoped project credentials, simulator, allowed origin, env, generated files, running checkout route, and signed/tampered webhook behavior |
 | `reevit payments list [--status s] [--limit n]` | Recent payments in the current mode |
 | `reevit trigger <event>` | Fire a test event by creating a **real** sandbox payment through the simulator |
 | `reevit listen --forward-to <url>` | Stream live test-mode events to a local endpoint, signed like production |
@@ -58,29 +65,46 @@ Dashboard → Developers → API keys and run `reevit login --key <live_key>`.
 
 ### `init`
 
-Detection covers Next.js, React, Vue, Svelte, Node/Express, Go, PHP, and
-Python — including TypeScript-vs-JS, `src/` layouts, and every JS package
-manager with a lockfile (multi-lockfile repos get the SDK installed with all
-of them so frozen installs stay consistent). What it can scaffold depends on
-the stack:
+Detection covers Next.js App and Pages Routers, React/Vite, Nuxt, Vue/Vite,
+SvelteKit, Svelte/Vite, Node/Express, Go, PHP/Laravel, and Python
+(FastAPI/Flask/Django) — including TypeScript-vs-JS and `src/` layouts. It
+uses the `packageManager` declaration first, then one detected lockfile, and
+never runs every package manager in a multi-lockfile repository.
 
 - **Webhook handler** — signature-verified receiver using the SDK's verify
-  helper (inlined for Go, whose SDK ships no inbound verifier)
-- **Checkout component** — `ReevitCheckout` drop-in for React/Next/Vue/Svelte
+  helper (inlined for Go, whose SDK ships no inbound verifier), with native
+  FastAPI, Flask, Django, Laravel, Next, Nuxt, and SvelteKit variants. Standard
+  Express, Go default-mux, FastAPI, Flask, Django, and Laravel entries are
+  mounted automatically with idempotent markers; custom layouts receive an
+  exact standalone mounting instruction instead of a risky source rewrite.
+- **Checkout flow** — checkout component, routable demo entry, checkout-only
+  browser credential, allowed local origin, and API-level session verification
 - **Server client** — SDK client wired to `REEVIT_API_KEY` + `REEVIT_ORG_ID`
   with a payment-intent example
 
 Env wiring is stack-aware: server code reads plain `REEVIT_*` vars, and when
 you scaffold checkout the browser-exposed key is written under the framework's
-own convention — `NEXT_PUBLIC_REEVIT_KEY` on Next.js, `VITE_REEVIT_KEY` on
-Vite-based stacks (React/Vue/Svelte). Test-mode keys only in the client bundle.
+own convention — `NEXT_PUBLIC_REEVIT_CHECKOUT_KEY` on Next.js or
+`VITE_REEVIT_CHECKOUT_KEY` on Vite-based stacks. The CLI login key remains in
+the user's config; it is never copied into the project or browser bundle.
 
 Place code wherever you like with `--webhook-path`, `--checkout-path`, and
 `--client-path`. With a webhook target, `--register-webhook https://…` (or the
 interactive prompt) registers the production endpoint in your dashboard —
 needs a key with `webhooks:write` (fresh `reevit login` keys have it).
 
-Existing files and env values are never overwritten; re-running is safe.
+The wizard defaults to the complete recommended setup. “Customize” reveals
+advanced capability choices. It resolves the organization attached to an
+existing login key so the account is visible before confirmation. Use
+`reevit init --yes` for deterministic CI or scripts; piped execution without
+an explicit goal/target is rejected instead of hanging. Existing files and
+non-empty env values are never overwritten.
+Conflicts are reported before installation, and
+`.reevit/manifest.json` makes interrupted runs recoverable. If a one-time
+project secret was lost, replacement requires
+`reevit init --rotate-test-keys`. Installer output stays quiet on success;
+use `--verbose` to stream it or `--keep-logs` to retain successful logs under
+the gitignored `.reevit/logs/` directory.
 
 ### `doctor`
 
@@ -88,13 +112,13 @@ Existing files and env values are never overwritten; re-running is safe.
 reevit doctor --webhook-url http://localhost:3000/api/webhooks/reevit
 ```
 
-Checks, in order: CLI key present and accepted by the API; project + SDK
-detected; `REEVIT_API_KEY` / `REEVIT_ORG_ID` / `REEVIT_WEBHOOK_SECRET` in the
-env file; webhook handler present. With `--webhook-url` and your dev server
-running, it signs a synthetic `payment.succeeded` with your
+Checks the local manifest/files/env, active project credential IDs and exact
+scopes, sandbox simulator, and checkout origin. With `--app-url`, it checks
+that the generated checkout route is reachable. With `--webhook-url`, it
+signs a synthetic `payment.succeeded` with your
 `REEVIT_WEBHOOK_SECRET` and POSTs it — your handler must accept it — then
 sends the same payload with a tampered signature — your handler must reject
-it. Exits non-zero when anything fails, so it works in CI.
+it. `--strict` turns skipped/unreachable runtime checks into CI failures.
 
 Add `--e2e` for the strongest check: doctor fires a **real** sandbox payment
 through the simulator, waits for the platform-generated event on your
@@ -128,10 +152,10 @@ reevit listen --forward-to http://localhost:3000/api/webhooks/reevit
 Subscribes to your account's live test-mode event stream and POSTs each event
 to your endpoint with the production header set and a real signature
 (`X-Reevit-Signature: sha256=<hex HMAC-SHA256 of the raw body>`), so your
-verification code runs unchanged. The signing secret comes from your webhook
-config when the key has `webhooks:read`; otherwise an ephemeral secret is
-generated and printed — put it in `REEVIT_WEBHOOK_SECRET`. Reconnects with
-backoff; test mode only.
+verification code runs unchanged. The signing secret comes first from
+`--signing-secret`, then the project's `REEVIT_WEBHOOK_SECRET`, then platform
+webhook configuration; only the final fallback is ephemeral. Project secrets
+are reused without being printed. Reconnects with backoff; test mode only.
 
 ## Telemetry
 

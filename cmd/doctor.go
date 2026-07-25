@@ -11,6 +11,9 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -18,12 +21,15 @@ import (
 
 	"github.com/Reevit-Platform/cli/internal/api"
 	"github.com/Reevit-Platform/cli/internal/config"
+	"github.com/Reevit-Platform/cli/internal/sandbox"
 	"github.com/Reevit-Platform/cli/internal/scaffold"
 )
 
 var (
 	doctorWebhookURL string
+	doctorAppURL     string
 	doctorE2E        bool
+	doctorStrict     bool
 )
 
 // doctorResult tallies outcomes so the command can exit non-zero on failures.
@@ -97,8 +103,8 @@ so the check proves your handler's signature verification end to end.`,
 			}
 		}
 
-		// --- 2. Project ---
-		fmt.Fprintln(out, "\nProject")
+		// --- 2. Project files ---
+		fmt.Fprintln(out, "\nProject files")
 
 		root, err := os.Getwd()
 		if err != nil {
@@ -115,7 +121,25 @@ so the check proves your handler's signature verification end to end.`,
 
 		res.pass(out, "%s project", project.Stack)
 
+		manifest, manifestErr := scaffold.ReadManifest(project)
+		switch {
+		case manifestErr != nil:
+			res.fail(out, "cannot read .reevit/manifest.json (%v)", manifestErr)
+		case manifest.ProjectID == "":
+			res.fail(out, "project manifest is missing — run `reevit init`")
+		case manifest.Status != "complete":
+			res.fail(out, "project setup is %q — rerun `reevit init` to complete it", manifest.Status)
+		default:
+			res.pass(out, "project manifest complete (%s)", manifest.ProjectID)
+		}
+
 		if pkg, installed := scaffold.SDKPackageFor(project); pkg != "" {
+			if !installed && project.Stack == scaffold.StackPython {
+				probe := pythonSDKProbeCommand(project.Installer)
+				check := exec.CommandContext(cmd.Context(), probe[0], probe[1:]...)
+				check.Dir = project.Root
+				installed = check.Run() == nil
+			}
 			if installed {
 				res.pass(out, "SDK installed (%s)", pkg)
 			} else {
@@ -123,12 +147,16 @@ so the check proves your handler's signature verification end to end.`,
 			}
 		}
 
-		// --- 3. Environment ---
-		fmt.Fprintln(out, "\nEnvironment ("+scaffold.EnvFileName(project)+")")
+		fmt.Fprintln(out, "  Environment: "+scaffold.EnvFileName(project))
 
 		envKey := scaffold.ReadEnvValue(project, "REEVIT_API_KEY")
+		handlerFile, handlerPath := scaffold.WebhookHandler(project)
+		hasServer := manifestHasCapability(manifest, "server") || manifest.ServerKeyID != ""
+		hasWebhook := manifestHasCapability(manifest, "webhook") || handlerFile != ""
 
 		switch {
+		case !hasServer:
+			// Checkout-only projects intentionally have no server credential.
 		case envKey == "":
 			res.fail(out, "REEVIT_API_KEY is not set — run `reevit init` to wire it")
 		case strings.HasPrefix(envKey, "pfk_"):
@@ -143,10 +171,16 @@ so the check proves your handler's signature verification end to end.`,
 			res.pass(out, "REEVIT_ORG_ID set")
 		}
 
+		clientVar := scaffold.ClientKeyVar(project.Stack)
+		checkoutKey := scaffold.ReadEnvValue(project, clientVar)
+		if cfg.APIKey != "" && (cfg.APIKey == envKey || (checkoutKey != "" && cfg.APIKey == checkoutKey)) {
+			res.fail(out, "CLI login credential is also used as a project key — run `reevit login`, then `reevit init --rotate-test-keys`")
+		}
+
 		webhookSecret := scaffold.ReadEnvValue(project, "REEVIT_WEBHOOK_SECRET")
-		if webhookSecret == "" {
-			res.warn(out, "REEVIT_WEBHOOK_SECRET is empty — `reevit listen` prints one for local dev")
-		} else {
+		if hasWebhook && webhookSecret == "" {
+			res.fail(out, "REEVIT_WEBHOOK_SECRET is empty — rerun `reevit init` to wire the webhook handler")
+		} else if hasWebhook {
 			res.pass(out, "REEVIT_WEBHOOK_SECRET set")
 		}
 
@@ -155,7 +189,7 @@ so the check proves your handler's signature verification end to end.`,
 		// var never reaches the client bundle. Checked whenever checkout usage
 		// is implied: a scaffolded component (any path may have moved) or a
 		// frontend Reevit SDK in the dependencies.
-		if clientVar := scaffold.ClientKeyVar(project.Stack); clientVar != "" {
+		if clientVar != "" {
 			sdkPkg, sdkInstalled := scaffold.SDKPackageFor(project)
 			frontendSDK := sdkInstalled && (sdkPkg == "@reevit/react" || sdkPkg == "@reevit/vue" || sdkPkg == "@reevit/svelte")
 
@@ -168,18 +202,76 @@ so the check proves your handler's signature verification end to end.`,
 			}
 		}
 
-		// --- 4. Webhook handler ---
-		fmt.Fprintln(out, "\nWebhook")
+		// --- 4. Platform bootstrap ---
+		fmt.Fprintln(out, "\nPlatform sandbox")
+		if manifest.ProjectID != "" && cfg.APIKey != "" {
+			status, statusErr := api.New(cfg).BootstrapStatus(cmd.Context(), manifest.ProjectID, manifest.Origin)
+			if statusErr != nil {
+				res.fail(out, "could not verify project bootstrap (%v)", statusErr)
+			} else {
+				checkBootstrapStatus(out, res, manifest, status)
+				if manifest.CheckoutKeyID != "" && checkoutKey != "" {
+					if _, verifyErr := sandbox.VerifyCheckout(cmd.Context(), cfg.BaseURL, checkoutKey); verifyErr != nil {
+						res.fail(out, "checkout credential could not initialize a sandbox session (%v)", verifyErr)
+					} else {
+						res.pass(out, "checkout credential initialized a sandbox session")
+					}
+				}
+				if manifest.ServerKeyID != "" && envKey != "" {
+					payment, verifyErr := sandbox.VerifyServerPayment(cmd.Context(), cfg.BaseURL, envKey)
+					if verifyErr != nil {
+						res.fail(out, "server credential could not create a sandbox payment (%v)", verifyErr)
+					} else if payment.PaymentState != "" && payment.PaymentState != "succeeded" {
+						res.fail(out, "sandbox verification payment returned %s", payment.PaymentState)
+					} else {
+						res.pass(out, "server credential completed a simulator payment")
+					}
+				}
+			}
+		} else {
+			res.warn(out, "platform bootstrap check skipped until login and init are complete")
+		}
 
-		handlerFile, handlerPath := scaffold.WebhookHandler(project)
+		// --- 5. Generated files ---
+		if len(manifest.GeneratedFiles) > 0 {
+			for _, rel := range manifest.GeneratedFiles {
+				if _, statErr := os.Stat(filepath.Join(project.Root, rel)); statErr != nil {
+					res.fail(out, "generated file is missing: %s — rerun `reevit init`", rel)
+				}
+			}
+		}
+
+		// --- 6. Runnable checkout ---
+		fmt.Fprintln(out, "\nRunning application")
+		if doctorAppURL != "" {
+			checkAppURL(cmd.Context(), out, res, doctorAppURL)
+		} else if demoPath := scaffold.DemoPath(project); demoPath != "" {
+			origin := manifest.Origin
+			if origin == "" {
+				origin = fmt.Sprintf("http://localhost:%d", scaffold.DefaultPort(project))
+			}
+			checkOptionalAppURL(
+				cmd.Context(), out, res,
+				strings.TrimRight(origin, "/")+demoPath,
+				scaffold.DevCommand(project),
+			)
+		} else {
+			res.pass(out, "no browser demo selected")
+		}
+
+		// --- 7. Webhook handler ---
+		fmt.Fprintln(out, "\nSigned webhooks")
+
 		if handlerFile != "" {
 			res.pass(out, "handler found at %s", handlerFile)
+		} else if hasWebhook {
+			res.fail(out, "configured webhook handler is missing — rerun `reevit init`")
 		} else {
-			res.warn(out, "no scaffolded webhook handler found — `reevit init --target webhook` adds one")
+			res.pass(out, "webhook integration not selected")
 		}
 
 		switch {
-		case doctorWebhookURL == "" && handlerFile != "":
+		case doctorWebhookURL == "" && hasWebhook:
 			res.warn(out, "live check skipped — start your dev server and run:\n      reevit doctor --webhook-url http://localhost:<port>%s", handlerPath)
 		case doctorWebhookURL == "":
 			// nothing to check against
@@ -200,12 +292,141 @@ so the check proves your handler's signature verification end to end.`,
 
 		printDoctorSummary(out, res)
 
-		if res.failures > 0 {
+		strict := doctorStrict || runningInCI()
+		if res.failures > 0 || (strict && res.warnings > 0) {
+			if res.failures == 0 {
+				return fmt.Errorf("doctor found %d warning(s) in strict mode", res.warnings)
+			}
 			return fmt.Errorf("doctor found %d problem(s)", res.failures)
 		}
 
 		return nil
 	},
+}
+
+func pythonSDKProbeCommand(installer scaffold.Installer) []string {
+	probe := []string{"python", "-c", "import reevit"}
+	switch installer {
+	case scaffold.InstallerUV:
+		return append([]string{"uv", "run"}, probe...)
+	case scaffold.InstallerPoetry:
+		return append([]string{"poetry", "run"}, probe...)
+	case scaffold.InstallerPipenv:
+		return append([]string{"pipenv", "run"}, probe...)
+	default:
+		return probe
+	}
+}
+
+func manifestHasCapability(manifest scaffold.Manifest, capability string) bool {
+	return slices.Contains(manifest.Capabilities, capability)
+}
+
+func checkBootstrapStatus(out io.Writer, res *doctorResult, manifest scaffold.Manifest, status api.BootstrapResult) {
+	if status.Mode != "test" {
+		res.fail(out, "project is not in test mode")
+	} else {
+		res.pass(out, "test mode active")
+	}
+
+	if status.Project.ID != manifest.ProjectID {
+		res.fail(out, "platform project identity does not match the local manifest")
+	}
+	if manifest.ServerKeyID != "" {
+		if status.Credentials.Server == nil || status.Credentials.Server.ID != manifest.ServerKeyID ||
+			!sameScopes(status.Credentials.Server.Scopes, []string{"payments:read", "payments:write"}) {
+			res.fail(out, "server credential is missing, revoked, or does not match the manifest")
+		} else {
+			res.pass(out, "server credential active with payments:read/write")
+		}
+	}
+	if manifest.CheckoutKeyID != "" {
+		if status.Credentials.Checkout == nil || status.Credentials.Checkout.ID != manifest.CheckoutKeyID ||
+			!sameScopes(status.Credentials.Checkout.Scopes, []string{"checkout:write"}) {
+			res.fail(out, "checkout credential is missing, revoked, or does not match the manifest")
+		} else {
+			res.pass(out, "browser credential active with checkout:write only")
+		}
+	}
+	if status.Simulator.Ready {
+		res.pass(out, "sandbox simulator ready")
+	} else {
+		res.fail(out, "sandbox simulator is not ready")
+	}
+	if manifest.Origin != "" {
+		if status.Checkout.OriginAllowed {
+			res.pass(out, "checkout origin allowed (%s)", manifest.Origin)
+		} else {
+			res.fail(out, "checkout origin is not allowed (%s)", manifest.Origin)
+		}
+	}
+}
+
+func sameScopes(got, want []string) bool {
+	got = slices.Clone(got)
+	want = slices.Clone(want)
+	slices.Sort(got)
+	slices.Sort(want)
+	return slices.Equal(got, want)
+}
+
+func checkAppURL(ctx context.Context, out io.Writer, res *doctorResult, target string) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		res.fail(out, "invalid --app-url (%v)", err)
+		return
+	}
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		res.fail(out, "could not reach checkout demo at %s (%v)", target, err)
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode >= 200 && resp.StatusCode < 400 {
+		res.pass(out, "checkout demo reachable (%d)", resp.StatusCode)
+	} else {
+		res.fail(out, "checkout demo returned %d", resp.StatusCode)
+	}
+}
+
+func checkOptionalAppURL(
+	ctx context.Context,
+	out io.Writer,
+	res *doctorResult,
+	target string,
+	devCommand []string,
+) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		res.warn(out, "could not construct checkout demo URL %s (%v)", target, err)
+		return
+	}
+	resp, err := (&http.Client{Timeout: 1500 * time.Millisecond}).Do(req)
+	if err != nil {
+		if len(devCommand) > 0 {
+			res.warn(
+				out,
+				"checkout app is not running — start it with `%s`, then rerun `reevit doctor --strict` (%s)",
+				strings.Join(devCommand, " "), target,
+			)
+		} else {
+			res.warn(out, "checkout app is not running — start it, then rerun `reevit doctor --strict` (%s)", target)
+		}
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode >= 200 && resp.StatusCode < 400 {
+		res.pass(out, "checkout demo reachable (%d)", resp.StatusCode)
+	} else {
+		res.warn(out, "checkout demo returned %d at %s", resp.StatusCode, target)
+	}
+}
+
+func runningInCI() bool {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv("CI")))
+	return value != "" && value != "0" && value != "false"
 }
 
 // checkWebhookEndToEnd proves the handler's signature verification both ways:
@@ -409,7 +630,9 @@ func printDoctorSummary(out io.Writer, res *doctorResult) {
 
 func init() {
 	doctorCmd.Flags().StringVar(&doctorWebhookURL, "webhook-url", "", "your running app's webhook endpoint, e.g. http://localhost:3000/api/webhooks/reevit")
+	doctorCmd.Flags().StringVar(&doctorAppURL, "app-url", "", "your running checkout demo URL, e.g. http://localhost:3000/reevit-demo")
 	doctorCmd.Flags().BoolVar(&doctorE2E, "e2e", false, "also fire a REAL sandbox payment through the simulator and deliver the resulting platform event to --webhook-url")
+	doctorCmd.Flags().BoolVar(&doctorStrict, "strict", false, "treat warnings as failures (useful in CI)")
 
 	rootCmd.AddCommand(doctorCmd)
 }

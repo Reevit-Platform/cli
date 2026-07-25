@@ -1,0 +1,6 @@
+import ReevitCheckoutButton from "./lib/ReevitCheckoutButton.svelte";
+
+new ReevitCheckoutButton({
+  target: document.getElementById("reevit-demo"){{if .TS}}!{{end}},
+  props: { amount: 5000, currency: "GHS" },
+});

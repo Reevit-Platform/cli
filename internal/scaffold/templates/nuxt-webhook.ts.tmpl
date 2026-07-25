@@ -1,0 +1,17 @@
+import { readRawBody, getHeader, setResponseStatus } from "h3";
+import { verifyWebhookSignature } from "@reevit/node";
+
+export default defineEventHandler(async (event) => {
+  const rawBody = (await readRawBody(event, false)) ?? "";
+  const signature = getHeader(event, "x-reevit-signature");
+  if (!verifyWebhookSignature(rawBody, signature, process.env.REEVIT_WEBHOOK_SECRET ?? "")) {
+    setResponseStatus(event, 401);
+    return { error: "invalid signature" };
+  }
+  const rawText = typeof rawBody === "string" ? rawBody : rawBody.toString("utf8");
+  const payload = JSON.parse(rawText);
+  if (payload.type === "payment.succeeded") {
+    // Fulfil the order represented by payload.data.
+  }
+  return { received: true };
+});
