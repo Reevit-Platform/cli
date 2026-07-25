@@ -166,6 +166,12 @@ return Application::configure(basePath: dirname(__DIR__))
 				strings.Contains(cleaned, test.want) {
 				t.Fatalf("fresh setup left a stale webhook mount:\n%s", cleaned)
 			}
+			for _, originalLine := range strings.Split(test.source, "\n") {
+				originalLine = strings.TrimSpace(originalLine)
+				if originalLine != "" && !strings.Contains(cleaned, originalLine) {
+					t.Fatalf("fresh setup removed user code %q:\n%s", originalLine, cleaned)
+				}
+			}
 		})
 	}
 }
