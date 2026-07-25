@@ -3,7 +3,7 @@
 	url = git@github.com:Reevit-Platform/backend.git
 [submodule "frontend"]
 	path = frontend
-	url = git@github.com:Reevit-Platform/frontend.git
+	url = git@github.com:Reevit-Platform/frontend-start.git
 [submodule "docs"]
 	path = docs
 	url = git@github.com:Reevit-Platform/docs-v2.git
@@ -37,9 +37,6 @@
 [submodule "sdks/rust"]
 	path = sdks/rust
 	url = git@github.com:Reevit-Platform/rust-sdk.git
-[submodule "frontend-start"]
-	path = frontend-start
-	url = git@github.com:Reevit-Platform/frontend-start.git
 [submodule "mintlify-docs"]
 	path = mintlify-docs
 	url = git@github.com:Reevit-Platform/dcos.git
