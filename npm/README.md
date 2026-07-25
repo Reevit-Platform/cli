@@ -178,8 +178,9 @@ production webhooks.
 - **Keep existing files** preserves them and creates only missing outputs.
 - **Replace generated integration files** backs up each replaced file under
   `.reevit/backups/` before writing.
-- **Start fresh** backs up and regenerates integration files, then rotates the
-  project's test credentials.
+- **Start fresh** backs up prior generated files, removes stale generated
+  outputs, regenerates the selected integration, and rotates the project's test
+  credentials.
 - Reevit updates only its marker-delimited blocks in recognized entry files.
 - Non-empty unmanaged environment values remain untouched.
 - Interrupted setup can resume from `.reevit/manifest.json`.

@@ -239,8 +239,8 @@ func TestApplyHonorsExplicitExistingFileResolution(t *testing.T) {
 
 	_, err := Apply(context.Background(), Plan{
 		Project: project, Targets: targets, CLIVersion: "test",
-		LoginKey: "pfk_test_login.secret", AllowExistingFiles: true,
-		OverwriteFiles: true,
+		LoginKey:      "pfk_test_login.secret",
+		ExistingFiles: scaffold.ExistingFilesOverwrite,
 	}, Dependencies{
 		Bootstrapper: fakeBootstrapper{run: func(
 			_ context.Context, request api.BootstrapRequest,
@@ -255,6 +255,122 @@ func TestApplyHonorsExplicitExistingFileResolution(t *testing.T) {
 	}
 	if !writer.overwrite {
 		t.Fatal("writer did not receive overwrite decision")
+	}
+}
+
+func TestApplyBackupFailureHappensBeforeCredentialRotation(t *testing.T) {
+	t.Parallel()
+
+	project, allTargets := setupFixture(t)
+	targets := []scaffold.Target{allTargets[1]}
+	source := filepath.Join(project.Root, "reevit_client.py")
+	if err := os.WriteFile(source, []byte("existing"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project.Root, ".reevit"), []byte("blocked"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bootstrapCalled := false
+
+	_, err := Apply(context.Background(), Plan{
+		Project: project, Targets: targets,
+		ExistingFiles: scaffold.ExistingFilesFresh, RotateCredentials: true,
+	}, Dependencies{
+		Bootstrapper: fakeBootstrapper{run: func(
+			_ context.Context, request api.BootstrapRequest,
+		) (api.BootstrapResult, error) {
+			bootstrapCalled = true
+			return bootstrapResult(request.ProjectID), nil
+		}},
+		Runner: fakeRunner{}, Writer: &fakeWriter{},
+		Secrets: fakeSecrets{secret: "whsec_project"}, Verifier: fakeVerifier{},
+	})
+	if err == nil || !strings.Contains(err.Error(), "backup") {
+		t.Fatalf("Apply error = %v", err)
+	}
+	if bootstrapCalled {
+		t.Fatal("credential rotation started before backups completed")
+	}
+	if got, readErr := os.ReadFile(source); readErr != nil || string(got) != "existing" {
+		t.Fatalf("source changed before backup completed: %q, %v", got, readErr)
+	}
+}
+
+func TestApplyKeepDoesNotClaimSkippedUnmanagedFile(t *testing.T) {
+	t.Parallel()
+
+	project, allTargets := setupFixture(t)
+	targets := []scaffold.Target{allTargets[1]}
+	path := "reevit_client.py"
+	if err := os.WriteFile(filepath.Join(project.Root, path), []byte("user file"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writer := &fakeWriter{
+		results: []scaffold.FileResult{{Path: path, Skipped: true}},
+	}
+
+	result, err := Apply(context.Background(), Plan{
+		Project: project, Targets: targets, CLIVersion: "test",
+		LoginKey:      "pfk_test_login.secret",
+		ExistingFiles: scaffold.ExistingFilesKeep,
+	}, Dependencies{
+		Bootstrapper: fakeBootstrapper{run: func(
+			_ context.Context, request api.BootstrapRequest,
+		) (api.BootstrapResult, error) {
+			return bootstrapResult(request.ProjectID), nil
+		}},
+		Runner: fakeRunner{}, Writer: writer,
+		Secrets: fakeSecrets{secret: "whsec_project"}, Verifier: fakeVerifier{},
+	})
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if len(result.Manifest.GeneratedFiles) != 0 {
+		t.Fatalf("generated files = %v; skipped user file must remain unmanaged", result.Manifest.GeneratedFiles)
+	}
+}
+
+func TestApplyFreshReconcilesPriorGeneratedFilesAndManifest(t *testing.T) {
+	t.Parallel()
+
+	project, allTargets := setupFixture(t)
+	targets := []scaffold.Target{allTargets[1]}
+	for path, content := range map[string]string{
+		"reevit_client.py":  "old client",
+		"reevit_webhook.py": "stale webhook",
+	} {
+		if err := os.WriteFile(filepath.Join(project.Root, path), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	manifest := scaffold.Manifest{
+		ProjectID:      "rvproj_existing",
+		ServerKeyID:    "pfk_test_old",
+		GeneratedFiles: []string{"reevit_client.py", "reevit_webhook.py"},
+		Status:         "complete",
+	}
+
+	result, err := Apply(context.Background(), Plan{
+		Project: project, Targets: targets, Manifest: manifest, CLIVersion: "test",
+		LoginKey: "pfk_test_login.secret", RotateCredentials: true,
+		ExistingFiles: scaffold.ExistingFilesFresh,
+	}, Dependencies{
+		Bootstrapper: fakeBootstrapper{run: func(
+			_ context.Context, request api.BootstrapRequest,
+		) (api.BootstrapResult, error) {
+			return bootstrapResult(request.ProjectID), nil
+		}},
+		Runner: fakeRunner{}, Writer: FileWriter{},
+		Secrets: fakeSecrets{secret: "whsec_project"}, Verifier: fakeVerifier{},
+	})
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(project.Root, "reevit_webhook.py")); !os.IsNotExist(err) {
+		t.Fatalf("stale webhook still exists: %v", err)
+	}
+	if !reflect.DeepEqual(result.Manifest.GeneratedFiles, []string{"reevit_client.py"}) {
+		t.Fatalf("generated files = %v", result.Manifest.GeneratedFiles)
 	}
 }
 
@@ -322,6 +438,7 @@ type fakeWriter struct {
 	applyCalls  int
 	overwrite   bool
 	credentials scaffold.ProjectCredentials
+	results     []scaffold.FileResult
 }
 
 func (fake *fakeWriter) WriteEnv(
@@ -342,9 +459,13 @@ func (fake *fakeWriter) Apply(
 	options scaffold.ApplyOptions,
 ) ([]scaffold.FileResult, error) {
 	fake.applyCalls++
-	fake.overwrite = options.Overwrite
+	fake.overwrite = options.ExistingFiles == scaffold.ExistingFilesOverwrite ||
+		options.ExistingFiles == scaffold.ExistingFilesFresh
 	if fake.calls != nil {
 		*fake.calls = append(*fake.calls, "source")
+	}
+	if fake.results != nil {
+		return fake.results, nil
 	}
 	return []scaffold.FileResult{{Path: "reevit_client.py"}}, nil
 }

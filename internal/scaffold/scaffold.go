@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"text/template"
 	"time"
@@ -308,11 +309,93 @@ func pythonInstallCommand(installer Installer) []string {
 type FileResult struct {
 	Path       string
 	Skipped    bool
+	Removed    bool
 	BackupPath string
 }
 
+type ExistingFilesPolicy string
+
+const (
+	ExistingFilesReject    ExistingFilesPolicy = ""
+	ExistingFilesKeep      ExistingFilesPolicy = "keep"
+	ExistingFilesOverwrite ExistingFilesPolicy = "overwrite"
+	ExistingFilesFresh     ExistingFilesPolicy = "fresh"
+)
+
+type ApplyPreparation struct {
+	Backups map[string]string
+	Remove  []string
+}
+
 type ApplyOptions struct {
-	Overwrite bool
+	ExistingFiles ExistingFilesPolicy
+	Preparation   ApplyPreparation
+}
+
+func PrepareApply(
+	project Project,
+	targets []Target,
+	manifest Manifest,
+	policy ExistingFilesPolicy,
+) (ApplyPreparation, error) {
+	preparation := ApplyPreparation{Backups: map[string]string{}}
+	if !validExistingFilesPolicy(policy) {
+		return ApplyPreparation{}, fmt.Errorf("invalid existing-files policy %q", policy)
+	}
+	if policy != ExistingFilesOverwrite && policy != ExistingFilesFresh {
+		return preparation, nil
+	}
+
+	planned := map[string]bool{}
+	candidates := map[string]bool{}
+	for _, target := range targets {
+		for _, output := range target.Files {
+			if err := validateOutputPath(project.Root, output); err != nil {
+				return ApplyPreparation{}, err
+			}
+			clean := filepath.Clean(output)
+			planned[clean] = true
+			candidates[clean] = true
+		}
+	}
+	if policy == ExistingFilesFresh {
+		for _, output := range manifest.GeneratedFiles {
+			if err := validateOutputPath(project.Root, output); err != nil {
+				return ApplyPreparation{}, fmt.Errorf(
+					"invalid generated file in Reevit manifest: %w",
+					err,
+				)
+			}
+			clean := filepath.Clean(output)
+			candidates[clean] = true
+			if !planned[clean] {
+				preparation.Remove = append(preparation.Remove, filepath.ToSlash(clean))
+			}
+		}
+	}
+
+	paths := make([]string, 0, len(candidates))
+	for path := range candidates {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	sort.Strings(preparation.Remove)
+	backupRoot := filepath.Join(
+		".reevit", "backups", time.Now().UTC().Format("20060102T150405.000000000Z"),
+	)
+	for _, path := range paths {
+		if _, err := os.Stat(filepath.Join(project.Root, path)); os.IsNotExist(err) {
+			continue
+		} else if err != nil {
+			return ApplyPreparation{}, fmt.Errorf("inspect %s for backup: %w", path, err)
+		}
+		backupPath, err := backupFile(project.Root, backupRoot, path)
+		if err != nil {
+			return ApplyPreparation{}, err
+		}
+		preparation.Backups[filepath.ToSlash(path)] = backupPath
+	}
+	return preparation, nil
 }
 
 // Apply renders the targets' templates into the project. Existing files are
@@ -326,19 +409,53 @@ func Apply(project Project, targets []Target, options ...ApplyOptions) ([]FileRe
 	if len(options) > 0 {
 		opts = options[0]
 	}
-	backupRoot := filepath.Join(
-		".reevit", "backups", time.Now().UTC().Format("20060102T150405.000000000Z"),
-	)
+	if !validExistingFilesPolicy(opts.ExistingFiles) {
+		return results, fmt.Errorf("invalid existing-files policy %q", opts.ExistingFiles)
+	}
+	overwrite := opts.ExistingFiles == ExistingFilesOverwrite ||
+		opts.ExistingFiles == ExistingFilesFresh
+
+	if opts.ExistingFiles == ExistingFilesFresh {
+		for _, relative := range opts.Preparation.Remove {
+			if err := validateOutputPath(project.Root, relative); err != nil {
+				return results, err
+			}
+			clean := filepath.ToSlash(filepath.Clean(relative))
+			backupPath, backedUp := opts.Preparation.Backups[clean]
+			path := filepath.Join(project.Root, relative)
+			if _, err := os.Stat(path); os.IsNotExist(err) {
+				continue
+			} else if err != nil {
+				return results, fmt.Errorf("inspect stale generated file %s: %w", relative, err)
+			}
+			if !backedUp {
+				return results, fmt.Errorf("refusing to remove %s without a backup", relative)
+			}
+			if err := os.Remove(path); err != nil {
+				return results, fmt.Errorf("remove stale generated file %s: %w", relative, err)
+			}
+			results = append(results, FileResult{
+				Path: clean, Removed: true, BackupPath: backupPath,
+			})
+		}
+	}
 
 	for _, target := range targets {
 		for tmplName, outRel := range target.Files {
+			if err := validateOutputPath(project.Root, outRel); err != nil {
+				return results, err
+			}
 			outPath := filepath.Join(project.Root, outRel)
 
+			exists := false
 			if _, err := os.Stat(outPath); err == nil {
-				if !opts.Overwrite {
+				exists = true
+				if !overwrite {
 					results = append(results, FileResult{Path: outRel, Skipped: true})
 					continue
 				}
+			} else if !os.IsNotExist(err) {
+				return results, fmt.Errorf("inspect %s: %w", outRel, err)
 			}
 
 			content, err := render(tmplName, data)
@@ -347,12 +464,11 @@ func Apply(project Project, targets []Target, options ...ApplyOptions) ([]FileRe
 			}
 
 			backupPath := ""
-			if opts.Overwrite {
-				if _, statErr := os.Stat(outPath); statErr == nil {
-					backupPath, err = backupFile(project.Root, backupRoot, outRel)
-					if err != nil {
-						return results, err
-					}
+			if overwrite && exists {
+				var backedUp bool
+				backupPath, backedUp = opts.Preparation.Backups[filepath.ToSlash(filepath.Clean(outRel))]
+				if !backedUp {
+					return results, fmt.Errorf("refusing to replace %s without a backup", outRel)
 				}
 			}
 			if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
@@ -387,10 +503,13 @@ func backupFile(root, backupRoot, relative string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("inspect %s for backup: %w", relative, err)
 	}
+	backupRelative := filepath.Join(backupRoot, relative)
+	if err := validateOutputPath(root, backupRelative); err != nil {
+		return "", fmt.Errorf("unsafe Reevit backup path: %w", err)
+	}
 	if _, err := ensureGitignored(root, ".reevit/backups/"); err != nil {
 		return "", fmt.Errorf("ignore Reevit backups: %w", err)
 	}
-	backupRelative := filepath.Join(backupRoot, relative)
 	backupPath := filepath.Join(root, backupRelative)
 	if err := os.MkdirAll(filepath.Dir(backupPath), 0o755); err != nil {
 		return "", fmt.Errorf("create backup directory for %s: %w", relative, err)

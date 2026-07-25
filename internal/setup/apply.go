@@ -50,21 +50,20 @@ type Event struct {
 }
 
 type Plan struct {
-	Project            scaffold.Project
-	Targets            []scaffold.Target
-	Manifest           scaffold.Manifest
-	Goal               Goal
-	Operations         []Operation
-	Warnings           []string
-	Conflicts          []string
-	CLIVersion         string
-	LocalOrigin        string
-	LoginKey           string
-	BaseURL            string
-	RotateCredentials  bool
-	AllowExistingFiles bool
-	OverwriteFiles     bool
-	Verbose            bool
+	Project           scaffold.Project
+	Targets           []scaffold.Target
+	Manifest          scaffold.Manifest
+	Goal              Goal
+	Operations        []Operation
+	Warnings          []string
+	Conflicts         []string
+	CLIVersion        string
+	LocalOrigin       string
+	LoginKey          string
+	BaseURL           string
+	RotateCredentials bool
+	ExistingFiles     scaffold.ExistingFilesPolicy
+	Verbose           bool
 }
 
 type Result struct {
@@ -92,8 +91,17 @@ func Apply(ctx context.Context, plan Plan, deps Dependencies) (Result, error) {
 		plan.Project,
 		plan.Targets,
 		plan.Manifest,
-		scaffold.PreflightOptions{AllowExistingOutputs: plan.AllowExistingFiles},
+		scaffold.PreflightOptions{ExistingFiles: plan.ExistingFiles},
 	); err != nil {
+		return result, err
+	}
+	preparation, err := scaffold.PrepareApply(
+		plan.Project,
+		plan.Targets,
+		plan.Manifest,
+		plan.ExistingFiles,
+	)
+	if err != nil {
 		return result, err
 	}
 
@@ -120,7 +128,6 @@ func Apply(ctx context.Context, plan Plan, deps Dependencies) (Result, error) {
 	}
 	manifest.Capabilities = manifestCapabilities(plan.Targets)
 	manifest.Origin = strings.TrimRight(strings.TrimSpace(plan.LocalOrigin), "/")
-	manifest.GeneratedFiles = plannedFiles(plan.Targets)
 	if err := scaffold.WriteManifest(plan.Project, manifest); err != nil {
 		return result, err
 	}
@@ -194,10 +201,17 @@ func Apply(ctx context.Context, plan Plan, deps Dependencies) (Result, error) {
 	result.Files, err = deps.Writer.Apply(
 		plan.Project,
 		plan.Targets,
-		scaffold.ApplyOptions{Overwrite: plan.OverwriteFiles},
+		scaffold.ApplyOptions{
+			ExistingFiles: plan.ExistingFiles,
+			Preparation:   preparation,
+		},
 	)
 	if err != nil {
 		return result, markIncomplete(plan.Project, manifest, err)
+	}
+	manifest.GeneratedFiles = reconcileGeneratedFiles(manifest.GeneratedFiles, result.Files)
+	if err := scaffold.WriteManifest(plan.Project, manifest); err != nil {
+		return result, err
 	}
 	emit(deps, Event{Stage: "write", Status: "complete", Detail: "environment and integration files written"})
 
@@ -373,15 +387,26 @@ func manifestCapabilities(targets []scaffold.Target) []string {
 	return result
 }
 
-func plannedFiles(targets []scaffold.Target) []string {
-	var files []string
-	for _, target := range targets {
-		for _, path := range target.Files {
-			files = append(files, filepath.ToSlash(filepath.Clean(path)))
+func reconcileGeneratedFiles(previous []string, results []scaffold.FileResult) []string {
+	owned := make(map[string]bool, len(previous)+len(results))
+	for _, path := range previous {
+		owned[filepath.ToSlash(filepath.Clean(path))] = true
+	}
+	for _, result := range results {
+		path := filepath.ToSlash(filepath.Clean(result.Path))
+		switch {
+		case result.Removed:
+			delete(owned, path)
+		case !result.Skipped:
+			owned[path] = true
 		}
 	}
+	files := make([]string, 0, len(owned))
+	for path := range owned {
+		files = append(files, path)
+	}
 	slices.Sort(files)
-	return slices.Compact(files)
+	return files
 }
 
 func hasTarget(targets []scaffold.Target, key scaffold.TargetKey) bool {

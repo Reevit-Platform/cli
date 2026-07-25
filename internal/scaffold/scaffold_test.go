@@ -159,7 +159,14 @@ func TestApplyCanReplaceGeneratedFilesWithBackup(t *testing.T) {
 	component := "components/reevit-checkout-button.tsx"
 	write(t, dir, component, "user edited checkout")
 
-	results, err := Apply(project, checkout, ApplyOptions{Overwrite: true})
+	preparation, err := PrepareApply(project, checkout, Manifest{}, ExistingFilesOverwrite)
+	if err != nil {
+		t.Fatalf("PrepareApply: %v", err)
+	}
+	results, err := Apply(project, checkout, ApplyOptions{
+		ExistingFiles: ExistingFilesOverwrite,
+		Preparation:   preparation,
+	})
 	if err != nil {
 		t.Fatalf("Apply overwrite: %v", err)
 	}
@@ -181,6 +188,48 @@ func TestApplyCanReplaceGeneratedFilesWithBackup(t *testing.T) {
 	}
 	if gitignore := readFile(t, dir, ".gitignore"); !strings.Contains(gitignore, ".reevit/backups/") {
 		t.Fatalf("backup directory is not gitignored:\n%s", gitignore)
+	}
+}
+
+func TestFreshReconcilesPreviouslyGeneratedFiles(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "package.json", `{"dependencies":{"next":"16"}}`)
+	write(t, dir, "tsconfig.json", "{}")
+
+	project := Detect(dir)
+	checkout := []Target{TargetsFor(project)[1]}
+	component := "components/reevit-checkout-button.tsx"
+	stale := "lib/old-reevit-client.ts"
+	write(t, dir, component, "old checkout")
+	write(t, dir, stale, "old client")
+
+	preparation, err := PrepareApply(
+		project,
+		checkout,
+		Manifest{GeneratedFiles: []string{component, stale}},
+		ExistingFilesFresh,
+	)
+	if err != nil {
+		t.Fatalf("PrepareApply: %v", err)
+	}
+	if len(preparation.Backups) != 2 {
+		t.Fatalf("backups = %v", preparation.Backups)
+	}
+	if len(preparation.Remove) != 1 || preparation.Remove[0] != stale {
+		t.Fatalf("remove = %v, want %s", preparation.Remove, stale)
+	}
+
+	if _, err := Apply(project, checkout, ApplyOptions{
+		ExistingFiles: ExistingFilesFresh,
+		Preparation:   preparation,
+	}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, stale)); !os.IsNotExist(err) {
+		t.Fatalf("stale generated file still exists: %v", err)
+	}
+	if got := readFile(t, dir, component); got == "old checkout" {
+		t.Fatal("checkout was not regenerated")
 	}
 }
 

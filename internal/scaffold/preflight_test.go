@@ -2,6 +2,8 @@ package scaffold
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -37,9 +39,47 @@ func TestPreflightAllowsExistingOutputsAfterExplicitResolution(t *testing.T) {
 		project,
 		targets,
 		Manifest{},
-		PreflightOptions{AllowExistingOutputs: true},
+		PreflightOptions{ExistingFiles: ExistingFilesKeep},
 	)
 	if err != nil {
 		t.Fatalf("PreflightWithOptions() error = %v", err)
+	}
+}
+
+func TestPreflightRejectsOutputOutsideProject(t *testing.T) {
+	t.Parallel()
+
+	project := Project{Root: t.TempDir(), Stack: StackNext, TypeScript: true}
+	targets := []Target{{
+		Key: TargetCheckout,
+		Files: map[string]string{
+			"next-checkout.tsx.tmpl": "../outside.tsx",
+		},
+	}}
+
+	err := Preflight(project, targets, Manifest{})
+	if err == nil || !strings.Contains(err.Error(), "inside the project") {
+		t.Fatalf("Preflight() error = %v", err)
+	}
+}
+
+func TestPreflightRejectsOutputThroughSymlink(t *testing.T) {
+	t.Parallel()
+
+	project := Project{Root: t.TempDir(), Stack: StackNext, TypeScript: true}
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(project.Root, "components")); err != nil {
+		t.Fatal(err)
+	}
+	targets := []Target{{
+		Key: TargetCheckout,
+		Files: map[string]string{
+			"next-checkout.tsx.tmpl": "components/checkout.tsx",
+		},
+	}}
+
+	err := Preflight(project, targets, Manifest{})
+	if err == nil || !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("Preflight() error = %v", err)
 	}
 }

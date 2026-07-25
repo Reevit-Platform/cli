@@ -13,6 +13,7 @@ import (
 
 	"github.com/Reevit-Platform/cli/internal/config"
 	"github.com/Reevit-Platform/cli/internal/scaffold"
+	"github.com/Reevit-Platform/cli/internal/setup"
 )
 
 func TestInitFreshNextProjectAndIdempotentRerun(t *testing.T) {
@@ -183,6 +184,9 @@ func TestInitFreshNextProjectAndIdempotentRerun(t *testing.T) {
 		!strings.Contains(env, "NEXT_PUBLIC_REEVIT_CHECKOUT_KEY=pfk_test_checkout_rotated.secret") {
 		t.Fatalf("fresh credentials were not applied safely:\n%s", env)
 	}
+	if initRotateTestKeys {
+		t.Fatal("--fresh leaked credential rotation into later command invocations")
+	}
 }
 
 func TestInitDryRunNeedsNoLoginAndMakesNoChanges(t *testing.T) {
@@ -222,6 +226,63 @@ func TestInitDryRunNeedsNoLoginAndMakesNoChanges(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, ".reevit")); !os.IsNotExist(err) {
 		t.Fatalf("dry run mutated the project: %v", err)
+	}
+}
+
+func TestFreshPlanShowsBackupsRemovalAndCredentialRotation(t *testing.T) {
+	var out bytes.Buffer
+	plan := setup.Plan{}
+	configureExistingSetupPlan(&plan, scaffold.ExistingFilesFresh, true)
+
+	if err := printPlan(&out, plan); err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		"back up prior generated files",
+		"remove stale outputs",
+		"rotate project test credentials",
+	} {
+		if !strings.Contains(out.String(), expected) {
+			t.Fatalf("plan does not show %q:\n%s", expected, out.String())
+		}
+	}
+	if !plan.RotateCredentials {
+		t.Fatal("fresh plan did not enable credential rotation")
+	}
+}
+
+func TestInitDryRunFreshPreviewsDestructiveActions(t *testing.T) {
+	root := t.TempDir()
+	writeAcceptanceFile(t, root, "package.json", `{
+		"packageManager":"npm@11.0.0",
+		"dependencies":{"react":"19.0.0"}
+	}`)
+	oldCWD, _ := os.Getwd()
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chdir(oldCWD) }()
+
+	resetInitTestFlags()
+	t.Cleanup(resetInitTestFlags)
+	initDryRun = true
+	initFresh = true
+	var out bytes.Buffer
+	initCmd.SetIn(bytes.NewBuffer(nil))
+	initCmd.SetOut(&out)
+	initCmd.SetContext(context.Background())
+
+	if err := initCmd.RunE(initCmd, nil); err != nil {
+		t.Fatalf("dry-run fresh: %v\n%s", err, out.String())
+	}
+	for _, expected := range []string{
+		"back up prior generated files",
+		"remove stale outputs",
+		"rotate project test credentials",
+	} {
+		if !strings.Contains(out.String(), expected) {
+			t.Fatalf("dry-run does not show %q:\n%s", expected, out.String())
+		}
 	}
 }
 

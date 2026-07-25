@@ -146,8 +146,9 @@ it asks whether to:
 - **Keep existing files** and create only what is missing.
 - **Replace generated integration files** after backing up every replaced file
   under `.reevit/backups/`.
-- **Start fresh** by backing up and regenerating integration files and rotating
-  the project's test credentials.
+- **Start fresh** by backing up prior generated files, removing stale generated
+  outputs, regenerating the selected integration, and rotating the project's
+  test credentials.
 
 Non-interactive runs remain conservative: use `--overwrite` to replace
 generated files or `--fresh` to replace them and rotate test credentials.
