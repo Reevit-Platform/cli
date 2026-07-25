@@ -523,23 +523,22 @@ func legacyGeneratedEdit(path, content string) (GeneratedEdit, error) {
 		regexp.MustCompile(`(?m)^\n?// ` + regexp.QuoteMeta(webhookMountMarker) + ` mount\nmountReevitWebhook\([A-Za-z_$][A-Za-z0-9_$]*\);\n`),
 		regexp.MustCompile(`(?m)^[ \t]*// ` + regexp.QuoteMeta(webhookMountMarker) + `\n[ \t]*http\.HandleFunc\("/webhooks/reevit", HandleReevitWebhook\)\n`),
 		regexp.MustCompile(`(?m)^from reevit_webhook import (?:router as reevit_router|reevit_webhooks|reevit_webhook)\n`),
-		regexp.MustCompile(`(?m)^\n?[ \t]*# ` + regexp.QuoteMeta(webhookMountMarker) + `\n[ \t]*(?:app\.include_router\(reevit_router\)|app\.register_blueprint\(reevit_webhooks\))\n?`),
+		regexp.MustCompile(`(?m)^\n?[ \t]*# ` + regexp.QuoteMeta(webhookMountMarker) + `\n[ \t]*(?:app\.include_router\(reevit_router\)|app\.register_blueprint\(reevit_webhooks\))`),
 		regexp.MustCompile(`(?m)^\n?[ \t]*# ` + regexp.QuoteMeta(webhookMountMarker) + `\n[ \t]*path\("webhooks/reevit", reevit_webhook\),`),
 		regexp.MustCompile(`(?m)^[ \t]*// ` + regexp.QuoteMeta(webhookMountMarker) + `\n[ \t]*then: function \(\) \{\n[ \t]*Route::middleware\('api'\)->group\(base_path\('routes/reevit\.php'\)\);\n[ \t]*\},`),
 	}
 	var fragments []string
-	markerCaptured := false
+	capturedMarkers := 0
 	for _, pattern := range patterns {
 		match := pattern.FindString(content)
 		if match == "" {
 			continue
 		}
 		fragments = append(fragments, match)
-		if strings.Contains(match, webhookMountMarker) {
-			markerCaptured = true
-		}
+		capturedMarkers += strings.Count(match, webhookMountMarker)
 	}
-	if !markerCaptured {
+	if markerCount := strings.Count(content, webhookMountMarker); markerCount == 0 ||
+		capturedMarkers != markerCount {
 		return GeneratedEdit{}, fmt.Errorf(
 			"managed webhook mount in %s changed after setup; restore it from backup or remove it manually",
 			path,
@@ -570,13 +569,37 @@ func removeGeneratedEdit(project Project, edit GeneratedEdit) (FileResult, error
 		)
 	}
 	updated := string(raw)
+	present := 0
 	for _, fragment := range edit.Fragments {
-		if fragment == "" || strings.Count(updated, fragment) != 1 {
+		count := strings.Count(updated, fragment)
+		if fragment == "" || count > 1 {
 			return FileResult{}, fmt.Errorf(
 				"managed edit in %s changed after setup; no mount code was removed — review it and rerun init",
 				edit.Path,
 			)
 		}
+		if count == 1 {
+			present++
+		}
+	}
+	if present == 0 {
+		if strings.Contains(updated, webhookMountMarker) {
+			return FileResult{}, fmt.Errorf(
+				"managed edit in %s changed after setup; no mount code was removed — review it and rerun init",
+				edit.Path,
+			)
+		}
+		return FileResult{
+			Path: edit.Path, Removed: true, ManagedEdit: true, Edit: &edit,
+		}, nil
+	}
+	if present != len(edit.Fragments) {
+		return FileResult{}, fmt.Errorf(
+			"managed edit in %s changed after setup; no mount code was removed — review it and rerun init",
+			edit.Path,
+		)
+	}
+	for _, fragment := range edit.Fragments {
 		updated = strings.Replace(updated, fragment, "", 1)
 	}
 	info, err := os.Stat(path)

@@ -1,6 +1,8 @@
 package scaffold
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -318,5 +320,126 @@ func main() {
 	}
 	if got := readFile(t, root, entry); !strings.Contains(got, "DeveloperWebhook") {
 		t.Fatalf("developer edit was removed:\n%s", got)
+	}
+}
+
+func TestFreshRetriesAfterMountRemovalAndLaterFailure(t *testing.T) {
+	root := t.TempDir()
+	project := Project{
+		Root: root, Stack: StackGo, Framework: FrameworkGeneric,
+	}
+	entry := "main.go"
+	write(t, root, entry, `package main
+import "net/http"
+func main() {
+	http.ListenAndServe(":8080", nil)
+}
+`)
+	webhook := TargetsFor(project)[0]
+	webhook.Files = nil
+	results, err := Apply(project, []Target{webhook}, ApplyOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tracked GeneratedEdit
+	for _, result := range results {
+		if result.Edit != nil {
+			tracked = *result.Edit
+		}
+	}
+	write(t, root, "stale.txt", "stale")
+	manifest := Manifest{
+		Capabilities:   []string{"webhook"},
+		GeneratedFiles: []string{"stale.txt"},
+		GeneratedEdits: []GeneratedEdit{tracked},
+	}
+
+	preparation, err := PrepareApply(project, nil, manifest, ExistingFilesFresh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delete(preparation.Backups, "stale.txt")
+	_, err = Apply(project, nil, ApplyOptions{
+		ExistingFiles: ExistingFilesFresh,
+		Preparation:   preparation,
+	})
+	if err == nil || !strings.Contains(err.Error(), "without a backup") {
+		t.Fatalf("first Apply error = %v", err)
+	}
+	if strings.Contains(readFile(t, root, entry), webhookMountMarker) {
+		t.Fatal("mount was not removed before the later failure")
+	}
+
+	preparation, err = PrepareApply(project, nil, manifest, ExistingFilesFresh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Apply(project, nil, ApplyOptions{
+		ExistingFiles: ExistingFilesFresh,
+		Preparation:   preparation,
+	}); err != nil {
+		t.Fatalf("retry Apply: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "stale.txt")); !os.IsNotExist(err) {
+		t.Fatalf("stale file still exists after retry: %v", err)
+	}
+}
+
+func TestLegacyPythonRemovalPreservesFollowingCodeLine(t *testing.T) {
+	for _, framework := range []Framework{FrameworkFastAPI, FrameworkFlask} {
+		t.Run(string(framework), func(t *testing.T) {
+			root := t.TempDir()
+			project := Project{
+				Root: root, Stack: StackPython, Framework: framework,
+				Installer: InstallerPip,
+			}
+			entry := "main.py"
+			constructor := "app = FastAPI()"
+			if framework == FrameworkFlask {
+				entry = "app.py"
+				constructor = "app = Flask(__name__)"
+			}
+			write(t, root, entry, constructor+"\n"+
+				"# "+webhookMountMarker+"\n"+
+				map[Framework]string{
+					FrameworkFastAPI: "app.include_router(reevit_router)",
+					FrameworkFlask:   "app.register_blueprint(reevit_webhooks)",
+				}[framework]+"\n"+
+				"developer_route = True\n")
+			edits, err := DiscoverLegacyWebhookEdits(project)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(edits) != 1 {
+				t.Fatalf("legacy edits = %#v", edits)
+			}
+			if _, err := removeGeneratedEdit(project, edits[0]); err != nil {
+				t.Fatal(err)
+			}
+			cleaned := readFile(t, root, entry)
+			if !strings.Contains(cleaned, constructor+"\n") ||
+				!strings.Contains(cleaned, "\ndeveloper_route = True\n") {
+				t.Fatalf("legacy cleanup joined Python lines:\n%s", cleaned)
+			}
+		})
+	}
+}
+
+func TestLegacyDiscoveryRejectsPartiallyEditedExpressMount(t *testing.T) {
+	root := t.TempDir()
+	project := Project{
+		Root: root, Stack: StackNode, Framework: FrameworkExpress,
+		TypeScript: true,
+	}
+	write(t, root, "src/server.ts", `// reevit:init webhook import
+import { mountReevitWebhook } from "./reevit_webhook";
+import express from "express";
+const app = express();
+// reevit:init webhook mount
+mountReevitWebhookWithLogging(app);
+`)
+	_, err := DiscoverLegacyWebhookEdits(project)
+	if err == nil || !strings.Contains(err.Error(), "changed after setup") {
+		t.Fatalf("DiscoverLegacyWebhookEdits error = %v", err)
 	}
 }
