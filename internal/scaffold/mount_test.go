@@ -219,6 +219,15 @@ return Application::configure(basePath: dirname(__DIR__))
 	if len(tracked.Fragments) == 0 {
 		t.Fatal("Laravel mount did not record exact inserted fragments")
 	}
+	rerun, err := Apply(project, targets, ApplyOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, result := range rerun {
+		if result.ManagedEdit && result.Edit != nil {
+			t.Fatalf("idempotent rerun replaced exact ownership: %#v", result.Edit)
+		}
+	}
 
 	var withoutWebhook []Target
 	for _, target := range targets {

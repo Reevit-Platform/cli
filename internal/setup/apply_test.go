@@ -400,6 +400,20 @@ func TestReconcileGeneratedOwnershipSeparatesFilesAndHostEdits(t *testing.T) {
 	if len(edits) != 1 || edits[0].Path != "main.py" {
 		t.Fatalf("generated edits = %v", edits)
 	}
+
+	exact := scaffold.GeneratedEdit{
+		Path: "bootstrap/app.php", Kind: "webhook",
+		Fragments: []string{"use Illuminate\\Support\\Facades\\Route;\n", "mount block"},
+	}
+	edits = reconcileGeneratedEdits(
+		[]scaffold.GeneratedEdit{exact},
+		[]scaffold.FileResult{{
+			Path: "bootstrap/app.php", ManagedEdit: true, Skipped: true,
+		}},
+	)
+	if !reflect.DeepEqual(edits, []scaffold.GeneratedEdit{exact}) {
+		t.Fatalf("idempotent rerun replaced exact ownership: %#v", edits)
+	}
 }
 
 func setupFixture(t *testing.T) (scaffold.Project, []scaffold.Target) {

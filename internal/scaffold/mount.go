@@ -419,15 +419,10 @@ func applyFileEdit(project Project, edit FileEdit) (FileResult, error) {
 		return FileResult{}, fmt.Errorf("edit entry file %s: %w", edit.Path, err)
 	}
 	if updated == string(raw) {
-		result := FileResult{Path: edit.Path, Skipped: true, ManagedEdit: true}
-		if strings.Contains(string(raw), webhookMountMarker) {
-			record, recordErr := legacyGeneratedEdit(edit.Path, string(raw))
-			if recordErr != nil {
-				return FileResult{}, recordErr
-			}
-			result.Edit = &record
-		}
-		return result, nil
+		// A skipped edit must not replace an exact ownership record from the
+		// manifest with a pattern-derived legacy record. Legacy discovery is
+		// performed by PrepareApply only when no ownership record exists.
+		return FileResult{Path: edit.Path, Skipped: true, ManagedEdit: true}, nil
 	}
 	fragments, err := insertedFragments(string(raw), updated)
 	if err != nil {
