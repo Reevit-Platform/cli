@@ -12,11 +12,19 @@ func TestVerifyProjectCredentials(t *testing.T) {
 	t.Parallel()
 
 	var calls []string
+	var customerIDs []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls = append(calls, r.Header.Get("X-Reevit-Key")+" "+r.URL.Path)
 		if r.Header.Get("Idempotency-Key") == "" {
 			t.Error("verification mutation lacks idempotency key")
 		}
+		var body struct {
+			CustomerID string `json:"customer_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode verification body: %v", err)
+		}
+		customerIDs = append(customerIDs, body.CustomerID)
 		switch r.URL.Path {
 		case "/v1/payments/intents":
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": "pmt_1", "status": "succeeded"})
@@ -38,6 +46,9 @@ func TestVerifyProjectCredentials(t *testing.T) {
 		calls[0] != "pfk_test_server.secret /v1/payments/intents" ||
 		calls[1] != "pfk_test_checkout.secret /v1/checkout/sessions" {
 		t.Fatalf("calls = %#v", calls)
+	}
+	if customerIDs[0] == "" || customerIDs[1] == "" || customerIDs[0] == customerIDs[1] {
+		t.Fatalf("verification customer IDs must be distinct and non-empty: %#v", customerIDs)
 	}
 }
 
