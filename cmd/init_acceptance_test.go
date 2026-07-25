@@ -431,7 +431,9 @@ func TestInitInteractiveExistingSetupChoicesReachPlan(t *testing.T) {
 			initCmd.SetContext(context.Background())
 
 			go func() {
-				_, _ = input.Write([]byte(test.choice + "\nn\n"))
+				// Standalone checkout, default amount field, no custom metadata,
+				// then the existing-setup choice and final cancellation.
+				_, _ = input.Write([]byte("-\n\n\n" + test.choice + "\nn\n"))
 			}()
 			runErr := initCmd.RunE(initCmd, nil)
 			if runErr == nil || ExitCode(runErr) != 130 {
@@ -490,6 +492,9 @@ func resetInitTestFlags() {
 	initDryRun = false
 	initWebhookPath = ""
 	initCheckoutPath = ""
+	initCheckoutPage = ""
+	initCheckoutFields = nil
+	initCheckoutMeta = nil
 	initClientPath = ""
 	initRegisterWebhook = ""
 	initRotateTestKeys = false

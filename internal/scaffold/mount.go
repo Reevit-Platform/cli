@@ -13,6 +13,7 @@ const webhookMountMarker = "reevit:init webhook"
 // FileEdit is a safe, marker-delimited mutation to an existing project file.
 type FileEdit struct {
 	Path        string
+	Kind        string
 	Description string
 	apply       func(string) (string, error)
 }
@@ -440,10 +441,17 @@ func applyFileEdit(project Project, edit FileEdit) (FileResult, error) {
 		Path: edit.Path, ManagedEdit: true,
 		Edit: &GeneratedEdit{
 			Path:      filepath.ToSlash(filepath.Clean(edit.Path)),
-			Kind:      webhookMountMarker,
+			Kind:      fileEditKind(edit),
 			Fragments: fragments,
 		},
 	}, nil
+}
+
+func fileEditKind(edit FileEdit) string {
+	if edit.Kind != "" {
+		return edit.Kind
+	}
+	return webhookMountMarker
 }
 
 func insertedFragments(before, after string) ([]string, error) {

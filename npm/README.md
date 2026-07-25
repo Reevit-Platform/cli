@@ -73,6 +73,24 @@ reevit init --goal webhook
 reevit init --goal server
 ```
 
+When checkout is selected, the interactive wizard can insert it into an
+existing React/Next, Vue, or Svelte page and ask which fields the form should
+collect. The edit is marker-delimited and safe to rerun. Enter `-` for the page
+to keep the generated component and runnable demo standalone.
+
+The same choices are available to scripts:
+
+```sh
+reevit init --goal checkout \
+  --checkout-page src/app/cart/page.tsx \
+  --checkout-fields price,name,email,phone,reference \
+  --checkout-metadata order_id,product_sku
+```
+
+`price` aliases to `amount`. Customer values become `customer_name`,
+`customer_email`, and `customer_phone` workflow values. Custom metadata keys
+become `metadata_<key>`. Use `--checkout-page -` for standalone output.
+
 For scripts and CI, choose exact targets:
 
 ```sh

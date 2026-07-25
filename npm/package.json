@@ -1,6 +1,6 @@
 {
   "name": "@reevit/cli",
-  "version": "0.6.2",
+  "version": "0.7.0",
   "description": "Set up Reevit in supported projects, generate checkout and webhook integrations, and test payments locally",
   "license": "MIT",
   "repository": {

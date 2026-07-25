@@ -1,17 +1,43 @@
 <script setup{{if .TS}} lang="ts"{{end}}>
-import { ref } from "vue";
+import { computed, ref } from "vue";
 import { ReevitCheckout } from "@reevit/vue";
 import "@reevit/vue/styles.css";
 
-// Amounts are in the smallest currency unit (e.g. 5000 = GHS 50.00).
-// Set VITE_REEVIT_CHECKOUT_KEY in your env — use a test-mode key (pfk_test_…)
-// while integrating.
+// reevit-checkout-config: {{.ConfigID}}
+const checkoutFields = {
+  amount: {{.CollectAmount}},
+  name: {{.CollectName}},
+  email: {{.CollectEmail}},
+  phone: {{.CollectPhone}},
+  reference: {{.CollectRef}},
+};
+const metadataFields{{if .TS}}: string[]{{end}} = [{{range .MetadataFields}}{{quote .}}, {{end}}];
+
+// Customer fields become customer_name/customer_email/customer_phone workflow
+// values. Custom metadata keys become metadata_<key> workflow values.
 const props = defineProps({
-  amount: { type: Number, required: true },
+  amount: { type: Number, default: 5000 },
   currency: { type: String, default: "GHS" },
+  metadata: { type: Object, default: () => ({}) },
 });
 
 const open = ref(false);
+const checkoutAmount = ref(props.amount);
+const customerName = ref("");
+const email = ref("");
+const phone = ref("");
+const reference = ref("");
+const customMetadata = ref(
+  Object.fromEntries(metadataFields.map((field) => [field, ""])),
+);
+const paymentMetadata = computed(() => ({
+  ...props.metadata,
+  ...customMetadata.value,
+  ...(customerName.value ? { customer_name: customerName.value } : {}),
+  ...(email.value ? { customer_email: email.value } : {}),
+  ...(phone.value ? { customer_phone: phone.value } : {}),
+  ...(reference.value ? { reference: reference.value } : {}),
+}));
 
 function onSuccess(result{{if .TS}}: unknown{{end}}) {
   // TODO: show your confirmation UI
@@ -24,11 +50,45 @@ function onError(error{{if .TS}}: unknown{{end}}) {
 </script>
 
 <template>
-  <button type="button" @click="open = true">Pay now</button>
+  <form
+    style="display: grid; gap: 12px; max-width: 420px"
+    @submit.prevent="open = true"
+  >
+    <label v-if="checkoutFields.amount">
+      Amount (smallest currency unit)
+      <input v-model.number="checkoutAmount" type="number" min="1" required>
+    </label>
+    <label v-if="checkoutFields.name">
+      Name
+      <input v-model="customerName" required>
+    </label>
+    <label v-if="checkoutFields.email">
+      Email
+      <input v-model="email" type="email" required>
+    </label>
+    <label v-if="checkoutFields.phone">
+      Phone number
+      <input v-model="phone" type="tel" required>
+    </label>
+    <label v-if="checkoutFields.reference">
+      Payment reference
+      <input v-model="reference" required>
+    </label>
+    <label v-for="field in metadataFields" :key="field">
+      <span v-text="field.replaceAll('_', ' ')" />
+      <input v-model="customMetadata[field]" required>
+    </label>
+    <button type="submit">Pay now</button>
+  </form>
   <ReevitCheckout
     :public-key="import.meta.env.VITE_REEVIT_CHECKOUT_KEY ?? ''"
-    :amount="props.amount"
+    :amount="checkoutAmount"
     :currency="props.currency"
+    :email="email || undefined"
+    :phone="phone || undefined"
+    :customer-name="customerName || undefined"
+    :reference="reference || undefined"
+    :metadata="paymentMetadata"
     :payment-methods="['card', 'mobile_money']"
     :is-open="open"
     @success="onSuccess"

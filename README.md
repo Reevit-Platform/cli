@@ -119,7 +119,11 @@ never runs every package manager in a multi-lockfile repository.
   mounted automatically with idempotent markers; custom layouts receive an
   exact standalone mounting instruction instead of a risky source rewrite.
 - **Checkout flow** — checkout component, routable demo entry, checkout-only
-  browser credential, allowed local origin, and API-level session verification
+  browser credential, allowed local origin, and API-level session verification.
+  The wizard can also place checkout on an existing React/Next, Vue, or Svelte
+  page and configure which customer, amount, reference, and metadata fields the
+  generated form collects. Page edits use an idempotent `reevit-checkout`
+  marker block.
 - **Server client** — SDK client wired to `REEVIT_API_KEY` + `REEVIT_ORG_ID`
   with a payment-intent example
 
@@ -133,6 +137,20 @@ Place code wherever you like with `--webhook-path`, `--checkout-path`, and
 `--client-path`. With a webhook target, `--register-webhook https://…` (or the
 interactive prompt) registers the production endpoint in your dashboard —
 needs a key with `webhooks:write` (fresh `reevit login` keys have it).
+
+Checkout placement can also be fully scripted:
+
+```bash
+reevit init --goal checkout \
+  --checkout-page src/app/cart/page.tsx \
+  --checkout-fields price,name,email,phone,reference \
+  --checkout-metadata order_id,product_sku
+```
+
+`price` is an alias for `amount`. Customer values are exposed to workflows as
+`customer_name`, `customer_email`, and `customer_phone`; custom keys become
+`metadata_<key>`. Pass `--checkout-page -` to keep the generated component and
+runnable demo standalone.
 
 The wizard defaults to the complete recommended setup. “Customize” reveals
 advanced capability choices. It resolves the organization attached to an
