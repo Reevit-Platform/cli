@@ -15,7 +15,6 @@ type FileEdit struct {
 	Path        string
 	Description string
 	apply       func(string) (string, error)
-	remove      func(string) string
 }
 
 // WebhookMountEdits returns an entry-file edit only when the adapter can
@@ -46,88 +45,8 @@ func WebhookMountEdits(project Project) []FileEdit {
 	if edit.Path == "" {
 		return nil
 	}
-	edit.remove = func(content string) string {
-		return removeWebhookMount(content, project.Framework)
-	}
 
 	return []FileEdit{edit}
-}
-
-func WebhookMountRemovalEdits(project Project, trackedPaths []string) []FileEdit {
-	paths := append([]string(nil), trackedPaths...)
-	if len(paths) == 0 {
-		switch project.Framework {
-		case FrameworkExpress:
-			if path := javascriptEntry(project.Root); path != "" {
-				paths = append(paths, path)
-			}
-		case FrameworkFastAPI:
-			if path := pythonEntry(project.Root, "FastAPI("); path != "" {
-				paths = append(paths, path)
-			}
-		case FrameworkFlask:
-			if path := pythonEntry(project.Root, "Flask("); path != "" {
-				paths = append(paths, path)
-			}
-		case FrameworkDjango:
-			if matches, _ := filepath.Glob(filepath.Join(project.Root, "*", "urls.py")); len(matches) == 1 {
-				if path, err := filepath.Rel(project.Root, matches[0]); err == nil {
-					paths = append(paths, filepath.ToSlash(path))
-				}
-			}
-		case FrameworkLaravel:
-			paths = append(paths, "bootstrap/app.php")
-		default:
-			if project.Stack == StackGo {
-				paths = append(paths, "main.go")
-			}
-		}
-	}
-
-	edits := make([]FileEdit, 0, len(paths))
-	for _, path := range paths {
-		path = filepath.ToSlash(filepath.Clean(path))
-		edits = append(edits, FileEdit{
-			Path:        path,
-			Description: "remove the stale Reevit webhook mount",
-			remove: func(content string) string {
-				return removeWebhookMount(content, project.Framework)
-			},
-		})
-	}
-	return edits
-}
-
-func removeWebhookMount(content string, framework Framework) string {
-	lines := strings.SplitAfter(content, "\n")
-	filtered := make([]string, 0, len(lines))
-	foundMarker := false
-	for index := 0; index < len(lines); index++ {
-		if !strings.Contains(lines[index], webhookMountMarker) {
-			filtered = append(filtered, lines[index])
-			continue
-		}
-		foundMarker = true
-		following := 1
-		if framework == FrameworkLaravel {
-			following = 3
-		}
-		index += following
-	}
-	updated := strings.Join(filtered, "")
-	if foundMarker {
-		for _, generatedImport := range []string{
-			"from reevit_webhook import router as reevit_router\n",
-			"from reevit_webhook import reevit_webhooks\n",
-			"from reevit_webhook import reevit_webhook\n",
-		} {
-			updated = strings.Replace(updated, generatedImport, "", 1)
-		}
-		for strings.Contains(updated, "\n\n\n") {
-			updated = strings.ReplaceAll(updated, "\n\n\n", "\n\n")
-		}
-	}
-	return updated
 }
 
 func expressMountEdit(project Project) FileEdit {
@@ -500,7 +419,19 @@ func applyFileEdit(project Project, edit FileEdit) (FileResult, error) {
 		return FileResult{}, fmt.Errorf("edit entry file %s: %w", edit.Path, err)
 	}
 	if updated == string(raw) {
-		return FileResult{Path: edit.Path, Skipped: true, ManagedEdit: true}, nil
+		result := FileResult{Path: edit.Path, Skipped: true, ManagedEdit: true}
+		if strings.Contains(string(raw), webhookMountMarker) {
+			record, recordErr := legacyGeneratedEdit(edit.Path, string(raw))
+			if recordErr != nil {
+				return FileResult{}, recordErr
+			}
+			result.Edit = &record
+		}
+		return result, nil
+	}
+	fragments, err := insertedFragments(string(raw), updated)
+	if err != nil {
+		return FileResult{}, fmt.Errorf("record entry edit %s: %w", edit.Path, err)
 	}
 	info, err := os.Stat(path)
 	if err != nil {
@@ -510,26 +441,148 @@ func applyFileEdit(project Project, edit FileEdit) (FileResult, error) {
 		return FileResult{}, fmt.Errorf("write entry file %s: %w", edit.Path, err)
 	}
 
-	return FileResult{Path: edit.Path, ManagedEdit: true}, nil
+	return FileResult{
+		Path: edit.Path, ManagedEdit: true,
+		Edit: &GeneratedEdit{
+			Path:      filepath.ToSlash(filepath.Clean(edit.Path)),
+			Kind:      webhookMountMarker,
+			Fragments: fragments,
+		},
+	}, nil
 }
 
-func removeFileEdit(project Project, edit FileEdit) (FileResult, error) {
+func insertedFragments(before, after string) ([]string, error) {
+	beforeLines := strings.SplitAfter(before, "\n")
+	afterLines := strings.SplitAfter(after, "\n")
+	var fragments []string
+	afterIndex := 0
+	for _, originalLine := range beforeLines {
+		match := afterIndex
+		for match < len(afterLines) && afterLines[match] != originalLine {
+			match++
+		}
+		if match == len(afterLines) {
+			return nil, fmt.Errorf("entry edit replaced existing content")
+		}
+		if match > afterIndex {
+			fragments = append(fragments, strings.Join(afterLines[afterIndex:match], ""))
+		}
+		afterIndex = match + 1
+	}
+	if afterIndex < len(afterLines) {
+		fragments = append(fragments, strings.Join(afterLines[afterIndex:], ""))
+	}
+	if len(fragments) == 0 {
+		return nil, fmt.Errorf("entry edit produced no trackable insertion")
+	}
+	return fragments, nil
+}
+
+func DiscoverLegacyWebhookEdits(project Project) ([]GeneratedEdit, error) {
+	candidates := []string{
+		"src/server.ts", "src/index.ts", "server.ts", "index.ts",
+		"src/server.js", "src/index.js", "server.js", "index.js",
+		"main.go", "main.py", "app.py", "server.py", "bootstrap/app.php",
+	}
+	if declared := javascriptEntry(project.Root); declared != "" {
+		candidates = append(candidates, declared)
+	}
+	if matches, _ := filepath.Glob(filepath.Join(project.Root, "*", "urls.py")); len(matches) > 0 {
+		for _, match := range matches {
+			if relative, err := filepath.Rel(project.Root, match); err == nil {
+				candidates = append(candidates, relative)
+			}
+		}
+	}
+
+	seen := map[string]bool{}
+	var records []GeneratedEdit
+	for _, candidate := range candidates {
+		candidate = filepath.ToSlash(filepath.Clean(candidate))
+		if seen[candidate] {
+			continue
+		}
+		seen[candidate] = true
+		raw, err := os.ReadFile(filepath.Join(project.Root, candidate))
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("inspect legacy webhook mount %s: %w", candidate, err)
+		}
+		if !strings.Contains(string(raw), webhookMountMarker) {
+			continue
+		}
+		record, err := legacyGeneratedEdit(candidate, string(raw))
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, record)
+	}
+	return records, nil
+}
+
+func legacyGeneratedEdit(path, content string) (GeneratedEdit, error) {
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`(?m)^// ` + regexp.QuoteMeta(webhookMountMarker) + ` import\nimport \{ mountReevitWebhook \} from "[^"\n]+";\n`),
+		regexp.MustCompile(`(?m)^\n?// ` + regexp.QuoteMeta(webhookMountMarker) + ` mount\nmountReevitWebhook\([A-Za-z_$][A-Za-z0-9_$]*\);\n`),
+		regexp.MustCompile(`(?m)^[ \t]*// ` + regexp.QuoteMeta(webhookMountMarker) + `\n[ \t]*http\.HandleFunc\("/webhooks/reevit", HandleReevitWebhook\)\n`),
+		regexp.MustCompile(`(?m)^from reevit_webhook import (?:router as reevit_router|reevit_webhooks|reevit_webhook)\n`),
+		regexp.MustCompile(`(?m)^\n?[ \t]*# ` + regexp.QuoteMeta(webhookMountMarker) + `\n[ \t]*(?:app\.include_router\(reevit_router\)|app\.register_blueprint\(reevit_webhooks\))\n?`),
+		regexp.MustCompile(`(?m)^\n?[ \t]*# ` + regexp.QuoteMeta(webhookMountMarker) + `\n[ \t]*path\("webhooks/reevit", reevit_webhook\),`),
+		regexp.MustCompile(`(?m)^[ \t]*// ` + regexp.QuoteMeta(webhookMountMarker) + `\n[ \t]*then: function \(\) \{\n[ \t]*Route::middleware\('api'\)->group\(base_path\('routes/reevit\.php'\)\);\n[ \t]*\},`),
+	}
+	var fragments []string
+	markerCaptured := false
+	for _, pattern := range patterns {
+		match := pattern.FindString(content)
+		if match == "" {
+			continue
+		}
+		fragments = append(fragments, match)
+		if strings.Contains(match, webhookMountMarker) {
+			markerCaptured = true
+		}
+	}
+	if !markerCaptured {
+		return GeneratedEdit{}, fmt.Errorf(
+			"managed webhook mount in %s changed after setup; restore it from backup or remove it manually",
+			path,
+		)
+	}
+	return GeneratedEdit{
+		Path:      filepath.ToSlash(filepath.Clean(path)),
+		Kind:      webhookMountMarker + ":legacy",
+		Fragments: fragments,
+	}, nil
+}
+
+func removeGeneratedEdit(project Project, edit GeneratedEdit) (FileResult, error) {
 	path := filepath.Join(project.Root, edit.Path)
 	raw, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		return FileResult{Path: edit.Path, Removed: true, ManagedEdit: true}, nil
+		return FileResult{
+			Path: edit.Path, Removed: true, ManagedEdit: true, Edit: &edit,
+		}, nil
 	}
 	if err != nil {
 		return FileResult{}, fmt.Errorf("read entry file %s: %w", edit.Path, err)
 	}
-	if edit.remove == nil {
-		return FileResult{}, fmt.Errorf("entry edit %s cannot be removed safely", edit.Path)
+	if len(edit.Fragments) == 0 {
+		return FileResult{}, fmt.Errorf(
+			"entry edit %s has no exact ownership record; restore it from backup or remove it manually",
+			edit.Path,
+		)
 	}
-	updated := edit.remove(string(raw))
-	if updated == string(raw) {
-		return FileResult{
-			Path: edit.Path, Skipped: true, Removed: true, ManagedEdit: true,
-		}, nil
+	updated := string(raw)
+	for _, fragment := range edit.Fragments {
+		if fragment == "" || strings.Count(updated, fragment) != 1 {
+			return FileResult{}, fmt.Errorf(
+				"managed edit in %s changed after setup; no mount code was removed — review it and rerun init",
+				edit.Path,
+			)
+		}
+		updated = strings.Replace(updated, fragment, "", 1)
 	}
 	info, err := os.Stat(path)
 	if err != nil {
@@ -538,7 +591,9 @@ func removeFileEdit(project Project, edit FileEdit) (FileResult, error) {
 	if err := atomicWriteFile(path, []byte(updated), info.Mode().Perm()); err != nil {
 		return FileResult{}, fmt.Errorf("remove entry edit %s: %w", edit.Path, err)
 	}
-	return FileResult{Path: edit.Path, Removed: true, ManagedEdit: true}, nil
+	return FileResult{
+		Path: edit.Path, Removed: true, ManagedEdit: true, Edit: &edit,
+	}, nil
 }
 
 func atomicWriteFile(path string, content []byte, mode os.FileMode) (resultErr error) {

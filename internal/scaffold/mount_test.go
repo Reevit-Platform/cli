@@ -147,8 +147,7 @@ return Application::configure(basePath: dirname(__DIR__))
 				test.project,
 				withoutWebhook,
 				Manifest{
-					Capabilities:   []string{"webhook"},
-					GeneratedEdits: []string{test.entry},
+					Capabilities: []string{"webhook"},
 				},
 				ExistingFilesFresh,
 			)
@@ -188,5 +187,127 @@ func TestCustomExpressEntryFallsBackWithoutMutation(t *testing.T) {
 	targets := TargetsFor(project)
 	if len(targets[0].Edits) != 0 {
 		t.Fatalf("custom entry received unsafe edit: %#v", targets[0].Edits)
+	}
+}
+
+func TestTrackedLaravelMountRemovalOwnsInsertedImport(t *testing.T) {
+	root := t.TempDir()
+	project := Project{
+		Root: root, Stack: StackPHP, Framework: FrameworkLaravel,
+		Installer: InstallerComposer,
+	}
+	entry := "bootstrap/app.php"
+	write(t, root, entry, `<?php
+use Illuminate\Foundation\Application;
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        web: __DIR__.'/../routes/web.php',
+        health: '/up',
+    )->create();
+`)
+	targets := TargetsFor(project)
+	results, err := Apply(project, targets, ApplyOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tracked GeneratedEdit
+	for _, result := range results {
+		if result.ManagedEdit && result.Edit != nil {
+			tracked = *result.Edit
+		}
+	}
+	if len(tracked.Fragments) == 0 {
+		t.Fatal("Laravel mount did not record exact inserted fragments")
+	}
+
+	var withoutWebhook []Target
+	for _, target := range targets {
+		if target.Key != TargetWebhook {
+			withoutWebhook = append(withoutWebhook, target)
+		}
+	}
+	preparation, err := PrepareApply(
+		project,
+		withoutWebhook,
+		Manifest{
+			Capabilities:   []string{"webhook"},
+			GeneratedEdits: []GeneratedEdit{tracked},
+		},
+		ExistingFilesFresh,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Apply(project, withoutWebhook, ApplyOptions{
+		ExistingFiles: ExistingFilesFresh,
+		Preparation:   preparation,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cleaned := readFile(t, root, entry)
+	if strings.Contains(cleaned, webhookMountMarker) ||
+		strings.Contains(cleaned, `use Illuminate\Support\Facades\Route;`) {
+		t.Fatalf("tracked Laravel mount was not fully reversed:\n%s", cleaned)
+	}
+}
+
+func TestTrackedMountRefusesToDeleteDeveloperEditedFragment(t *testing.T) {
+	root := t.TempDir()
+	project := Project{
+		Root: root, Stack: StackGo, Framework: FrameworkGeneric,
+	}
+	entry := "main.go"
+	write(t, root, entry, `package main
+import "net/http"
+func main() {
+	http.ListenAndServe(":8080", nil)
+}
+`)
+	targets := TargetsFor(project)
+	results, err := Apply(project, targets, ApplyOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tracked GeneratedEdit
+	for _, result := range results {
+		if result.ManagedEdit && result.Edit != nil {
+			tracked = *result.Edit
+		}
+	}
+	edited := strings.Replace(
+		readFile(t, root, entry),
+		`HandleReevitWebhook`,
+		`DeveloperWebhook`,
+		1,
+	)
+	write(t, root, entry, edited)
+
+	var withoutWebhook []Target
+	for _, target := range targets {
+		if target.Key != TargetWebhook {
+			withoutWebhook = append(withoutWebhook, target)
+		}
+	}
+	preparation, err := PrepareApply(
+		project,
+		withoutWebhook,
+		Manifest{
+			Capabilities:   []string{"webhook"},
+			GeneratedEdits: []GeneratedEdit{tracked},
+		},
+		ExistingFilesFresh,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = Apply(project, withoutWebhook, ApplyOptions{
+		ExistingFiles: ExistingFilesFresh,
+		Preparation:   preparation,
+	})
+	if err == nil || !strings.Contains(err.Error(), "changed after setup") {
+		t.Fatalf("Apply error = %v", err)
+	}
+	if got := readFile(t, root, entry); !strings.Contains(got, "DeveloperWebhook") {
+		t.Fatalf("developer edit was removed:\n%s", got)
 	}
 }

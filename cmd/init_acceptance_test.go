@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -357,6 +358,9 @@ func TestInitRejectsOverwriteAndFreshTogether(t *testing.T) {
 }
 
 func TestInitInteractiveExistingSetupChoicesReachPlan(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pseudo-terminal interaction is covered by platform-independent UI and policy tests")
+	}
 	tests := []struct {
 		name     string
 		choice   string

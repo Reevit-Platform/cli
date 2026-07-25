@@ -377,7 +377,12 @@ func TestApplyFreshReconcilesPriorGeneratedFilesAndManifest(t *testing.T) {
 func TestReconcileGeneratedOwnershipSeparatesFilesAndHostEdits(t *testing.T) {
 	results := []scaffold.FileResult{
 		{Path: "reevit_webhook.py"},
-		{Path: "main.py", ManagedEdit: true},
+		{
+			Path: "main.py", ManagedEdit: true,
+			Edit: &scaffold.GeneratedEdit{
+				Path: "main.py", Kind: "webhook", Fragments: []string{"generated"},
+			},
+		},
 		{Path: "old.py", Removed: true},
 		{Path: "old-main.py", ManagedEdit: true, Removed: true},
 	}
@@ -386,8 +391,13 @@ func TestReconcileGeneratedOwnershipSeparatesFilesAndHostEdits(t *testing.T) {
 	if !reflect.DeepEqual(files, []string{"reevit_webhook.py"}) {
 		t.Fatalf("generated files = %v", files)
 	}
-	edits := reconcileGeneratedEdits([]string{"old-main.py"}, results)
-	if !reflect.DeepEqual(edits, []string{"main.py"}) {
+	edits := reconcileGeneratedEdits(
+		[]scaffold.GeneratedEdit{{
+			Path: "old-main.py", Kind: "webhook", Fragments: []string{"old"},
+		}},
+		results,
+	)
+	if len(edits) != 1 || edits[0].Path != "main.py" {
 		t.Fatalf("generated edits = %v", edits)
 	}
 }

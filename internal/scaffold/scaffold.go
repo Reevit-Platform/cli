@@ -313,6 +313,7 @@ type FileResult struct {
 	Removed     bool
 	ManagedEdit bool
 	BackupPath  string
+	Edit        *GeneratedEdit
 }
 
 type ExistingFilesPolicy string
@@ -329,7 +330,7 @@ type ApplyPreparation struct {
 	Digests     map[string][sha256.Size]byte
 	Missing     map[string]bool
 	Remove      []string
-	RemoveEdits []FileEdit
+	RemoveEdits []GeneratedEdit
 }
 
 type ApplyOptions struct {
@@ -383,10 +384,17 @@ func PrepareApply(
 		}
 		if containsString(manifest.Capabilities, "webhook") &&
 			!targetsContain(targets, TargetWebhook) {
-			preparation.RemoveEdits = WebhookMountRemovalEdits(
-				project,
-				manifest.GeneratedEdits,
+			preparation.RemoveEdits = append(
+				[]GeneratedEdit(nil),
+				manifest.GeneratedEdits...,
 			)
+			if len(preparation.RemoveEdits) == 0 {
+				var err error
+				preparation.RemoveEdits, err = DiscoverLegacyWebhookEdits(project)
+				if err != nil {
+					return ApplyPreparation{}, err
+				}
+			}
 			for _, edit := range preparation.RemoveEdits {
 				if err := validateOutputPath(project.Root, edit.Path); err != nil {
 					return ApplyPreparation{}, err
@@ -445,7 +453,7 @@ func Apply(project Project, targets []Target, opts ApplyOptions) ([]FileResult, 
 
 	if opts.ExistingFiles == ExistingFilesFresh {
 		for _, edit := range opts.Preparation.RemoveEdits {
-			result, err := removeFileEdit(project, edit)
+			result, err := removeGeneratedEdit(project, edit)
 			if err != nil {
 				return results, err
 			}

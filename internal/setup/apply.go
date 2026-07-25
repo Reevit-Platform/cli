@@ -413,10 +413,14 @@ func reconcileGeneratedFiles(previous []string, results []scaffold.FileResult) [
 	return files
 }
 
-func reconcileGeneratedEdits(previous []string, results []scaffold.FileResult) []string {
-	owned := make(map[string]bool, len(previous)+len(results))
-	for _, path := range previous {
-		owned[filepath.ToSlash(filepath.Clean(path))] = true
+func reconcileGeneratedEdits(
+	previous []scaffold.GeneratedEdit,
+	results []scaffold.FileResult,
+) []scaffold.GeneratedEdit {
+	owned := make(map[string]scaffold.GeneratedEdit, len(previous)+len(results))
+	for _, edit := range previous {
+		edit.Path = filepath.ToSlash(filepath.Clean(edit.Path))
+		owned[edit.Path] = edit
 	}
 	for _, result := range results {
 		if !result.ManagedEdit {
@@ -425,15 +429,19 @@ func reconcileGeneratedEdits(previous []string, results []scaffold.FileResult) [
 		path := filepath.ToSlash(filepath.Clean(result.Path))
 		if result.Removed {
 			delete(owned, path)
-		} else {
-			owned[path] = true
+		} else if result.Edit != nil {
+			edit := *result.Edit
+			edit.Path = path
+			owned[path] = edit
 		}
 	}
-	edits := make([]string, 0, len(owned))
-	for path := range owned {
-		edits = append(edits, path)
+	edits := make([]scaffold.GeneratedEdit, 0, len(owned))
+	for _, edit := range owned {
+		edits = append(edits, edit)
 	}
-	slices.Sort(edits)
+	slices.SortFunc(edits, func(left, right scaffold.GeneratedEdit) int {
+		return strings.Compare(left.Path, right.Path)
+	})
 	return edits
 }
 

@@ -8,17 +8,23 @@ import (
 	"path/filepath"
 )
 
+type GeneratedEdit struct {
+	Path      string   `json:"path"`
+	Kind      string   `json:"kind"`
+	Fragments []string `json:"fragments"`
+}
+
 type Manifest struct {
-	Status         string   `json:"status"`
-	CLIVersion     string   `json:"cli_version"`
-	ProjectID      string   `json:"project_id"`
-	Adapter        string   `json:"adapter"`
-	Capabilities   []string `json:"capabilities,omitempty"`
-	ServerKeyID    string   `json:"server_key_id,omitempty"`
-	CheckoutKeyID  string   `json:"checkout_key_id,omitempty"`
-	Origin         string   `json:"origin,omitempty"`
-	GeneratedFiles []string `json:"generated_files,omitempty"`
-	GeneratedEdits []string `json:"generated_edits,omitempty"`
+	Status         string          `json:"status"`
+	CLIVersion     string          `json:"cli_version"`
+	ProjectID      string          `json:"project_id"`
+	Adapter        string          `json:"adapter"`
+	Capabilities   []string        `json:"capabilities,omitempty"`
+	ServerKeyID    string          `json:"server_key_id,omitempty"`
+	CheckoutKeyID  string          `json:"checkout_key_id,omitempty"`
+	Origin         string          `json:"origin,omitempty"`
+	GeneratedFiles []string        `json:"generated_files,omitempty"`
+	GeneratedEdits []GeneratedEdit `json:"generated_edits,omitempty"`
 }
 
 func ReadManifest(project Project) (Manifest, error) {
