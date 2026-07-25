@@ -142,7 +142,7 @@ Included transactions (1,000 / 10,000 / 100,000), retention days (7 / 30 / 365),
 | 1 | **Webhook attempts (Free)** | *not modelled* | **10,000** | **5,000** | — |
 | 2 | **Starter price** | `19900` | $15 / ₵199 | ₵199 | **$49** |
 | 3 | **Growth price** | `64900` | $49 / ₵649 | ₵649 | **$199** |
-| 4 | **`smart_routing`** | **true on every plan**, incl. Free (`000091`) and Starter (`000062`) | Growth-only | Growth-only | Growth-only |
+| ~~4~~ | ~~`smart_routing`~~ | **RESOLVED** — see below | — | — | — |
 | 5 | **`audit_logs` on Free** | **false** (`000044`) | **"Audit logs"** listed | **"…and audit logs"** listed | — |
 | ~~6~~ | ~~`live_mode` on Free~~ | **NOT A CONFLICT** — `000091` set it `true` | — | — | — |
 | ~~7~~ | ~~Free connections~~ | **NOT A CONFLICT** — `000091` set `max_connections = 1` | — | — | — |
@@ -167,6 +167,44 @@ Included transactions (1,000 / 10,000 / 100,000), retention days (7 / 30 / 365),
 | starter | 19900 | 10,000 | 4 | 30d | **true** | **false** | true |
 | growth | 64900 | 100,000 | −1 | 365d | true | true | true |
 | enterprise | 100000 | 1,000,000 | −1 | −1 | true | true | true |
+
+#### Conflict 4 resolved (25 Jul): `smart_routing` was the wrong lever
+
+Investigating this changed the question. `smart_routing` gates
+`/routing-rules`, `/routing/ab-tests` and `/routing/decisions`
+(`adapters/http/router.go:987`, `:1003`, `:1026`) — and **does not gate the
+router**. Health- and fee-aware selection and in-request failover run on every
+payment for every plan; there is no entitlement check near payment creation.
+
+So restricting the flag would not have made routing a paid feature. It would
+have left routing running for a merchant while denying them the ability to see
+or steer it. Meanwhile the real boundary was already correctly tiered and already
+enforced: `max_connections` at 1 / 4 / unlimited **live** connections
+(`gatekeeper.go:316`). With one live connection there is nothing to route
+between, so the flag is inert on Free regardless of its value.
+
+Sandbox is separately hard-capped at 2 for every plan (`gatekeeper.go:276`), so
+a Free user *can* prove two-provider failover before paying — the exact motion
+§"Pricing direction" calls for. Turning the flag off on Free would have broken it.
+
+**Resolution shipped** (backend `bed12a79`, frontend `8cc2fb0`):
+
+- `smart_routing` stays on every plan — rules and the decisions log explain
+  behavior the merchant is already subject to.
+- Routing A/B tests move to a new `routing_experiments` entitlement
+  (migration `000147`). They need volume to mean anything, which makes them a
+  defensible boundary where the others were not.
+- The migration ships `routing_experiments` **equal to each plan's existing
+  `smart_routing`**, so nobody is downgraded on landing. Starter has had A/B
+  tests since `000062`; removing them silently was the trap. Pulling that lever
+  is now a data change plus customer comms.
+- Marketing prices *scale* — "Providers you can route between: 1 / 4 /
+  unlimited" — instead of the capability.
+
+`basic_failover` is misnamed the same way: it gates `/dunning` and
+`/policies/retry`, not failover. **Left alone deliberately** — renaming a live
+entitlement key is a migration plus route churn for a cosmetic gain. Worth doing
+alongside the next entitlement change, not on its own.
 
 #### The currency problem (worst of the set)
 
