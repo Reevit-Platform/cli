@@ -149,6 +149,9 @@ Add to `~/.gemini/settings.json`:
 | `REEVIT_API_KEY` | — (required) | Scoped API key from the dashboard |
 | `REEVIT_MODE` | `test` | `test` or `live`. Live refunds additionally require `confirm: true` per call |
 | `REEVIT_API_URL` | `https://api.reevit.io` | Point at a self-hosted / local API |
+| `REEVIT_MCP_HOST` | `127.0.0.1` | HTTP mode only. Bind host; non-loopback values require `REEVIT_MCP_AUTH_TOKEN` |
+| `REEVIT_MCP_AUTH_TOKEN` | — (optional on loopback) | HTTP mode only. Bearer token required in the `Authorization` header |
+| `REEVIT_MCP_ALLOWED_ORIGINS` | — (none) | HTTP mode only. Comma-separated browser `Origin` allowlist; any other `Origin` is rejected |
 
 ## Safety model
 
@@ -167,11 +170,30 @@ For remote/agent-platform use, run the same server over streamable HTTP
 
 ```bash
 REEVIT_API_KEY=pfk_test_... npx -y @reevit/mcp --http --port 8788
-# endpoint: http://localhost:8788/mcp
+# endpoint: http://127.0.0.1:8788/mcp
 ```
 
-Auth is still the configured scoped key — this is a self-hosted endpoint, so
-put it behind your own network boundary.
+HTTP mode binds to **loopback (`127.0.0.1`) by default** and enforces:
+
+- **Bind host**: set `REEVIT_MCP_HOST` only if you genuinely need to expose
+  this beyond the local machine, and put a real network boundary
+  (firewall/VPN) in front of it. A non-loopback `REEVIT_MCP_HOST` requires
+  `REEVIT_MCP_AUTH_TOKEN` to be set — the server refuses to start otherwise.
+- **Bearer auth**: set `REEVIT_MCP_AUTH_TOKEN` and send
+  `Authorization: Bearer <token>`. Required whenever the bind host isn't
+  loopback; optional (but still enforced if set) on the loopback default,
+  since anything reaching a loopback-bound port is already local to the
+  machine.
+- **Origin allowlist**: requests carrying a browser `Origin` header are
+  rejected unless that origin is listed in `REEVIT_MCP_ALLOWED_ORIGINS`. A
+  normal MCP client never sends `Origin`; this is what stops a malicious web
+  page from driving the server via DNS rebinding or a direct
+  `127.0.0.1:<port>` request.
+- **Content-Type**: only `application/json` bodies are accepted, which
+  closes off the CORS-"simple request" bypass (e.g. `text/plain` fetches that
+  skip preflight).
+- **Body size**: requests over 1 MiB are rejected with `413` instead of being
+  buffered without limit.
 
 ## Development
 
