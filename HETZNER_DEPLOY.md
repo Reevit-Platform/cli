@@ -452,6 +452,14 @@ docker compose -f docker-compose.prod.yml --env-file .env.prod logs -f backup
 The first dump fires immediately on start — deliberately, so bad R2 credentials
 surface now instead of in six hours. After that it sleeps 6 hours between runs.
 
+Credential handling note: `backup.sh` feeds pg_dump via `.pgpass` (0600), so the
+DB password never appears in the container's process list. The R2 keys and the
+app secrets (`VAULT_KEY`/`PASETO_KEY`) do travel as container environment
+variables — visible to anything with host docker access via `docker inspect`.
+On this single-operator host that is accepted; moving them to docker secrets
+mounted as files is the documented future hardening if the box ever gains more
+tenants.
+
 **Then run the restore drill in `backend/docs/RECOVERY_RUNBOOK.md`.** An
 untested backup is not a backup, and at a 6-hour interval your RPO is up to six
 hours of payments. Decide explicitly whether that is acceptable; if not, shorten
@@ -555,11 +563,12 @@ docker compose -f docker-compose.prod.yml --env-file .env.prod exec postgres \
   in-process (`cmd/worker/scheduler.go`), so a second replica double-fires every
   entry — duplicate renewals, duplicate invoices. Scaling it needs leader
   election first.
-- **`api` has no container healthcheck.** The `production` image installs only
-  `ca-certificates` — no `curl`, no `wget`, and no shell-reachable probe. Adding
-  `curl` to the production stage (or a tiny Go healthcheck binary) would let
-  Docker restart a wedged API on its own. Until then, Cloudflare and your own
-  uptime check are the detection path.
+- **`api` and `worker` have container healthchecks** (since 2026-07-28): the
+  production image ships a static busybox (`/usr/bin/busybox`), `api` probes
+  `http://127.0.0.1:8080/healthz`, and the worker (no HTTP) is probed via
+  `busybox pidof reevit-worker`. `restart: unless-stopped` plus Docker's
+  unhealthy-state restart policy handles a wedged process; Cloudflare and your
+  own uptime check remain the detection path for a hung-but-alive API.
 - **Single point of failure.** One box, one Postgres, no replica. The mitigation
   is the backup job plus a *rehearsed* restore — not hope. Hetzner snapshots
   cover host loss; they do not cover a bad migration.
