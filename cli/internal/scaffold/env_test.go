@@ -1,11 +1,46 @@
 package scaffold
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestWriteEnv_RefusesLiveKeyInBrowserVar(t *testing.T) {
+	dir := t.TempDir()
+	project := Project{Root: dir, Stack: StackReact}
+
+	_, err := WriteEnv(project, "pfk_live_abc123.secretpart", "org_1", true)
+	if !errors.Is(err, ErrLiveKeyInClientEnv) {
+		t.Fatalf("want ErrLiveKeyInClientEnv, got %v", err)
+	}
+
+	env := readFile(t, dir, ".env.local")
+	if strings.Contains(env, "VITE_REEVIT_KEY=") {
+		t.Fatal("live key must never reach a browser-exposed var")
+	}
+}
+
+func TestWriteEnv_TestKeyStillWritesBrowserVar(t *testing.T) {
+	dir := t.TempDir()
+	project := Project{Root: dir, Stack: StackReact}
+
+	res, err := WriteEnv(project, "pfk_test_abc123.secretpart", "org_1", true)
+	if err != nil {
+		t.Fatalf("WriteEnv: %v", err)
+	}
+
+	if res.ClientKeyVar != "VITE_REEVIT_KEY" {
+		t.Fatalf("client var = %q, want VITE_REEVIT_KEY", res.ClientKeyVar)
+	}
+
+	env := readFile(t, dir, ".env.local")
+	if !strings.Contains(env, "VITE_REEVIT_KEY=pfk_test_abc123.secretpart") {
+		t.Fatalf(".env.local missing browser key: %s", env)
+	}
+}
 
 func readFile(t *testing.T, dir, rel string) string {
 	t.Helper()

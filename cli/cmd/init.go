@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -139,6 +140,10 @@ updated when you choose checkout placement, using an idempotent marked block.`,
 		// --- 5. Env wiring ---
 		envRes, err := scaffold.WriteEnv(project, cfg.APIKey, cfg.OrgID, hasTarget(targets, scaffold.TargetCheckout))
 		if err != nil {
+			if errors.Is(err, scaffold.ErrLiveKeyInClientEnv) {
+				return fmt.Errorf("%w\n\nrerun with a test-mode key (`reevit login` mints one) or drop the checkout target", err)
+			}
+
 			return err
 		}
 

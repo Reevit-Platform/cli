@@ -1,6 +1,7 @@
 package scaffold
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,18 @@ import (
 
 // envHeader marks the block reevit init manages inside env files.
 const envHeader = "# Added by `reevit init`"
+
+// ErrLiveKeyInClientEnv is returned when a live-mode secret key would be
+// written to a browser-exposed env var (NEXT_PUBLIC_*/VITE_*), which the
+// bundler inlines into the public JS bundle for every visitor.
+var ErrLiveKeyInClientEnv = errors.New("live API keys must never be written to browser-exposed env vars — use a test-mode key (pfk_test_…) for the client bundle")
+
+// isLiveAPIKey reports whether the key is a live-mode Reevit secret key.
+// The raw key form is "<keyID>.<secret>" and the keyID carries the prefix
+// (backend internal/services/auth/api_keys.go: pfk_live / pfk_test).
+func isLiveAPIKey(key string) bool {
+	return strings.HasPrefix(key, "pfk_live")
+}
 
 // EnvResult reports what WriteEnv did, for the summary output.
 type EnvResult struct {
@@ -71,6 +84,10 @@ func WriteEnv(project Project, apiKey, orgID string, includeClientKey bool) (Env
 	}
 
 	if includeClientKey && clientVar != "" {
+		if isLiveAPIKey(apiKey) {
+			return res, ErrLiveKeyInClientEnv
+		}
+
 		current, _ := os.ReadFile(envPath)
 		if !strings.Contains(string(current), clientVar+"=") {
 			block := fmt.Sprintf("# Exposed to the browser bundle by your framework — test-mode keys only\n%s=%s\n", clientVar, apiKey)
