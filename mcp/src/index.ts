@@ -9,11 +9,15 @@ import { buildTools } from "./tools.js";
 async function main() {
   const config = configFromEnv();
 
-  // --http [--port N]: streamable HTTP transport instead of stdio.
+  // --http [--port N] [--allow-insecure-no-auth]: streamable HTTP transport
+  // instead of stdio. Auth: REEVIT_MCP_HTTP_TOKEN bearer, loopback bind only.
   const argv = process.argv.slice(2);
   if (argv.includes("--http")) {
     const portFlag = argv[argv.indexOf("--port") + 1];
-    await serveHttp(config, Number(portFlag) > 0 ? Number(portFlag) : 8788);
+    await serveHttp(config, Number(portFlag) > 0 ? Number(portFlag) : 8788, {
+      authToken: process.env.REEVIT_MCP_HTTP_TOKEN || undefined,
+      allowInsecureNoAuth: argv.includes("--allow-insecure-no-auth"),
+    });
     return;
   }
 
