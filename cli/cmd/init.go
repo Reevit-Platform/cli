@@ -490,7 +490,8 @@ func printNextSteps(out interface{ Write([]byte) (int, error) }, project scaffol
 	}
 
 	fmt.Fprintln(out, "\nYou're on a TEST-MODE key. When you're ready for live traffic, create a live")
-	fmt.Fprintln(out, "key in Dashboard → Developers → API keys and run:  reevit login --key <live_key>")
+	fmt.Fprintln(out, "key in Dashboard → Developers → API keys and run:  reevit login --key -")
+	fmt.Fprintln(out, "(reads the key from stdin so it never lands in your shell history)")
 }
 
 func hasTarget(targets []scaffold.Target, key scaffold.TargetKey) bool {
