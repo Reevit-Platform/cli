@@ -563,5 +563,12 @@ docker compose -f docker-compose.prod.yml --env-file .env.prod exec postgres \
 - **Single point of failure.** One box, one Postgres, no replica. The mitigation
   is the backup job plus a *rehearsed* restore — not hope. Hetzner snapshots
   cover host loss; they do not cover a bad migration.
+- **Accepted risk: plaintext DB traffic on the docker bridge.** `DATABASE_URL`
+  uses `sslmode=disable` between api/worker/migrate/backup and the co-located
+  Postgres. Postgres publishes no host port and the `data` network is internal
+  to this one host, so sniffing it requires host compromise — at which point
+  same-host TLS adds nothing (the CA would sit on the same box). Revisit if the
+  DB ever moves off-host: then `sslmode=require` with a generated CA becomes
+  mandatory, not optional.
 - **The subdomain split is app work**, not configuration. See the note at the
   bottom of `docker-compose.prod.yml`.
