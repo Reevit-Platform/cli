@@ -1,2 +1,7 @@
 node_modules/
 dist/
+
+# Local secrets — never commit env files
+.env
+.env.*
+!.env.example
