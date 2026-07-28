@@ -182,11 +182,17 @@ func gitignoreCovers(pattern, envFile string) bool {
 }
 
 func appendFile(path, content string) error {
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	// Env files hold the API key — owner-only from creation, and tighten
+	// pre-existing broader files (e.g. a framework-created 0644) on append.
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = f.Close() }()
+
+	if info, statErr := f.Stat(); statErr == nil && info.Mode().Perm() != 0o600 {
+		_ = os.Chmod(path, 0o600)
+	}
 
 	_, err = f.WriteString(content)
 

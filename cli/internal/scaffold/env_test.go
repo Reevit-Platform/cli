@@ -23,6 +23,48 @@ func TestWriteEnv_RefusesLiveKeyInBrowserVar(t *testing.T) {
 	}
 }
 
+func TestWriteEnv_CreatesEnvFileOwnerOnly(t *testing.T) {
+	dir := t.TempDir()
+	project := Project{Root: dir, Stack: StackReact}
+
+	if _, err := WriteEnv(project, "pfk_test_abc.parts", "org_1", false); err != nil {
+		t.Fatalf("WriteEnv: %v", err)
+	}
+
+	info, err := os.Stat(filepath.Join(dir, ".env.local"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("env file mode = %o, want 600 (it holds the API key)", info.Mode().Perm())
+	}
+}
+
+func TestWriteEnv_TightensPreExistingBroadEnvFile(t *testing.T) {
+	dir := t.TempDir()
+	project := Project{Root: dir, Stack: StackReact}
+
+	// Framework-created 0644 env file predating reevit init.
+	envPath := filepath.Join(dir, ".env.local")
+	if err := os.WriteFile(envPath, []byte("EXISTING=1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := WriteEnv(project, "pfk_test_abc.parts", "org_1", false); err != nil {
+		t.Fatalf("WriteEnv: %v", err)
+	}
+
+	info, err := os.Stat(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("env file mode = %o, want tightened to 600", info.Mode().Perm())
+	}
+}
+
 func TestWriteEnv_TestKeyStillWritesBrowserVar(t *testing.T) {
 	dir := t.TempDir()
 	project := Project{Root: dir, Stack: StackReact}
