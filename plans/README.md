@@ -19,13 +19,28 @@ and update your row when done.
 | 005 | Backend pre-commit gate + fix stale ROADMAP/CLAUDE.md doc drift | P2 | S | — | TODO |
 | 006 | Split backend god-files (handlers_payments 2,458 / auth_repo 2,402 / handlers_auth 1,794 lines) | P3 | L | — | TODO |
 | 007 | Merchant-first landing restructure + /developers page (grill session 2026-07-11; phase 0 = live credibility bugs, shippable alone) | P1 | L | content inputs for its §1.7 | TODO |
+| 008 | Secrets rotation incident — execute SECRET_ROTATION.md, scrub git history, misuse audit (OPERATOR/HITL only) | P0 | M | — | DONE (2026-07-29: rotation incl. VAULT_KEY re-encrypt via vaultrotate tool, history scrubbed + force-pushed; Task 7 misuse audit remains as follow-up) |
+| 009 | Backend security hardening — fail-closed webhook, constant-time compares, random client secrets, access control, grpc bump | P1 | M | — (008 parallel) | DONE (2026-07-28, 17 commits incl. migration 000153) |
+| 010 | Frontend/CLI/MCP security hardening — MCP auth, live-key guard, security headers, URL allowlists, cookie tightening, dep overrides | P1 | M | 002 owns redirect schema guard | DONE (2026-07-28, 13 commits across root/frontend/backend) |
+| 011 | Infra/observability/CI hardening — localhost-bind telemetry, Grafana password, Caddy proxies, CI SHA pinning, gitignore gaps | P1 | S | 008 lands first | DONE (2026-07-28, 14 commits across root/backend/frontend) |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale)
+
+## 2026-07-28 batch (OWASP sweep)
+
+Plans 008–011 remediate the full-stack OWASP sweep of 2026-07-28 (1 Critical,
+5 High, 15 Medium, 16 Low + 3 dependency advisories; report in the session's
+security-sweep canvas). Execution order: **008 first** (active credential-leak
+incident, operator-run), then 009/010/011 in any order — they touch disjoint
+trees (backend / frontend+cli+mcp / deploy+ci).
 
 ## Dependency notes
 
 - No hard dependencies. Soft ordering: run 001 before/after (not during) 002 — both touch `frontend/package.json`-adjacent state and the three-lockfile trio; land one before starting the other.
 - 006 must not run concurrently with any other backend-touching work in `adapters/http/` (shared-checkout clobber hazard documented in the repo).
+- 009 must not run concurrently with 006 (same `adapters/http/` clobber hazard).
+- 008 is OPERATOR-ONLY (HITL): agents must not execute it. 011 depends on 008's env handling landing before its Grafana password rotation is deployed.
+- 010 Task 5 must not duplicate plan 002's redirect schema guard (002 owns it); 010 Task 11 and plan 001 both touch `frontend/package.json`/lockfile — land one before starting the other.
 
 ## Direction findings (options, not ranked against the bugs)
 
