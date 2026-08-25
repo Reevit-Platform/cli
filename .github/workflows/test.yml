@@ -51,10 +51,39 @@ jobs:
 
       - run: go test ./...
 
-      # The heavier suites release.yml runs, so a tag is never the first
-      # time they execute against a change.
+      # Also run at tag time, so a release is never the first execution.
       - name: Stack acceptance matrix
         run: go test ./cmd -run 'TestInit(AdapterMatrix|FreshNextProjectAndIdempotentRerun)' -count=1
+
+  external-adapters:
+    # Ubuntu only, and separate from the matrix above: this suite shells out
+    # to real package managers to compile the generated adapters, so it needs
+    # pnpm installed and it needs composer, which ships on the ubuntu runner
+    # image but not the macOS one.
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.2"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: "10.33.0"
+
+      - name: Assert the external toolchain is present
+        # Without these the suite fails with "executable file not found",
+        # which reads like a code regression rather than a missing tool.
+        run: |
+          for tool in pnpm composer; do
+            command -v "$tool" >/dev/null || { echo "$tool missing from PATH" >&2; exit 1; }
+          done
 
       - name: External adapter compile suite
         env:
