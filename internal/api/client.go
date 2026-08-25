@@ -5,14 +5,14 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"time"
-
-	"github.com/google/uuid"
 
 	"github.com/Reevit-Platform/cli/internal/config"
 )
@@ -50,23 +50,65 @@ type Request struct {
 	Query      url.Values
 	Body       any
 	Idempotent bool // adds an Idempotency-Key (money-moving routes)
+
+	// IdempotencyKey overrides the derived key.
+	//
+	// The escape hatch for the cost of deriving: two deliberate, byte-identical
+	// operations inside the backend's idempotency window collapse into one. Set
+	// this to force a genuinely separate second call.
+	IdempotencyKey string
+}
+
+// deriveIdempotencyKey builds a key from the operation itself — method, path
+// (query included) and the exact body bytes about to be sent.
+//
+// A fresh uuid.NewString() per invocation, which is what this used to send,
+// cannot deduplicate anything. A key only earns the name when a *retry of the
+// same logical operation* carries the same value, and a per-call UUID
+// guarantees it never does: re-running a command after a timeout looked like a
+// brand-new payment to the backend, leaving its own duplicate guards as the
+// only thing between a retry and a second charge.
+//
+// Hashing the marshalled body instead of re-canonicalising the Go value means
+// the key describes exactly what goes on the wire, so the two cannot drift.
+// encoding/json is deterministic for a given value — map keys are sorted and
+// struct fields follow declaration order — so the same operation hashes the
+// same on every run. Reordering a request struct's fields would change the key
+// across CLI versions; that only affects a retry spanning an upgrade inside the
+// backend's window, which is not worth pinning declaration order for.
+//
+// The API key is deliberately not mixed in. The backend already scopes
+// idempotency records by organization, and salting per key would make the same
+// operation from two shells look distinct — the exact behaviour being fixed.
+func deriveIdempotencyKey(method, target string, body []byte) string {
+	sum := sha256.New()
+	fmt.Fprintf(sum, "%s\n%s\n", method, target)
+	_, _ = sum.Write(body)
+
+	return hex.EncodeToString(sum.Sum(nil))[:32]
 }
 
 func (c *Client) Do(ctx context.Context, req Request, out any) error {
-	endpoint := c.cfg.BaseURL + "/v1" + req.Path
+	target := req.Path
 	if len(req.Query) > 0 {
-		endpoint += "?" + req.Query.Encode()
+		target += "?" + req.Query.Encode()
 	}
 
-	var body io.Reader
+	endpoint := c.cfg.BaseURL + "/v1" + target
+
+	var (
+		payload []byte
+		body    io.Reader
+	)
 
 	if req.Body != nil {
-		raw, err := json.Marshal(req.Body)
+		encoded, err := json.Marshal(req.Body)
 		if err != nil {
 			return fmt.Errorf("encode request: %w", err)
 		}
 
-		body = bytes.NewReader(raw)
+		payload = encoded
+		body = bytes.NewReader(payload)
 	}
 
 	method := req.Method
@@ -85,7 +127,12 @@ func (c *Client) Do(ctx context.Context, req Request, out any) error {
 	httpReq.Header.Set("X-Reevit-Client", "reevit-cli")
 
 	if req.Idempotent {
-		httpReq.Header.Set("Idempotency-Key", uuid.NewString())
+		key := req.IdempotencyKey
+		if key == "" {
+			key = deriveIdempotencyKey(method, target, payload)
+		}
+
+		httpReq.Header.Set("Idempotency-Key", key)
 	}
 
 	resp, err := c.http.Do(httpReq)
