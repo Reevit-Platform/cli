@@ -251,6 +251,24 @@ Env vars override the config file: `REEVIT_API_KEY`, `REEVIT_API_URL`
 (default `https://api.reevit.io`), `REEVIT_MODE` (`test`|`live`, default
 `test`), `REEVIT_CONFIG` (config file path).
 
+Env-supplied values stay ephemeral: they are overlaid onto what `Load` returns
+but are never written back to `~/.config/reevit/config.json`. A `REEVIT_API_KEY`
+exported for one shell or one CI job does not become permanent on-disk state.
+
+## Credential handling
+
+- The config file is written `0600`, in a `0700` directory.
+- Env files that `init` writes (`.env`, `.env.local`) are `0600` — and an
+  existing framework-created `0644` file is tightened on append. `.env.example`
+  and `.gitignore` stay `0644`: one holds only placeholders, the other is
+  committed.
+- `init` **refuses** to write a `pfk_live_*` key into a browser-exposed var
+  (`NEXT_PUBLIC_*`, `VITE_*`). Bundlers inline those into the public JS bundle,
+  so a live secret there is served to every visitor. Use a test-mode key for
+  the client bundle.
+- The npm wrapper verifies the downloaded release archive against the
+  `checksums.txt` GoReleaser publishes, before writing anything executable.
+
 ## Releasing
 
 Tag `v*` → GitHub Actions runs GoReleaser: builds all platforms, publishes the
@@ -260,3 +278,17 @@ repo secret — a fine-grained PAT with `contents:write` on
 same workflow via npm trusted publishing (configure the repo + `release.yml`
 as a trusted publisher on the `@reevit/cli` package settings); bump
 `npm/package.json` to the tag version before tagging.
+
+Checklist:
+
+1. Bump `npm/package.json` to the next semver. The release workflow's version
+   guard fails the build if it disagrees with the tag, so this comes first.
+2. Update the docs and release notes for anything user-visible.
+3. Commit.
+4. `git tag vX.Y.Z && git push origin vX.Y.Z` — push the one tag, not
+   `--tags`. A bare `--tags` pushes every local tag, including any that a
+   sibling checkout left behind.
+5. Watch the Actions run: binaries, GitHub release, Homebrew tap, npm wrapper.
+6. Confirm the npm publish carried provenance attestations
+   (`npm view @reevit/cli dist-tags` then check the package page) — a missing
+   attestation means the release did not come from CI.

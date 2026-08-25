@@ -1,6 +1,7 @@
 package scaffold
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -203,5 +204,86 @@ func TestWriteEnvRespectsExistingGitignorePatterns(t *testing.T) {
 				t.Errorf("pattern %q: GitignoreNoted = %v, want %v", tc.pattern, res.GitignoreNoted, !tc.covered)
 			}
 		})
+	}
+}
+
+// A NEXT_PUBLIC_*/VITE_* var is inlined into the public JS bundle, so a live
+// secret key there is served to every visitor. Refuse before writing anything.
+func TestWriteEnvRefusesLiveKeyInBrowserExposedVar(t *testing.T) {
+	for _, stack := range []Stack{StackNext, StackReact, StackVue, StackSvelte} {
+		t.Run(string(stack), func(t *testing.T) {
+			dir := t.TempDir()
+
+			_, err := WriteEnv(Project{Root: dir, Stack: stack}, ProjectCredentials{
+				ServerKey:   "pfk_test_server.secret",
+				CheckoutKey: "pfk_live_checkout.secret",
+			})
+			if !errors.Is(err, ErrLiveKeyInClientEnv) {
+				t.Fatalf("err = %v, want ErrLiveKeyInClientEnv", err)
+			}
+
+			// Refusing after a partial write would leave the live key on disk
+			// anyway, which is the thing being prevented.
+			if entries, readErr := os.ReadDir(dir); readErr == nil && len(entries) != 0 {
+				t.Fatalf("refusal must write nothing, found %d entries", len(entries))
+			}
+		})
+	}
+}
+
+// Server-only stacks have no client bundle, so a live key is legitimate there.
+func TestWriteEnvAllowsLiveServerKeyOnStacksWithoutAClientBundle(t *testing.T) {
+	dir := t.TempDir()
+
+	if _, err := WriteEnv(Project{Root: dir, Stack: StackNode}, ProjectCredentials{
+		ServerKey:   "pfk_live_server.secret",
+		CheckoutKey: "pfk_live_checkout.secret",
+	}); err != nil {
+		t.Fatalf("WriteEnv: %v", err)
+	}
+
+	if env := readFile(t, dir, ".env"); !strings.Contains(env, "REEVIT_API_KEY=pfk_live_server.secret") {
+		t.Errorf(".env missing server key: %s", env)
+	}
+}
+
+func TestWriteEnvWritesSecretsOwnerOnly(t *testing.T) {
+	dir := t.TempDir()
+
+	// A framework-created env file at 0644 must be tightened, not inherited:
+	// os.OpenFile's perm argument applies only when it creates the file.
+	envPath := filepath.Join(dir, ".env.local")
+	if err := os.WriteFile(envPath, []byte("EXISTING=1\n"), 0o644); err != nil {
+		t.Fatalf("seed env file: %v", err)
+	}
+
+	if _, err := WriteEnv(Project{Root: dir, Stack: StackNext}, ProjectCredentials{
+		ServerKey:     "pfk_test_server.secret",
+		CheckoutKey:   "pfk_test_checkout.secret",
+		WebhookSecret: "whsec_local",
+	}); err != nil {
+		t.Fatalf("WriteEnv: %v", err)
+	}
+
+	info, err := os.Stat(envPath)
+	if err != nil {
+		t.Fatalf("stat env file: %v", err)
+	}
+
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf(".env.local mode = %04o, want 0600 — it holds the API key", perm)
+	}
+
+	// .gitignore is committed and .env.example holds only placeholders; both
+	// stay readable so a shared checkout behaves normally.
+	for _, rel := range []string{".gitignore", ".env.example"} {
+		info, err := os.Stat(filepath.Join(dir, rel))
+		if err != nil {
+			t.Fatalf("stat %s: %v", rel, err)
+		}
+
+		if perm := info.Mode().Perm(); perm != 0o644 {
+			t.Errorf("%s mode = %04o, want 0644", rel, perm)
+		}
 	}
 }

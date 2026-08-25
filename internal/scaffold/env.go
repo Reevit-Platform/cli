@@ -1,6 +1,7 @@
 package scaffold
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,21 @@ import (
 
 // envHeader marks the block reevit init manages inside env files.
 const envHeader = "# Added by `reevit init`"
+
+// secretFileMode is owner-only. Env files hold the API key and the webhook
+// signing secret, so they should never be group- or world-readable.
+const secretFileMode os.FileMode = 0o600
+
+// ErrLiveKeyInClientEnv is returned when a live-mode secret key would be
+// written to a browser-exposed env var (NEXT_PUBLIC_*/VITE_*), which the
+// bundler inlines into the public JS bundle for every visitor.
+var ErrLiveKeyInClientEnv = errors.New(
+	"live API keys must never be written to browser-exposed env vars — use a test-mode key (pfk_test_…) for the client bundle",
+)
+
+func isLiveAPIKey(key string) bool {
+	return strings.HasPrefix(key, "pfk_live")
+}
 
 // EnvResult reports what WriteEnv did, for the summary output.
 type EnvResult struct {
@@ -65,6 +81,12 @@ func WriteEnv(project Project, credentials ProjectCredentials) (EnvResult, error
 	envPath := filepath.Join(project.Root, res.EnvFile)
 	clientVar := ClientKeyVar(project.Stack)
 
+	// Checked once, before any write path: the fill-blank, replace and append
+	// branches below all funnel CheckoutKey into clientVar.
+	if clientVar != "" && isLiveAPIKey(credentials.CheckoutKey) {
+		return res, ErrLiveKeyInClientEnv
+	}
+
 	existing, _ := os.ReadFile(envPath)
 	current := string(existing)
 	_, serverWasSet := envKeyState(current, "REEVIT_API_KEY")
@@ -103,7 +125,7 @@ func WriteEnv(project Project, credentials ProjectCredentials) (EnvResult, error
 		replaced = replaced || changed
 	}
 	if replaced {
-		if err := os.WriteFile(envPath, []byte(current), 0o644); err != nil {
+		if err := writeSecretFile(envPath, []byte(current)); err != nil {
 			return res, fmt.Errorf("fill blank values in %s: %w", res.EnvFile, err)
 		}
 		existing = []byte(current)
@@ -134,7 +156,7 @@ func WriteEnv(project Project, credentials ProjectCredentials) (EnvResult, error
 		if len(existing) == 0 {
 			block = strings.TrimPrefix(block, "\n")
 		}
-		if err := appendFile(envPath, block); err != nil {
+		if err := appendSecretFile(envPath, block); err != nil {
 			return res, fmt.Errorf("write %s: %w", res.EnvFile, err)
 		}
 	}
@@ -290,6 +312,8 @@ func gitignoreCovers(pattern, envFile string) bool {
 	return false
 }
 
+// appendFile appends to a file that holds no secrets — .env.example carries
+// blank placeholders and .gitignore is committed, so both stay world-readable.
 func appendFile(path, content string) error {
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
@@ -300,4 +324,44 @@ func appendFile(path, content string) error {
 	_, err = f.WriteString(content)
 
 	return err
+}
+
+// appendSecretFile is appendFile for the env file itself: owner-only from
+// creation, and it tightens a pre-existing broader mode (a framework-created
+// 0644 .env.local, say) rather than inheriting it.
+func appendSecretFile(path, content string) error {
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, secretFileMode)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+
+	tightenSecretMode(f, path)
+
+	_, err = f.WriteString(content)
+
+	return err
+}
+
+// writeSecretFile replaces an env file's contents owner-only. os.WriteFile's
+// perm argument applies only when it creates the file, so an existing 0644
+// file needs the explicit chmod to actually be tightened.
+func writeSecretFile(path string, data []byte) error {
+	if err := os.WriteFile(path, data, secretFileMode); err != nil {
+		return err
+	}
+
+	if info, err := os.Stat(path); err == nil && info.Mode().Perm() != secretFileMode {
+		_ = os.Chmod(path, secretFileMode)
+	}
+
+	return nil
+}
+
+// tightenSecretMode narrows an already-open file to owner-only. Best effort:
+// on a filesystem that cannot represent Unix modes there is nothing to fix.
+func tightenSecretMode(f *os.File, path string) {
+	if info, err := f.Stat(); err == nil && info.Mode().Perm() != secretFileMode {
+		_ = os.Chmod(path, secretFileMode)
+	}
 }

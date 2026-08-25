@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -134,5 +135,49 @@ func TestReportSkipsUntrackedAndOptedOut(t *testing.T) {
 
 	if notice.Len() != 0 {
 		t.Error("opted-out runs must not print the notice")
+	}
+}
+func TestReportNeverWritesEnvAPIKeyToDisk(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer server.Close()
+
+	configPath := filepath.Join(t.TempDir(), "config.json")
+
+	t.Setenv("DO_NOT_TRACK", "")
+	t.Setenv("REEVIT_TELEMETRY", "")
+	t.Setenv("REEVIT_CONFIG", configPath)
+	t.Setenv("REEVIT_API_URL", server.URL)
+	t.Setenv("REEVIT_API_KEY", "pfk_live_ci_only.supersecret")
+
+	Report("init", "0.3.0", true, time.Millisecond, io.Discard)
+
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("config should exist after minting an id: %v", err)
+	}
+
+	if strings.Contains(string(raw), "supersecret") ||
+		strings.Contains(string(raw), "pfk_live_ci_only") {
+		t.Fatalf("telemetry persisted the environment's API key: %s", raw)
+	}
+
+	var onDisk struct {
+		APIKey      string `json:"api_key"`
+		TelemetryID string `json:"telemetry_id"`
+	}
+
+	if err := json.Unmarshal(raw, &onDisk); err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+
+	if onDisk.APIKey != "" {
+		t.Fatalf("api_key must be empty on disk, got %q", onDisk.APIKey)
+	}
+
+	if onDisk.TelemetryID == "" {
+		t.Fatal("telemetry id should still have been minted and persisted")
 	}
 }

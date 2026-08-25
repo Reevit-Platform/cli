@@ -1,8 +1,10 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -44,5 +46,73 @@ func TestLoadRejectsBadMode(t *testing.T) {
 
 	if _, err := Load(); err == nil {
 		t.Fatal("expected bad-mode error")
+	}
+}
+func TestSaveTelemetryIDNeverPersistsEnvCredentials(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.json")
+	t.Setenv("REEVIT_CONFIG", p)
+	t.Setenv("REEVIT_API_KEY", "pfk_live_from_env.secret")
+	t.Setenv("REEVIT_API_URL", "https://staging.example.com")
+	t.Setenv("REEVIT_MODE", "live")
+
+	if _, err := SaveTelemetryID("telemetry-uuid"); err != nil {
+		t.Fatalf("SaveTelemetryID: %v", err)
+	}
+
+	raw, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+
+	if strings.Contains(string(raw), "pfk_live_from_env") {
+		t.Fatalf("env API key was written to disk: %s", raw)
+	}
+
+	if strings.Contains(string(raw), "staging.example.com") {
+		t.Fatalf("env base URL was written to disk: %s", raw)
+	}
+
+	var onDisk Config
+	if err := json.Unmarshal(raw, &onDisk); err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+
+	if onDisk.TelemetryID != "telemetry-uuid" {
+		t.Fatalf("telemetry id = %q, want %q", onDisk.TelemetryID, "telemetry-uuid")
+	}
+
+	if onDisk.APIKey != "" || onDisk.Mode != "" || onDisk.BaseURL != "" {
+		t.Fatalf("expected only the telemetry id on disk, got %+v", onDisk)
+	}
+}
+
+// The id must land alongside real saved credentials without clobbering them —
+// the common case, where the user logged in first and telemetry runs later.
+func TestSaveTelemetryIDPreservesExistingFileValues(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.json")
+	t.Setenv("REEVIT_CONFIG", p)
+	t.Setenv("REEVIT_API_KEY", "")
+	t.Setenv("REEVIT_API_URL", "")
+	t.Setenv("REEVIT_MODE", "")
+
+	if _, err := Save(Config{APIKey: "pfk_test_saved.secret", Mode: "test", OrgID: "org_1"}); err != nil {
+		t.Fatalf("seed save: %v", err)
+	}
+
+	if _, err := SaveTelemetryID("telemetry-uuid"); err != nil {
+		t.Fatalf("SaveTelemetryID: %v", err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	if cfg.APIKey != "pfk_test_saved.secret" || cfg.OrgID != "org_1" {
+		t.Fatalf("existing values clobbered: %+v", cfg)
+	}
+
+	if cfg.TelemetryID != "telemetry-uuid" {
+		t.Fatalf("telemetry id = %q", cfg.TelemetryID)
 	}
 }

@@ -139,7 +139,7 @@ func ensureMachineID(cfg *config.Config, notice io.Writer) string {
 		return cfg.TelemetryID
 	}
 
-	cfg.TelemetryID = uuid.NewString()
+	id := uuid.NewString()
 
 	if notice != nil {
 		fmt.Fprintln(notice, "\nreevit collects anonymous usage data (command, version, OS — never file")
@@ -147,9 +147,15 @@ func ensureMachineID(cfg *config.Config, notice io.Writer) string {
 		fmt.Fprintln(notice, "REEVIT_TELEMETRY=0 or DO_NOT_TRACK=1. Docs: https://docs.reevit.io/cli")
 	}
 
-	if _, err := config.Save(*cfg); err != nil {
+	// Persist only the id. cfg came from config.Load, which folds
+	// REEVIT_API_KEY into what it returns — writing the whole struct back
+	// would leak an env-only credential to disk, contradicting the notice
+	// printed directly above.
+	if _, err := config.SaveTelemetryID(id); err != nil {
 		return ""
 	}
+
+	cfg.TelemetryID = id
 
 	return cfg.TelemetryID
 }

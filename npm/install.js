@@ -6,6 +6,7 @@
 const fs = require("fs");
 const path = require("path");
 const zlib = require("zlib");
+const crypto = require("crypto");
 const { version } = require("./package.json");
 
 const REPO = "Reevit-Platform/cli";
@@ -30,6 +31,20 @@ async function download(u, redirects = 0) {
   return Buffer.from(await res.arrayBuffer());
 }
 
+// Goreleaser publishes checksums.txt alongside every release. Verifying the
+// archive before writing an executable keeps a compromised (or TLS-intercepted)
+// release asset from becoming code execution on every npm install.
+async function fetchChecksums() {
+  const u = `https://github.com/${REPO}/releases/download/v${version}/checksums.txt`;
+  const text = (await download(u)).toString("utf8");
+  const map = new Map();
+  for (const line of text.split("\n")) {
+    const m = line.trim().match(/^([0-9a-f]{64})\s+(\S+)$/);
+    if (m) map.set(m[2], m[1]);
+  }
+  return map;
+}
+
 // Minimal ustar reader: 512-byte headers, name at 0..100, size (octal) at
 // 124..136, content padded to 512. Enough for goreleaser archives.
 function extract(tarBuf, wantName) {
@@ -46,11 +61,20 @@ function extract(tarBuf, wantName) {
 }
 
 (async () => {
-  const gz = await download(url);
+  const [gz, checksums] = await Promise.all([download(url), fetchChecksums()]);
+
+  const expected = checksums.get(asset);
+  if (!expected) throw new Error(`no checksum published for ${asset} — refusing to install`);
+
+  const actual = crypto.createHash("sha256").update(gz).digest("hex");
+  if (actual !== expected) {
+    throw new Error(`checksum mismatch for ${asset}: expected ${expected}, got ${actual} — refusing to install`);
+  }
+
   const bin = extract(zlib.gunzipSync(gz), binName);
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   fs.writeFileSync(dest, bin, { mode: 0o755 });
-  console.log(`reevit ${version} installed for ${OS}/${ARCH}`);
+  console.log(`reevit ${version} installed for ${OS}/${ARCH} (sha256 verified)`);
 })().catch((err) => {
   console.error(`reevit: install failed: ${err.message}`);
   console.error(`You can download a binary directly from https://github.com/${REPO}/releases/tag/v${version}`);

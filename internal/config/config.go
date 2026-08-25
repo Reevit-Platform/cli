@@ -44,9 +44,10 @@ func path() (string, error) {
 	return filepath.Join(dir, "reevit", "config.json"), nil
 }
 
-// Load returns the effective config: file values overridden by env vars.
-// A missing file is fine as long as REEVIT_API_KEY is set.
-func Load() (Config, error) {
+// loadFile returns only what is on disk — no env overlay, no defaults. A
+// missing file yields the zero Config. Anything that writes the file back
+// must start here rather than from Load, or it persists env-supplied values.
+func loadFile() (Config, error) {
 	var cfg Config
 
 	p, err := path()
@@ -54,12 +55,28 @@ func Load() (Config, error) {
 		return cfg, err
 	}
 
-	if raw, err := os.ReadFile(p); err == nil {
-		if err := json.Unmarshal(raw, &cfg); err != nil {
-			return cfg, fmt.Errorf("parse %s: %w", p, err)
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
+	raw, err := os.ReadFile(p)
+	if errors.Is(err, os.ErrNotExist) {
+		return cfg, nil
+	}
+
+	if err != nil {
 		return cfg, fmt.Errorf("read %s: %w", p, err)
+	}
+
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return cfg, fmt.Errorf("parse %s: %w", p, err)
+	}
+
+	return cfg, nil
+}
+
+// Load returns the effective config: file values overridden by env vars.
+// A missing file is fine as long as REEVIT_API_KEY is set.
+func Load() (Config, error) {
+	cfg, err := loadFile()
+	if err != nil {
+		return cfg, err
 	}
 
 	if v := strings.TrimSpace(os.Getenv("REEVIT_API_KEY")); v != "" {
@@ -91,7 +108,30 @@ func Load() (Config, error) {
 	return cfg, nil
 }
 
+// SaveTelemetryID persists just the anonymous install id, leaving every other
+// field as it is on disk.
+//
+// It deliberately re-reads the file instead of taking a Config from the
+// caller: Load overlays REEVIT_API_KEY / REEVIT_API_URL / REEVIT_MODE onto
+// what it returns, so saving a Load result would write an env-supplied
+// credential to disk. A CI-only or shell-local key must stay ephemeral, and
+// minting an analytics id is no reason to make it permanent.
+func SaveTelemetryID(id string) (string, error) {
+	cfg, err := loadFile()
+	if err != nil {
+		return "", err
+	}
+
+	cfg.TelemetryID = id
+
+	return Save(cfg)
+}
+
 // Save writes the config file with owner-only permissions.
+//
+// The Config must come from loadFile or from an explicit assignment (as the
+// login flows do) — never straight from Load, whose env overlay would be
+// persisted. See SaveTelemetryID.
 func Save(cfg Config) (string, error) {
 	p, err := path()
 	if err != nil {
