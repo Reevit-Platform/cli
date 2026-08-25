@@ -1,0 +1,87 @@
+# Runs on every push and pull request.
+#
+# Before this existed the only workflow was release.yml (on: push: tags),
+# so the suite — 135 test functions including the stack acceptance matrix
+# and the external-compile suite — ran exactly once per release tag and
+# never on a pull request. Every PR merged unverified.
+name: test
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    # Both, because the PTY-driven acceptance tests exercise terminal
+    # behaviour and the CLI ships darwin binaries.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.2"
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "gofmt needed for:" >&2
+            echo "$unformatted" >&2
+            exit 1
+          fi
+
+      - run: go build ./...
+
+      - run: go vet ./...
+
+      - run: go test ./...
+
+      # The heavier suites release.yml runs, so a tag is never the first
+      # time they execute against a change.
+      - name: Stack acceptance matrix
+        run: go test ./cmd -run 'TestInit(AdapterMatrix|FreshNextProjectAndIdempotentRerun)' -count=1
+
+      - name: External adapter compile suite
+        env:
+          REEVIT_EXTERNAL_ADAPTER_TEST: "1"
+        run: go test ./internal/scaffold -run '^TestExternalGenerated' -count=1
+
+  npm-wrapper:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      # The installer writes an executable to disk, so a syntax error here
+      # is a broken install for every npm user and nothing else catches it.
+      - name: Syntax-check the npm wrapper
+        run: node --check npm/install.js
+
+      # The installer must never regress to writing an unverified binary.
+      - name: Assert the installer verifies checksums
+        run: |
+          for marker in createHash checksums.txt "checksum mismatch"; do
+            if ! grep -q "$marker" npm/install.js; then
+              echo "npm/install.js lost its integrity check: no '$marker'" >&2
+              exit 1
+            fi
+          done
