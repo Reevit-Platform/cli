@@ -1,1 +1,8 @@
 dist/
+
+# npm/install.js downloads the platform binary to npm/bin/ at install time
+# (see `dest` there). The shim npm/bin/reevit.js is tracked; the ~8 MB
+# executable beside it must never be — one `git add -A` after a local
+# `npm install` would put it in history permanently.
+npm/bin/reevit
+npm/bin/reevit.exe
