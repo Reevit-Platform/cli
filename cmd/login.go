@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -30,23 +32,32 @@ Keys are stored in your user config with owner-only permissions.`,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		key := strings.TrimSpace(loginKey)
 
-		// Default path: browser pairing. Manual key entry stays available for
-		// live keys, CI, and air-gapped setups.
-		if key == "" && !loginManual {
-			return browserLogin(cmd, !loginNoBrowser)
-		}
+		// `--key -` reads the key from stdin, keeping it out of shell history
+		// and process listings — the recommended way to pass live keys.
+		if key == "-" {
+			fmt.Fprint(cmd.ErrOrStderr(), "API key: ")
 
-		if key == "" {
-			fmt.Fprint(cmd.OutOrStdout(), "API key: ")
+			var err error
 
-			reader := bufio.NewReader(cmd.InOrStdin())
-
-			line, err := reader.ReadString('\n')
+			key, err = readKeyFromStdin(cmd)
 			if err != nil {
-				return fmt.Errorf("read key: %w", err)
+				return fmt.Errorf("read key from stdin: %w", err)
 			}
+		} else if key == "" && !loginManual {
+			// Default path: browser pairing. Manual key entry stays available
+			// for live keys, CI, and air-gapped setups.
+			return browserLogin(cmd, !loginNoBrowser)
+		} else if key == "" {
+			// The prompt is interactive chrome, not output: keep it on stderr
+			// so `reevit login --manual` stays pipe-friendly.
+			fmt.Fprint(cmd.ErrOrStderr(), "API key: ")
 
-			key = strings.TrimSpace(line)
+			var err error
+
+			key, err = readKeyFromStdin(cmd)
+			if err != nil {
+				return fmt.Errorf("read key from stdin: %w", err)
+			}
 		}
 
 		if key == "" {
@@ -85,6 +96,19 @@ Keys are stored in your user config with owner-only permissions.`,
 	},
 }
 
+// readKeyFromStdin reads one line (the API key) from the command's stdin.
+// A trailing newline is optional (piped input may end at EOF).
+func readKeyFromStdin(cmd *cobra.Command) (string, error) {
+	reader := bufio.NewReader(cmd.InOrStdin())
+
+	line, err := reader.ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", err
+	}
+
+	return strings.TrimSpace(line), nil
+}
+
 func isScopeError(err error) bool {
 	apiErr, ok := err.(*api.APIError)
 
@@ -92,7 +116,7 @@ func isScopeError(err error) bool {
 }
 
 func init() {
-	loginCmd.Flags().StringVar(&loginKey, "key", "", "API key (skips the browser flow)")
+	loginCmd.Flags().StringVar(&loginKey, "key", "", "API key (use '-' to read from stdin; skips the browser flow)")
 	loginCmd.Flags().BoolVar(&loginManual, "manual", false, "prompt for an API key instead of using the browser")
 	loginCmd.Flags().BoolVar(&loginNoBrowser, "no-browser", false, "print the pairing link instead of opening a browser")
 
