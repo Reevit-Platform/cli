@@ -460,6 +460,15 @@ func goldenCases() []goldenCase {
 		{name: "help-payments", args: []string{"payments", "--help"}},
 		{name: "help-payments-list", args: []string{"payments", "list", "--help"}},
 		{name: "version", args: []string{"--version"}},
+		// The colour baseline: NO_COLOR and TERM genuinely absent, FORCE_COLOR
+		// set. Identical to help-root today because nothing colours anything
+		// yet — which is exactly what makes it the reference for plan 030.
+		{
+			name:     "help-root-forced-color",
+			args:     []string{"--help"},
+			unsetEnv: []string{"NO_COLOR", "TERM"},
+			env:      map[string]string{"FORCE_COLOR": "1"},
+		},
 
 		{name: "unknown-command", args: []string{"doctro"}, wantExit: 1},
 		{name: "unknown-flag", args: []string{"listen", "--forwardto", "x"}, wantExit: 1},
