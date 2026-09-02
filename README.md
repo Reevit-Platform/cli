@@ -253,7 +253,18 @@ Env vars override the config file: `REEVIT_API_KEY`, `REEVIT_API_URL`
 
 Env-supplied values stay ephemeral: they are overlaid onto what `Load` returns
 but are never written back to `~/.config/reevit/config.json`. A `REEVIT_API_KEY`
-exported for one shell or one CI job does not become permanent on-disk state.
+exported for one shell or one CI job does not become permanent on-disk state —
+including under `reevit login`, which ignores it. To persist a key, pass it:
+
+```bash
+printf '%s' "$KEY" | reevit login --key -
+```
+
+`REEVIT_MODE` is not a switch. The backend resolves an API key's mode from the
+key itself, so the CLI derives it the same way: `pfk_live_…` is live,
+`pfk_test_…` is test. Setting `REEVIT_MODE` to something the key contradicts is
+an error rather than a silent mislabel. It still applies to keys that use a
+non-standard prefix.
 
 ## Credential handling
 

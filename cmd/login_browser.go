@@ -84,15 +84,27 @@ func browserLogin(cmd *cobra.Command, openBrowser bool) error {
 		return err
 	}
 
-	cfg.APIKey = result.APIKey.Raw
-	cfg.Mode = "test"
-
-	if result.Org != nil {
-		cfg.OrgID = result.Org.ID
-		cfg.OrgName = result.Org.Name
+	// Persist from the file, not from the Load above: its REEVIT_API_URL /
+	// REEVIT_MODE overlay is for this invocation only and must not be written
+	// to disk. Fields the pairing does not establish are preserved as-is.
+	saved, err := config.LoadFile()
+	if err != nil {
+		return err
 	}
 
-	p, err := config.Save(cfg)
+	saved.APIKey = result.APIKey.Raw
+
+	saved.Mode = "test"
+	if mode, ok := config.ModeFromKey(result.APIKey.Raw); ok {
+		saved.Mode = mode
+	}
+
+	if result.Org != nil {
+		saved.OrgID = result.Org.ID
+		saved.OrgName = result.Org.Name
+	}
+
+	p, err := config.Save(saved)
 	if err != nil {
 		return err
 	}

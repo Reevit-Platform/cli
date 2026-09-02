@@ -3,11 +3,13 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/spf13/pflag"
@@ -132,5 +134,155 @@ func TestLoginKeyPromptGoesToStderr(t *testing.T) {
 
 	if strings.Contains(stdout.String(), "API key: ") {
 		t.Fatalf("stdout = %q, want no prompt on stdout", stdout)
+	}
+}
+
+// REEVIT_API_URL is a one-off override. Persisting it made every later run
+// talk to whatever host happened to be exported during login.
+func TestLoginDoesNotPersistTheEnvironmentBaseURL(t *testing.T) {
+	configPath, _, _, err := runLogin(t, "", "login", "--key", "pfk_test_abc.sec")
+	if err != nil {
+		t.Fatalf("login: %v", err)
+	}
+
+	raw, readErr := os.ReadFile(configPath)
+	if readErr != nil {
+		t.Fatalf("read config: %v", readErr)
+	}
+
+	if strings.Contains(string(raw), "base_url") {
+		t.Fatalf("config = %s, want no base_url — it came from REEVIT_API_URL", raw)
+	}
+}
+
+// A live key must be recorded and reported as live: `(test mode)` on a
+// pfk_live key is how people ship test wiring against real money.
+func TestLoginRecordsLiveModeForALiveKey(t *testing.T) {
+	configPath, stdout, _, err := runLogin(t, "", "login", "--key", "pfk_live_abc.sec")
+	if err != nil {
+		t.Fatalf("login: %v", err)
+	}
+
+	raw, readErr := os.ReadFile(configPath)
+	if readErr != nil {
+		t.Fatalf("read config: %v", readErr)
+	}
+
+	if !strings.Contains(string(raw), `"mode": "live"`) {
+		t.Fatalf("config = %s, want live mode", raw)
+	}
+
+	if !strings.Contains(stdout.String(), "(live mode)") {
+		t.Fatalf("stdout = %q, want the live label", stdout)
+	}
+}
+
+// Login must not preserve fields it does not establish.
+func TestLoginPreservesUnrelatedConfigFields(t *testing.T) {
+	configPath, _, _, err := runLogin(t, "", "login", "--key", "pfk_test_first.sec")
+	if err != nil {
+		t.Fatalf("first login: %v", err)
+	}
+
+	seeded := `{"api_key":"pfk_test_first.sec","mode":"test","org_id":"org_1","org_name":"Acme","telemetry_id":"tid"}`
+	if writeErr := os.WriteFile(configPath, []byte(seeded), 0o600); writeErr != nil {
+		t.Fatalf("seed config: %v", writeErr)
+	}
+
+	// runLogin allocates a fresh config path, so point the second run at this
+	// one explicitly.
+	resetLoginFlags(t)
+	clearLoginCmdStreams()
+
+	server := keyProbeServer(t)
+
+	t.Setenv("REEVIT_CONFIG", configPath)
+	t.Setenv("REEVIT_API_URL", server.URL)
+	t.Setenv("REEVIT_API_KEY", "")
+	t.Setenv("REEVIT_MODE", "")
+
+	rootCmd.SetIn(strings.NewReader(""))
+	rootCmd.SetOut(&bytes.Buffer{})
+	rootCmd.SetErr(&bytes.Buffer{})
+	rootCmd.SetArgs([]string{"login", "--key", "pfk_test_second.sec"})
+
+	if execErr := rootCmd.ExecuteContext(context.Background()); execErr != nil {
+		t.Fatalf("second login: %v", execErr)
+	}
+
+	raw, readErr := os.ReadFile(configPath)
+	if readErr != nil {
+		t.Fatalf("read config: %v", readErr)
+	}
+
+	for _, want := range []string{`"org_id": "org_1"`, `"org_name": "Acme"`, `"telemetry_id": "tid"`, `"api_key": "pfk_test_second.sec"`} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("config = %s, want %s", raw, want)
+		}
+	}
+}
+
+// An exported REEVIT_API_KEY is an override for one invocation. Reading it in
+// init() turned `reevit login` into "write my shell's key to disk".
+func TestLoginIgnoresAnExportedAPIKey(t *testing.T) {
+	resetLoginFlags(t)
+	clearLoginCmdStreams()
+
+	var (
+		mu      sync.Mutex
+		started bool
+	)
+
+	server := pairingServer(t, []string{"approved"})
+	defer server.Close()
+
+	wrapped := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/v1/cli/auth" {
+			mu.Lock()
+			started = true
+			mu.Unlock()
+		}
+
+		proxy, err := http.NewRequest(r.Method, server.URL+r.URL.Path, r.Body)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+
+			return
+		}
+
+		proxy.Header = r.Header.Clone()
+
+		resp, err := server.Client().Do(proxy)
+		if err != nil {
+			w.WriteHeader(http.StatusBadGateway)
+
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+
+		w.WriteHeader(resp.StatusCode)
+		_, _ = io.Copy(w, resp.Body)
+	}))
+	defer wrapped.Close()
+
+	t.Setenv("REEVIT_CONFIG", filepath.Join(t.TempDir(), "config.json"))
+	t.Setenv("REEVIT_API_URL", wrapped.URL)
+	t.Setenv("REEVIT_API_KEY", "pfk_test_env.sec")
+	t.Setenv("REEVIT_MODE", "")
+
+	rootCmd.SetIn(strings.NewReader(""))
+	rootCmd.SetOut(&bytes.Buffer{})
+	rootCmd.SetErr(&bytes.Buffer{})
+	rootCmd.SetArgs([]string{"login", "--no-browser"})
+
+	if err := rootCmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("login --no-browser: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if !started {
+		t.Fatal("login did not start the browser pairing flow — it took REEVIT_API_KEY instead")
 	}
 }
