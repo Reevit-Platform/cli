@@ -20,6 +20,7 @@ import (
 
 	"github.com/Reevit-Platform/cli/internal/api"
 	"github.com/Reevit-Platform/cli/internal/scaffold"
+	"github.com/Reevit-Platform/cli/internal/ui"
 )
 
 var (
@@ -64,14 +65,20 @@ fallback is ephemeral.`,
 
 		root, _ := os.Getwd()
 
+		// The stream itself is this command's data; everything it says about
+		// the stream is conversation and belongs on stderr.
+		sty := styleOf(cmd)
+
 		secret, err := resolveListenSecret(cmd, c, root)
 		if err != nil {
 			return err
 		}
 
-		fmt.Fprintf(cmd.OutOrStdout(), "Forwarding test-mode events to %s\n", listenForwardTo)
+		fmt.Fprintf(cmd.ErrOrStderr(), "Forwarding test-mode events to %s\n", sty.err.URL(listenForwardTo))
 
-		forwarder := newEventForwarder(listenForwardTo, secret, cmd, &http.Client{Timeout: 15 * time.Second})
+		forwarder := newEventForwarder(
+			listenForwardTo, secret, cmd, sty.out, &http.Client{Timeout: 15 * time.Second},
+		)
 
 		// Reconnect with backoff: local dev streams drop on hot reloads.
 		backoff := time.Second
@@ -115,7 +122,7 @@ func resolveListenSecret(cmd *cobra.Command, c *api.Client, root string) (string
 		project := scaffold.Detect(root)
 		if project.Stack != scaffold.StackUnknown {
 			if secret := scaffold.ReadEnvValue(project, "REEVIT_WEBHOOK_SECRET"); secret != "" {
-				fmt.Fprintln(cmd.OutOrStdout(), "Using signing secret from "+scaffold.EnvFileName(project)+".")
+				fmt.Fprintln(cmd.ErrOrStderr(), "Using signing secret from "+scaffold.EnvFileName(project)+".")
 				return secret, nil
 			}
 		}
@@ -142,18 +149,18 @@ func fetchOrMintSecret(cmd *cobra.Command, c *api.Client) (string, error) {
 
 	switch {
 	case err == nil && cfg.SigningSecret != "":
-		fmt.Fprintln(cmd.OutOrStdout(), "Signing with your account's webhook secret.")
+		fmt.Fprintln(cmd.ErrOrStderr(), "Signing with your account's webhook secret.")
 
 		return cfg.SigningSecret, nil
 	case err == nil:
-		fmt.Fprintln(cmd.OutOrStdout(), "Your account has no webhook signing secret configured.")
+		fmt.Fprintln(cmd.ErrOrStderr(), "Your account has no webhook signing secret configured.")
 	default:
 		var apiErr *api.APIError
 		if !errors.As(err, &apiErr) || apiErr.Status != http.StatusForbidden {
 			return "", fmt.Errorf("read webhook config: %w", err)
 		}
 
-		fmt.Fprintln(cmd.OutOrStdout(), "Your key cannot read the webhook config (needs webhooks:read).")
+		fmt.Fprintln(cmd.ErrOrStderr(), "Your key cannot read the webhook config (needs webhooks:read).")
 	}
 
 	raw := make([]byte, 24)
@@ -163,7 +170,7 @@ func fetchOrMintSecret(cmd *cobra.Command, c *api.Client) (string, error) {
 
 	secret := "whsec_local_" + hex.EncodeToString(raw)
 
-	fmt.Fprintf(cmd.OutOrStdout(), "Signing with an ephemeral secret:\n  %s\n", secret)
+	fmt.Fprintf(cmd.ErrOrStderr(), "Signing with an ephemeral secret:\n  %s\n", styleOf(cmd).err.Accent(secret))
 
 	return secret, nil
 }
@@ -189,6 +196,7 @@ type eventForwarder struct {
 	target string
 	secret string
 	out    *cobra.Command
+	sty    ui.Styler
 	httpc  *http.Client
 	// runID makes delivery ids unique per process. A handler that dedupes on
 	// delivery id — the production-correct behaviour — silently dropped every
@@ -197,11 +205,17 @@ type eventForwarder struct {
 	delivery int
 }
 
-func newEventForwarder(target, secret string, out *cobra.Command, httpc *http.Client) *eventForwarder {
+func newEventForwarder(
+	target, secret string,
+	out *cobra.Command,
+	sty ui.Styler,
+	httpc *http.Client,
+) *eventForwarder {
 	return &eventForwarder{
 		target: target,
 		secret: secret,
 		out:    out,
+		sty:    sty,
 		httpc:  httpc,
 		runID:  uuid.NewString()[:8],
 	}
@@ -255,15 +269,26 @@ func (f *eventForwarder) handle(evt api.SSEEvent) {
 
 	resp, err := f.httpc.Do(req)
 	if err != nil {
-		fmt.Fprintf(f.out.ErrOrStderr(), "%s → forward failed: %v\n", eventType, err)
+		fmt.Fprintf(f.out.ErrOrStderr(), "%s %s forward failed: %v\n", eventType, marker(f.sty.Step("")), err)
 
 		return
 	}
 
 	_ = resp.Body.Close()
 
-	fmt.Fprintf(f.out.OutOrStdout(), "%s  %s → %d (%dms)\n",
-		time.Now().Format("15:04:05"), eventType, resp.StatusCode, time.Since(started).Milliseconds())
+	line := fmt.Sprintf("%s  %s %s %d (%dms)",
+		time.Now().Format("15:04:05"), eventType, marker(f.sty.Step("")),
+		resp.StatusCode, time.Since(started).Milliseconds())
+
+	// The handler's own verdict: a 2xx is the whole point of `listen`, and
+	// anything else is the failure the developer is here to see.
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		line = f.sty.Success(line)
+	} else {
+		line = f.sty.Failure(line)
+	}
+
+	fmt.Fprintln(f.out.OutOrStdout(), line)
 }
 
 // SignBody produces the production webhook signature for a payload:

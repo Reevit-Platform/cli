@@ -471,7 +471,8 @@ func goldenCases() []goldenCase {
 		},
 
 		{name: "unknown-command", args: []string{"doctro"}, wantExit: 1},
-		{name: "unknown-flag", args: []string{"listen", "--forwardto", "x"}, wantExit: 1},
+		// A misspelled flag is a usage error, not a runtime failure: exit 2.
+		{name: "unknown-flag", args: []string{"listen", "--forwardto", "x"}, wantExit: 2},
 
 		{
 			name: "login-key-rejected",
@@ -532,7 +533,7 @@ func goldenCases() []goldenCase {
 			env:      map[string]string{"REEVIT_API_KEY": testKey},
 			dir:      func(t *testing.T) string { return t.TempDir() },
 			server:   paymentsServer(http.StatusOK, `[]`),
-			wantExit: 1,
+			wantExit: exitDoctor,
 		},
 		// A legacy key shape: config.Load cannot derive the mode from it, so
 		// doctor says where the label actually came from.
@@ -542,7 +543,7 @@ func goldenCases() []goldenCase {
 			env:      map[string]string{"REEVIT_API_KEY": "rk_legacy_key", "REEVIT_MODE": "live"},
 			dir:      func(t *testing.T) string { return t.TempDir() },
 			server:   paymentsServer(http.StatusOK, `[]`),
-			wantExit: 1,
+			wantExit: exitDoctor,
 		},
 		{
 			name:     "doctor-next-project-offline",
@@ -550,7 +551,7 @@ func goldenCases() []goldenCase {
 			env:      map[string]string{"REEVIT_API_KEY": testKey},
 			dir:      nextProjectDirUnbootstrapped,
 			server:   paymentsServer(http.StatusOK, `[]`),
-			wantExit: 1,
+			wantExit: exitDoctor,
 		},
 
 		// init-non-tty must stay ahead of init-dry-run: it is what proves
@@ -562,21 +563,81 @@ func goldenCases() []goldenCase {
 		// in a random order. webhook is the one single-file target. See
 		// AGENTS.md — fixing that ordering is production work, not this plan's.
 		{name: "init-dry-run", args: []string{"init", "--dry-run", "--goal", "webhook"}, dir: nextProjectDir},
+
+		// The coloured pair. The harness writes to bytes.Buffers, so nothing is
+		// a TTY: FORCE_COLOR is what turns colour on, which is the documented
+		// override path. LC_ALL/LC_CTYPE are unset as well as NO_COLOR/TERM,
+		// because an ambient LC_ALL=C would otherwise beat LANG and silently
+		// snapshot the ASCII glyphs on some machines.
+		{
+			name: "doctor-next-project-offline-color",
+			args: []string{"doctor"},
+			env: map[string]string{
+				"REEVIT_API_KEY": testKey, "FORCE_COLOR": "1", "LANG": "en_US.UTF-8",
+			},
+			unsetEnv: []string{"NO_COLOR", "TERM", "LC_ALL", "LC_CTYPE"},
+			dir:      nextProjectDirUnbootstrapped,
+			server:   paymentsServer(http.StatusOK, `[]`),
+			wantExit: exitDoctor,
+		},
+		// The counter-example: `payments list` is data, so turning colour on
+		// must change nothing. This golden is byte-identical to
+		// payments-list-rows and is here to keep it that way.
+		{
+			name: "payments-list-rows-color",
+			args: []string{"payments", "list", "--limit", "2"},
+			env: map[string]string{
+				"REEVIT_API_KEY": testKey, "TZ": "UTC",
+				"FORCE_COLOR": "1", "LANG": "en_US.UTF-8",
+			},
+			unsetEnv: []string{"NO_COLOR", "TERM", "LC_ALL", "LC_CTYPE"},
+			server:   paymentsServer(http.StatusOK, twoPayments),
+		},
 	}
 }
 
 // TestGoldenStreamsAreSeparate guards the property the shared-buffer tests
-// cannot: that a success writes nothing to stderr and a usage failure writes
-// nothing to stdout. Plan 030 will edit these expectations when it moves
-// diagnostics, not delete them.
+// cannot: stdout carries data and stderr carries the conversation.
+//
+// Plan 030 moved `login`'s confirmation to stderr — `reevit login > key.log`
+// is not a thing anyone wants, and the command produces no data — so the
+// expectation is inverted here rather than dropped.
 func TestGoldenStreamsAreSeparate(t *testing.T) {
-	t.Run("login-key-saved writes nothing to stderr", func(t *testing.T) {
-		if got := readGolden(t, "login-key-saved.stderr"); got != "" {
-			t.Errorf("stderr = %q, want empty", got)
+	t.Run("login-key-saved writes nothing to stdout", func(t *testing.T) {
+		if got := readGolden(t, "login-key-saved.stdout"); got != "" {
+			t.Errorf("stdout = %q, want empty", got)
 		}
 
-		if got := readGolden(t, "login-key-saved.stdout"); !strings.Contains(got, "Saved to <CONFIG>") {
-			t.Errorf("stdout = %q, want the saved-to confirmation", got)
+		if got := readGolden(t, "login-key-saved.stderr"); !strings.Contains(got, "Saved to <CONFIG>") {
+			t.Errorf("stderr = %q, want the saved-to confirmation", got)
+		}
+	})
+
+	t.Run("payments list keeps its table on stdout", func(t *testing.T) {
+		if got := readGolden(t, "payments-list-rows.stdout"); !strings.Contains(got, "pmt_1") {
+			t.Errorf("stdout = %q, want the payment rows", got)
+		}
+
+		if got := readGolden(t, "payments-list-rows.stderr"); got != "" {
+			t.Errorf("stderr = %q, want empty", got)
+		}
+	})
+
+	t.Run("colour never reaches the payments table", func(t *testing.T) {
+		plain := readGolden(t, "payments-list-rows.stdout")
+
+		if forced := readGolden(t, "payments-list-rows-color.stdout"); forced != plain {
+			t.Errorf("FORCE_COLOR changed the table:\n%s", lineDiff(plain, forced))
+		}
+	})
+
+	t.Run("colour reaches doctor", func(t *testing.T) {
+		if got := readGolden(t, "doctor-next-project-offline-color.stderr"); !strings.Contains(got, "\x1b[32m") {
+			t.Errorf("stderr = %q, want a green glyph", got)
+		}
+
+		if got := readGolden(t, "doctor-next-project-offline.stderr"); strings.Contains(got, "\x1b") {
+			t.Errorf("stderr = %q, want no escape sequences with NO_COLOR=1", got)
 		}
 	})
 

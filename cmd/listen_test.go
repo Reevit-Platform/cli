@@ -19,6 +19,7 @@ import (
 
 	"github.com/Reevit-Platform/cli/internal/api"
 	"github.com/Reevit-Platform/cli/internal/config"
+	"github.com/Reevit-Platform/cli/internal/ui"
 )
 
 func TestListenPrefersProjectSigningSecret(t *testing.T) {
@@ -175,7 +176,7 @@ func TestForwarderSurvivesNullEventData(t *testing.T) {
 	}))
 	defer local.Close()
 
-	f := newEventForwarder(local.URL, "whsec_test", listenCmd, local.Client())
+	f := newEventForwarder(local.URL, "whsec_test", listenCmd, ui.Styler{}, local.Client())
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -329,8 +330,8 @@ func (b *lockedBuffer) String() string {
 // Two runs must not reuse delivery ids: a handler that dedupes on delivery id
 // dropped every event of the second run.
 func TestForwardersUseDistinctDeliveryIDsPerRun(t *testing.T) {
-	first := newEventForwarder("http://127.0.0.1:1", "s", listenCmd, &http.Client{})
-	second := newEventForwarder("http://127.0.0.1:1", "s", listenCmd, &http.Client{})
+	first := newEventForwarder("http://127.0.0.1:1", "s", listenCmd, ui.Styler{}, &http.Client{})
+	second := newEventForwarder("http://127.0.0.1:1", "s", listenCmd, ui.Styler{}, &http.Client{})
 
 	if first.runID == "" || first.runID == second.runID {
 		t.Fatalf("run ids %q and %q must differ", first.runID, second.runID)
@@ -377,7 +378,9 @@ func TestListenMintsEphemeralSecretOnScopeRefusal(t *testing.T) {
 	var out bytes.Buffer
 
 	command := &cobra.Command{}
-	command.SetOut(&out)
+	// The secret and the scope notice are conversation: they go to stderr.
+	command.SetOut(io.Discard)
+	command.SetErr(&out)
 	command.SetContext(context.Background())
 
 	c := api.New(config.Config{APIKey: "pfk_test_x.sec", BaseURL: server.URL, Mode: "test"})

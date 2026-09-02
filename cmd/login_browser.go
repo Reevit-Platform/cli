@@ -66,10 +66,13 @@ func browserLogin(cmd *cobra.Command, openBrowser bool) error {
 		return err
 	}
 
-	out := cmd.OutOrStdout()
+	// Pairing is a conversation with the user, not this command's output: on
+	// stderr it survives `reevit login > log`.
+	sty := styleOf(cmd).err
+	out := cmd.ErrOrStderr()
 
-	fmt.Fprintf(out, "\nYour pairing code is  %s\n", start.PairingCode)
-	fmt.Fprintf(out, "Confirm it in your browser:  %s\n\n", start.BrowserURL)
+	fmt.Fprintf(out, "\nYour pairing code is  %s\n", sty.Accent(start.PairingCode))
+	fmt.Fprintf(out, "Confirm it in your browser:  %s\n\n", sty.URL(start.BrowserURL))
 
 	if openBrowser {
 		if err := openInBrowser(start.BrowserURL); err != nil {
@@ -118,8 +121,8 @@ func browserLogin(cmd *cobra.Command, openBrowser bool) error {
 		orgName = "your organization"
 	}
 
-	fmt.Fprintf(out, "\n✔ Logged in to %s as %s\n", orgName, result.APIKey.Name)
-	fmt.Fprintf(out, "✔ Saved to %s (test mode)\n\n", p)
+	fmt.Fprintf(out, "\n%s\n", sty.Success(fmt.Sprintf("Logged in to %s as %s", orgName, result.APIKey.Name)))
+	fmt.Fprintf(out, "%s\n\n", sty.Success(fmt.Sprintf("Saved to %s (test mode)", p)))
 	fmt.Fprintln(out, "Heads up: this is a TEST-MODE key — perfect for `reevit listen`, `reevit trigger`,")
 	fmt.Fprintln(out, "and integrating safely. When you're ready for live traffic, create a live key in")
 	fmt.Fprintln(out, "Dashboard → Developers → API keys, then run:  reevit login --key <live_key>")

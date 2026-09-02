@@ -52,7 +52,7 @@ var paymentsListCmd = &cobra.Command{
 		}
 
 		if len(rows) == 0 {
-			fmt.Fprintf(cmd.OutOrStdout(), "No payments in %s mode.\n", c.Mode())
+			fmt.Fprintf(cmd.ErrOrStderr(), "No payments in %s mode.\n", c.Mode())
 
 			return nil
 		}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"github.com/Reevit-Platform/cli/internal/config"
 	"github.com/Reevit-Platform/cli/internal/scaffold"
 	"github.com/Reevit-Platform/cli/internal/setup"
+	"github.com/Reevit-Platform/cli/internal/ui"
 )
 
 func TestInitFreshNextProjectAndIdempotentRerun(t *testing.T) {
@@ -237,7 +239,7 @@ func TestFreshPlanShowsBackupsRemovalAndCredentialRotation(t *testing.T) {
 	plan := setup.Plan{}
 	configureExistingSetupPlan(&plan, scaffold.ExistingFilesFresh, true)
 
-	if err := printPlan(&out, plan); err != nil {
+	if err := printPlan(&out, ui.Styler{}, plan); err != nil {
 		t.Fatal(err)
 	}
 	for _, expected := range []string{
@@ -259,7 +261,7 @@ func TestRotateTestKeysIsAlwaysVisibleInPlan(t *testing.T) {
 	plan := setup.Plan{}
 	configureExistingSetupPlan(&plan, scaffold.ExistingFilesOverwrite, true)
 
-	if err := printPlan(&out, plan); err != nil {
+	if err := printPlan(&out, ui.Styler{}, plan); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "rotate project test credentials") {
@@ -427,7 +429,9 @@ func TestInitInteractiveExistingSetupChoicesReachPlan(t *testing.T) {
 			initOrigin = "http://localhost:3000"
 			var out bytes.Buffer
 			initCmd.SetIn(terminal)
-			initCmd.SetOut(&out)
+			// The setup plan and the prompts are conversation: stderr.
+			initCmd.SetOut(io.Discard)
+			initCmd.SetErr(&out)
 			initCmd.SetContext(context.Background())
 
 			go func() {

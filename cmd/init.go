@@ -52,7 +52,9 @@ Existing files are preserved by default. Interactive setup can replace
 generated integration files after creating a backup. Checkout can optionally
 be inserted into an existing page using an idempotent marked block.`,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		out := cmd.OutOrStdout()
+		// Setup narrates on stderr; only the --dry-run plan is data.
+		sty := styleOf(cmd)
+		out := cmd.ErrOrStderr()
 
 		// Detect before authentication so unsupported projects never cause a
 		// login or any other mutation.
@@ -79,7 +81,7 @@ be inserted into an existing page using an idempotent marked block.`,
 			return fmt.Errorf("--overwrite and --fresh cannot be used together")
 		}
 
-		printDetectedProject(out, project)
+		printDetectedProject(out, sty.err, project)
 
 		telemetry.SetContext(string(project.Stack), nil)
 
@@ -115,11 +117,11 @@ be inserted into an existing page using an idempotent marked block.`,
 				}
 				switch {
 				case accountName != "":
-					fmt.Fprintf(out, "\n✓ Signed in to %s\n", accountName)
+					fmt.Fprintf(out, "\n%s\n", sty.err.Success("Signed in to "+accountName))
 				case accountID != "":
-					fmt.Fprintf(out, "\n✓ Signed in to organization %s\n", accountID)
+					fmt.Fprintf(out, "\n%s\n", sty.err.Success("Signed in to organization "+accountID))
 				default:
-					fmt.Fprintf(out, "\n✓ Signed in to Reevit (%s mode)\n", cfg.Mode)
+					fmt.Fprintf(out, "\n%s\n", sty.err.Success(fmt.Sprintf("Signed in to Reevit (%s mode)", cfg.Mode)))
 				}
 			}
 		}
@@ -223,9 +225,9 @@ be inserted into an existing page using an idempotent marked block.`,
 		}
 		configureExistingSetupPlan(&resolved, existingFiles, rotateCredentials)
 		if initDryRun {
-			return printPlan(out, resolved)
+			return printPlan(cmd.OutOrStdout(), sty.out, resolved)
 		}
-		if err := printMutationPlan(out, resolved); err != nil {
+		if err := printMutationPlan(out, sty.err, resolved); err != nil {
 			return err
 		}
 
@@ -266,36 +268,38 @@ be inserted into an existing page using an idempotent marked block.`,
 
 		if hasTarget(targets, scaffold.TargetClient) {
 			if result.Env.KeyAlreadySet {
-				fmt.Fprintf(out, "• %s already had REEVIT_API_KEY — left untouched\n", result.Env.EnvFile)
+				fmt.Fprintln(out, sty.err.Note(result.Env.EnvFile+" already had REEVIT_API_KEY — left untouched"))
 			} else {
-				fmt.Fprintf(out, "✔ %s — REEVIT_API_KEY (test mode) + REEVIT_ORG_ID\n", result.Env.EnvFile)
+				fmt.Fprintln(out, sty.err.Success(result.Env.EnvFile+" — REEVIT_API_KEY (test mode) + REEVIT_ORG_ID"))
 			}
 		} else {
-			fmt.Fprintf(out, "✔ %s — REEVIT_ORG_ID\n", result.Env.EnvFile)
+			fmt.Fprintln(out, sty.err.Success(result.Env.EnvFile+" — REEVIT_ORG_ID"))
 		}
 
 		if result.Env.EnvExample != "" {
-			fmt.Fprintf(out, "✔ %s — placeholders added\n", result.Env.EnvExample)
+			fmt.Fprintln(out, sty.err.Success(result.Env.EnvExample+" — placeholders added"))
 		}
 
 		if result.Env.ClientKeyVar != "" {
-			fmt.Fprintf(out, "✔ %s — %s (browser-exposed, test mode)\n", result.Env.EnvFile, result.Env.ClientKeyVar)
+			fmt.Fprintln(out, sty.err.Success(fmt.Sprintf(
+				"%s — %s (browser-exposed, test mode)", result.Env.EnvFile, result.Env.ClientKeyVar,
+			)))
 		}
 
 		if result.Env.GitignoreNoted {
-			fmt.Fprintf(out, "✔ .gitignore — %s added\n", result.Env.EnvFile)
+			fmt.Fprintln(out, sty.err.Success(".gitignore — "+result.Env.EnvFile+" added"))
 		}
 
 		for _, f := range result.Files {
 			if f.Removed {
-				fmt.Fprintf(out, "− %s — removed stale generated file\n", f.Path)
+				fmt.Fprintln(out, sty.err.Note(f.Path+" — removed stale generated file"))
 				if f.BackupPath != "" {
 					fmt.Fprintf(out, "  Backup: %s\n", f.BackupPath)
 				}
 			} else if f.Skipped {
-				fmt.Fprintf(out, "• %s exists — skipped\n", f.Path)
+				fmt.Fprintln(out, sty.err.Note(f.Path+" exists — skipped"))
 			} else {
-				fmt.Fprintf(out, "✔ %s\n", f.Path)
+				fmt.Fprintln(out, sty.err.Success(f.Path))
 				if f.BackupPath != "" {
 					fmt.Fprintf(out, "  Backup: %s\n", f.BackupPath)
 				}
@@ -303,12 +307,12 @@ be inserted into an existing page using an idempotent marked block.`,
 		}
 
 		for _, plan := range result.ShowCmds {
-			fmt.Fprintf(out, "\nInstall the SDK in your environment:  %s\n", strings.Join(plan, " "))
+			fmt.Fprintf(out, "\nInstall the SDK in your environment:\n%s\n", sty.err.Command(strings.Join(plan, " ")))
 		}
 
-		registerWebhookEndpoint(cmd, out, targets)
+		registerWebhookEndpoint(cmd, out, sty.err, targets)
 
-		printNextSteps(out, project, targets)
+		printNextSteps(out, sty.err, project, targets)
 
 		return nil
 	},
@@ -374,12 +378,14 @@ func pickTargets(cmd *cobra.Command, available []scaffold.Target) ([]scaffold.Ta
 		return available, nil
 	}
 
-	fmt.Fprintln(cmd.OutOrStdout(), "\nRecommended setup:")
+	sty := styleOf(cmd).err
+	out := cmd.ErrOrStderr()
+	fmt.Fprintln(out, sty.Heading("Recommended setup:"))
 	for _, target := range available {
-		fmt.Fprintf(cmd.OutOrStdout(), "  ✓ %s\n", target.Label)
+		fmt.Fprintln(out, "  "+sty.Success(target.Label))
 	}
 	picked, err := ui.Customize(
-		cmd.Context(), cmd.InOrStdin(), cmd.OutOrStdout(),
+		cmd.Context(), cmd.InOrStdin(), out,
 		available, ui.Accessible(initAccessible),
 	)
 	if err != nil {
@@ -433,7 +439,7 @@ func localOrigin(project scaffold.Project) string {
 	return ""
 }
 
-func printDetectedProject(out io.Writer, project scaffold.Project) {
+func printDetectedProject(out io.Writer, sty ui.Styler, project scaffold.Project) {
 	parts := []string{displayFramework(project)}
 	if project.TypeScript {
 		parts = append(parts, "TypeScript")
@@ -456,7 +462,7 @@ func printDetectedProject(out io.Writer, project scaffold.Project) {
 	if installer != "" {
 		parts = append(parts, installer)
 	}
-	fmt.Fprintf(out, "\nReevit setup\n\nFound %s\n", strings.Join(parts, " · "))
+	fmt.Fprintf(out, "%s\n\nFound %s\n", sty.Heading("Reevit setup"), strings.Join(parts, " · "))
 }
 
 func displayFramework(project scaffold.Project) string {
@@ -569,7 +575,7 @@ func configureCheckout(
 			defaultPage = candidates[0]
 		}
 		value, err := promptString(
-			cmd.OutOrStdout(),
+			cmd.ErrOrStderr(),
 			cmd.InOrStdin(),
 			"Which existing page should receive checkout? (Type - to keep the component standalone)",
 			defaultPage,
@@ -593,7 +599,7 @@ func configureCheckout(
 			"Payment reference",
 		}
 		picks, err := choose(
-			cmd.OutOrStdout(),
+			cmd.ErrOrStderr(),
 			cmd.InOrStdin(),
 			"What should the checkout form collect?",
 			labels,
@@ -611,7 +617,7 @@ func configureCheckout(
 
 	if interactive && !metadataFlagSet {
 		value, err := promptString(
-			cmd.OutOrStdout(),
+			cmd.ErrOrStderr(),
 			cmd.InOrStdin(),
 			"Extra workflow metadata fields (comma-separated, e.g. order_id,product_sku; Enter for none):",
 			"",
@@ -649,7 +655,12 @@ func splitCommaValues(values []string) []string {
 // registerWebhookEndpoint optionally registers a production webhook endpoint
 // in the dashboard. Needs webhooks:write — keys minted before that scope
 // joined the pairing defaults get a pointer to re-login instead of an error.
-func registerWebhookEndpoint(cmd *cobra.Command, out interface{ Write([]byte) (int, error) }, targets []scaffold.Target) {
+func registerWebhookEndpoint(
+	cmd *cobra.Command,
+	out io.Writer,
+	sty ui.Styler,
+	targets []scaffold.Target,
+) {
 	if !hasTarget(targets, scaffold.TargetWebhook) {
 		return
 	}
@@ -673,14 +684,14 @@ func registerWebhookEndpoint(cmd *cobra.Command, out interface{ Write([]byte) (i
 	}
 
 	if !strings.HasPrefix(endpoint, "https://") && !strings.HasPrefix(endpoint, "http://") {
-		fmt.Fprintf(out, "• skipping webhook registration — %q is not a URL\n", endpoint)
+		fmt.Fprintln(out, sty.Note(fmt.Sprintf("skipping webhook registration — %q is not a URL", endpoint)))
 
 		return
 	}
 
 	c, err := client()
 	if err != nil {
-		fmt.Fprintf(out, "• skipping webhook registration — %v\n", err)
+		fmt.Fprintln(out, sty.Note(fmt.Sprintf("skipping webhook registration — %v", err)))
 
 		return
 	}
@@ -694,16 +705,18 @@ func registerWebhookEndpoint(cmd *cobra.Command, out interface{ Write([]byte) (i
 
 	switch {
 	case err == nil:
-		fmt.Fprintf(out, "✔ webhook endpoint registered: %s\n", endpoint)
+		fmt.Fprintln(out, sty.Success("webhook endpoint registered: "+endpoint))
 	default:
 		if apiErr, ok := err.(*api.APIError); ok && apiErr.Status == 403 {
-			fmt.Fprintln(out, "• couldn't register the endpoint — your CLI key lacks webhooks:write.")
+			fmt.Fprintln(out, sty.Note("couldn't register the endpoint — your CLI key lacks webhooks:write."))
 			fmt.Fprintln(out, "  Run `reevit login` again for a fresh key, or register it in Dashboard → Developers → Webhooks.")
 
 			return
 		}
 
-		fmt.Fprintf(out, "• webhook registration failed (%v) — you can register it in Dashboard → Developers → Webhooks\n", err)
+		fmt.Fprintln(out, sty.Note(fmt.Sprintf(
+			"webhook registration failed (%v) — you can register it in Dashboard → Developers → Webhooks", err,
+		)))
 	}
 }
 
@@ -742,76 +755,81 @@ func configureExistingSetupPlan(
 	}
 }
 
-func printPlan(out io.Writer, plan setup.Plan) error {
-	fmt.Fprintln(out, "\nDry run — would do the following:")
-	return printPlanOperations(out, plan)
+func printPlan(out io.Writer, sty ui.Styler, plan setup.Plan) error {
+	fmt.Fprintln(out, sty.Heading("Dry run — would do the following:"))
+	return printPlanOperations(out, sty, plan)
 }
 
-func printMutationPlan(out io.Writer, plan setup.Plan) error {
-	fmt.Fprintln(out, "\nSetup plan:")
-	return printPlanOperations(out, plan)
+func printMutationPlan(out io.Writer, sty ui.Styler, plan setup.Plan) error {
+	fmt.Fprintln(out, sty.Heading("Setup plan:"))
+	return printPlanOperations(out, sty, plan)
 }
 
-func printPlanOperations(out io.Writer, plan setup.Plan) error {
+func printPlanOperations(out io.Writer, sty ui.Styler, plan setup.Plan) error {
 	for _, warning := range plan.Warnings {
-		fmt.Fprintf(out, "  ! %s\n", warning)
+		fmt.Fprintln(out, "  "+sty.Warning(warning))
 	}
 	for _, operation := range plan.Operations {
-		prefix := "•"
-		if operation.Kind == setup.WriteFile || operation.Kind == setup.WriteEnv {
-			prefix = "+"
-		}
-		fmt.Fprintf(out, "  %s %s\n    %s\n", prefix, operation.Detail, operation.Reason)
+		fmt.Fprintf(out, "  %s\n    %s\n", sty.Step(operation.Detail), sty.Dim(operation.Reason))
 	}
 	return nil
 }
 
-func printNextSteps(out interface{ Write([]byte) (int, error) }, project scaffold.Project, targets []scaffold.Target) {
-	fmt.Fprintln(out, "\nNext steps:")
+func printNextSteps(
+	out io.Writer,
+	sty ui.Styler,
+	project scaffold.Project,
+	targets []scaffold.Target,
+) {
+	fmt.Fprintln(out, sty.Heading("Next steps:"))
 
 	if command := scaffold.DevCommand(project); len(command) > 0 {
-		fmt.Fprintf(out, "  1. Start your app: %s\n", strings.Join(command, " "))
+		fmt.Fprintf(out, "  1. Start your app:\n%s\n", sty.Command(strings.Join(command, " ")))
 	}
 	if path, port := scaffold.DemoPath(project), scaffold.DefaultPort(project); path != "" && port != 0 {
-		fmt.Fprintf(out, "  2. Open the runnable checkout: http://localhost:%d%s\n", port, path)
+		fmt.Fprintf(out, "  2. Open the runnable checkout: %s\n", sty.URL(fmt.Sprintf("http://localhost:%d%s", port, path)))
 	}
 
 	for _, t := range targets {
 		switch t.Key {
 		case scaffold.TargetWebhook:
 			if instruction := scaffold.WebhookMountInstruction(project); instruction != "" {
-				fmt.Fprintf(out, "  • Mount the generated webhook: %s\n", instruction)
+				fmt.Fprintln(out, "  "+sty.Step("Mount the generated webhook: "+instruction))
 			}
 			path := "/<your webhook path>"
 			if _, handlerPath := scaffold.WebhookHandler(project); handlerPath != "" {
 				path = handlerPath
 			}
 
-			fmt.Fprintln(out, "  • Forward signed test events to your webhook handler:")
+			fmt.Fprintln(out, "  "+sty.Step("Forward signed test events to your webhook handler:"))
 			port := scaffold.DefaultPort(project)
 			if port == 0 {
-				fmt.Fprintf(out, "      reevit listen --forward-to http://localhost:<port>%s\n", path)
+				fmt.Fprintln(out, sty.Command("reevit listen --forward-to http://localhost:<port>"+path))
 			} else {
-				fmt.Fprintf(out, "      reevit listen --forward-to http://localhost:%d%s\n", port, path)
+				fmt.Fprintln(out, sty.Command(fmt.Sprintf(
+					"reevit listen --forward-to http://localhost:%d%s", port, path,
+				)))
 			}
 			fmt.Fprintln(out, "    It automatically uses REEVIT_WEBHOOK_SECRET from your project env.")
-			fmt.Fprintln(out, "  • Then verify the whole setup (signature check included):")
+			fmt.Fprintln(out, "  "+sty.Step("Then verify the whole setup (signature check included):"))
 			if port == 0 {
-				fmt.Fprintf(out, "      reevit doctor --webhook-url http://localhost:<port>%s\n", path)
+				fmt.Fprintln(out, sty.Command("reevit doctor --webhook-url http://localhost:<port>"+path))
 			} else {
-				fmt.Fprintf(out, "      reevit doctor --webhook-url http://localhost:%d%s\n", port, path)
+				fmt.Fprintln(out, sty.Command(fmt.Sprintf(
+					"reevit doctor --webhook-url http://localhost:%d%s", port, path,
+				)))
 			}
 		case scaffold.TargetCheckout:
-			fmt.Fprintln(out, "  • Render the checkout component with an amount in the smallest currency unit.")
+			fmt.Fprintln(out, "  "+sty.Step("Render the checkout component with an amount in the smallest currency unit."))
 		case scaffold.TargetClient:
-			fmt.Fprintln(out, "  • Run another real simulator payment whenever you need one:")
-			fmt.Fprintln(out, "      reevit trigger payment.succeeded")
+			fmt.Fprintln(out, "  "+sty.Step("Run another real simulator payment whenever you need one:"))
+			fmt.Fprintln(out, sty.Command("reevit trigger payment.succeeded"))
 			fmt.Fprintln(out, "    Then inspect it with `reevit payments list`.")
 		}
 	}
 
 	if !hasTarget(targets, scaffold.TargetWebhook) {
-		fmt.Fprintln(out, "  • Run `reevit doctor` any time to check the setup.")
+		fmt.Fprintln(out, "  "+sty.Step("Run `reevit doctor` any time to check the setup."))
 	}
 
 	fmt.Fprintln(out, "\nYou're on a TEST-MODE key. When you're ready for live traffic, create a live")
