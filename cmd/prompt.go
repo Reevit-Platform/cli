@@ -1,11 +1,43 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
 	"strings"
 )
+
+// notATerminalError is what a prompt returns when stdin ends before the user
+// could answer — a piped or CI invocation of an interactive step. A named type
+// rather than errors.New so it can carry the hint that names the way out.
+type notATerminalError struct{ question string }
+
+func (notATerminalError) Error() string { return "this step needs an interactive terminal" }
+
+func (notATerminalError) Hint() string {
+	return "rerun in a terminal, or pass the answer with a flag (see --help)"
+}
+
+func (notATerminalError) Is(target error) bool {
+	_, ok := target.(notATerminalError)
+
+	return ok
+}
+
+// errNotATerminal is the errors.Is target for the above.
+var errNotATerminal error = notATerminalError{}
+
+// promptReadError names the question that went unanswered. An EOF is the
+// non-interactive case and gets the typed error; anything else is a real I/O
+// failure and keeps its cause.
+func promptReadError(question string, err error) error {
+	if errors.Is(err, io.EOF) {
+		return fmt.Errorf("%s: %w", question, notATerminalError{question: question})
+	}
+
+	return fmt.Errorf("%s: %w", question, err)
+}
 
 // choose renders a numbered menu and returns the indexes the user picked.
 // Accepts "1", "1,3", "1 3", or Enter for the default (first option when
@@ -26,7 +58,7 @@ func choose(out io.Writer, in io.Reader, title string, options []string, multi b
 
 	line, err := readPromptLine(in)
 	if err != nil && line == "" {
-		return nil, fmt.Errorf("read choice: %w", err)
+		return nil, promptReadError(title, err)
 	}
 
 	line = strings.TrimSpace(line)
@@ -69,7 +101,7 @@ func promptString(out io.Writer, in io.Reader, question, def string) (string, er
 
 	line, err := readPromptLine(in)
 	if err != nil && line == "" {
-		return "", fmt.Errorf("read input: %w", err)
+		return "", promptReadError(question, err)
 	}
 
 	line = strings.TrimSpace(line)
@@ -91,7 +123,7 @@ func confirm(out io.Writer, in io.Reader, question string, def bool) (bool, erro
 
 	line, err := readPromptLine(in)
 	if err != nil && line == "" {
-		return false, fmt.Errorf("read answer: %w", err)
+		return false, promptReadError(question, err)
 	}
 
 	switch strings.ToLower(strings.TrimSpace(line)) {

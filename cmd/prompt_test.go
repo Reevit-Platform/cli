@@ -31,7 +31,7 @@ func TestChoose(t *testing.T) {
 		"non numeric":                   {input: "webhook\n", wantErr: "invalid choice"},
 		"two picks when only one fits":  {input: "1,2\n", wantErr: "pick exactly one option"},
 		"no trailing newline still ok":  {input: "3", want: []int{2}},
-		"eof with no input is an error": {input: "", wantErr: "read choice"},
+		"eof with no input is an error": {input: "", wantErr: "needs an interactive terminal"},
 	}
 
 	for name, tc := range tests {
@@ -69,14 +69,46 @@ func TestChoose(t *testing.T) {
 	}
 }
 
-func TestChooseEOFWrapsIOEOF(t *testing.T) {
+// TestPromptEOFIsATypedNonTerminalError — a prompt that runs out of stdin is
+// the non-interactive case, and the CLI has to be able to recognise it well
+// enough to print the way out. A bare io.EOF cannot carry that.
+func TestPromptEOFIsATypedNonTerminalError(t *testing.T) {
 	t.Parallel()
 
 	_, err := choose(io.Discard, strings.NewReader(""), "pick", []string{"a"}, false)
-	if !errors.Is(err, io.EOF) {
-		t.Fatalf("error = %v, want it to wrap io.EOF", err)
+	if !errors.Is(err, errNotATerminal) {
+		t.Fatalf("error = %v, want it to be errNotATerminal", err)
+	}
+
+	if !strings.Contains(err.Error(), "pick") {
+		t.Errorf("error = %q, want it to name the question", err)
+	}
+
+	var withHint hinter
+	if !errors.As(err, &withHint) || withHint.Hint() == "" {
+		t.Fatalf("error = %v, want it to carry a hint", err)
 	}
 }
+
+// A real read failure is not the non-interactive case and must keep its cause.
+func TestPromptReadFailureKeepsItsCause(t *testing.T) {
+	t.Parallel()
+
+	broken := errors.New("stdin exploded")
+
+	_, err := choose(io.Discard, failingReader{err: broken}, "pick", []string{"a"}, false)
+	if !errors.Is(err, broken) {
+		t.Fatalf("error = %v, want it to wrap the read failure", err)
+	}
+
+	if errors.Is(err, errNotATerminal) {
+		t.Fatalf("error = %v, want it NOT to claim a missing terminal", err)
+	}
+}
+
+type failingReader struct{ err error }
+
+func (r failingReader) Read([]byte) (int, error) { return 0, r.err }
 
 func TestPromptString(t *testing.T) {
 	t.Parallel()
@@ -101,8 +133,8 @@ func TestPromptString(t *testing.T) {
 			got, err := promptString(io.Discard, strings.NewReader(tc.input), "Where?", tc.def)
 
 			if tc.wantErr {
-				if !errors.Is(err, io.EOF) {
-					t.Fatalf("error = %v, want it to wrap io.EOF", err)
+				if !errors.Is(err, errNotATerminal) {
+					t.Fatalf("error = %v, want it to be errNotATerminal", err)
 				}
 
 				return
@@ -158,8 +190,8 @@ func TestConfirm(t *testing.T) {
 			got, err := confirm(io.Discard, strings.NewReader(tc.input), "Apply?", tc.def)
 
 			if tc.wantErr {
-				if !errors.Is(err, io.EOF) {
-					t.Fatalf("error = %v, want it to wrap io.EOF", err)
+				if !errors.Is(err, errNotATerminal) {
+					t.Fatalf("error = %v, want it to be errNotATerminal", err)
 				}
 
 				return
