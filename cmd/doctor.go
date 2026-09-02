@@ -773,11 +773,13 @@ func printDoctorSummary(out io.Writer, res *doctorResult) {
 	switch {
 	case res.failures > 0:
 		// The glyph in the sentence has to be the same one the failing lines
-		// carry, whichever mode we are in.
-		fmt.Fprintln(out, res.sty.Bold(fmt.Sprintf(
-			"%s found — fix the %s items above and rerun `reevit doctor`.",
-			plural(res.failures, "problem"), marker(res.sty.Failure("")),
-		)))
+		// carry, whichever mode we are in — and it is painted on its own, so
+		// its reset cannot end the bold halfway through the sentence.
+		fmt.Fprintf(out, "%s %s %s\n",
+			res.sty.Bold(plural(res.failures, "problem")+" found — fix the"),
+			marker(res.sty.Failure("")),
+			res.sty.Bold("items above and rerun `reevit doctor`."),
+		)
 	case res.warnings > 0:
 		fmt.Fprintln(out, res.sty.Bold(fmt.Sprintf(
 			"Setup looks good (%s above).", plural(res.warnings, "note"),
