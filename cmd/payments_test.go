@@ -79,8 +79,17 @@ func TestPaymentsTableKeepsItsColumnsUnderColour(t *testing.T) {
 		t.Errorf("the plain table carries escapes:\n%q", plainOut.String())
 	}
 
-	if colourOut.String() == plainOut.String() {
-		t.Fatalf("colour changed nothing:\n%q", colourOut.String())
+	// The statuses are why the table is coloured at all, so name them: a dim
+	// header alone would make "colour changed something" trivially true.
+	for _, want := range []string{
+		"\x1b[32msucceeded\x1b[0m",
+		"\x1b[31mfailed\x1b[0m",
+		"\x1b[33mpending\x1b[0m",
+		"\x1b[2mStatus\x1b[0m",
+	} {
+		if !strings.Contains(colourOut.String(), want) {
+			t.Errorf("coloured table is missing %q:\n%q", want, colourOut.String())
+		}
 	}
 
 	if stripped := goldenSGRRe.ReplaceAllString(colourOut.String(), ""); stripped != plainOut.String() {
