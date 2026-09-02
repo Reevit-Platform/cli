@@ -33,6 +33,14 @@ uses `--goal webhook` for that reason.
 
 ## Other invariants
 
+- Persist from `config.LoadFile`, request with `config.Load`. `Load` overlays
+  `REEVIT_API_KEY`/`REEVIT_API_URL`/`REEVIT_MODE`, so saving its result writes
+  a one-off environment value to disk forever.
+- Mode comes from the key prefix (`config.ModeFromKey`), not from
+  `REEVIT_MODE` — the backend ignores the header for API-key principals.
+- `cmd.Execute` cancels the command context on SIGINT/SIGTERM, so any new
+  long-running command must select on `cmd.Context().Done()` and return
+  `ExitError{Code: 130, Err: context.Canceled}`.
 - `cmd/trigger.go`'s magic amounts mirror the backend's
   `adapters/psp/stub/magic.go`. Do not edit one without the other.
 - Flags are package globals and pflag remembers `Changed` across runs; tests
