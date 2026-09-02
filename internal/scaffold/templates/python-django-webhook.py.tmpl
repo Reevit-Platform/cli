@@ -26,9 +26,12 @@ def reevit_webhook(request: HttpRequest) -> HttpResponse:
         return HttpResponse("invalid signature", status=401)
 
     event = json.loads(raw_body)
-    if event.get("type") == "payment.succeeded":
+    # Production deliveries name the event in "event"; `reevit listen`'s
+    # fallback envelope and older payloads use "type". Read both.
+    event_type = event.get("event") or event.get("type")
+    if event_type == "payment.succeeded":
         pass  # TODO: fulfil the order for event["data"]
-    elif event.get("type") == "payment.failed":
+    elif event_type == "payment.failed":
         pass  # TODO: notify the customer / retry logic
 
     return HttpResponse("ok", status=200)

@@ -19,7 +19,11 @@ export function mountReevitWebhook(app{{if .TS}}: Express{{end}}) {
 
       const event = JSON.parse(req.body.toString("utf8"));
 
-      switch (event.type) {
+      // Production deliveries name the event in `event`; `reevit listen`'s
+      // fallback envelope and older payloads use `type`. Read both.
+      const eventType = event.event ?? event.type;
+
+      switch (eventType) {
         case "payment.succeeded":
           // TODO: fulfil the order for event.data
           break;

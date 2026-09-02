@@ -449,7 +449,8 @@ func runningInCI() bool {
 // with a tampered signature must be rejected.
 func checkWebhookEndToEnd(ctx context.Context, out io.Writer, res *doctorResult, url, secret string) {
 	payload := []byte(fmt.Sprintf(
-		`{"type":"payment.succeeded","data":{"id":"doctor_check","amount":100,"currency":"GHS"},"created_at":%q}`,
+		`{"event":"payment.succeeded","type":"payment.succeeded",`+
+			`"data":{"id":"doctor_check","amount":100,"currency":"GHS"},"created_at":%q}`,
 		time.Now().UTC().Format(time.RFC3339),
 	))
 

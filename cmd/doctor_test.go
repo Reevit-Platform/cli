@@ -6,6 +6,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -54,6 +55,59 @@ func TestCheckWebhookEndToEndAgainstVerifyingHandler(t *testing.T) {
 	out := buf.String()
 	if !strings.Contains(out, "signed test event accepted") || !strings.Contains(out, "tampered event rejected") {
 		t.Errorf("unexpected output:\n%s", out)
+	}
+}
+
+// TestCheckWebhookEndToEndProbeNamesTheEventInEvent pins the probe payload to
+// the production envelope. A handler generated from the fixed templates reads
+// `event`; a probe that only sent `type` would let such a handler fall through
+// to its default branch and still pass, which is the exact blindness that let
+// the wrong-field bug ship.
+func TestCheckWebhookEndToEndProbeNamesTheEventInEvent(t *testing.T) {
+	var seen struct {
+		Event string `json:"event"`
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		payload, _ := io.ReadAll(r.Body)
+
+		mac := hmac.New(sha256.New, []byte("whsec_doctor"))
+		mac.Write(payload)
+
+		if !hmac.Equal([]byte("sha256="+hex.EncodeToString(mac.Sum(nil))), []byte(r.Header.Get("X-Reevit-Signature"))) {
+			http.Error(w, "invalid signature", http.StatusUnauthorized)
+
+			return
+		}
+
+		if err := json.Unmarshal(payload, &seen); err != nil {
+			http.Error(w, "invalid payload", http.StatusBadRequest)
+
+			return
+		}
+
+		// Dispatch the way the generated handlers now do: on `event` only.
+		if seen.Event != "payment.succeeded" {
+			http.Error(w, "unknown event", http.StatusBadRequest)
+
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	var buf bytes.Buffer
+
+	res := &doctorResult{}
+	checkWebhookEndToEnd(context.Background(), &buf, res, server.URL, "whsec_doctor")
+
+	if res.failures != 0 {
+		t.Fatalf("a handler that reads only `event` must pass; output:\n%s", buf.String())
+	}
+
+	if seen.Event != "payment.succeeded" {
+		t.Fatalf("probe payload event = %q, want payment.succeeded", seen.Event)
 	}
 }
 

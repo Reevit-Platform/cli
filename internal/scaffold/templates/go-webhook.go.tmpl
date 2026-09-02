@@ -44,8 +44,9 @@ func HandleReevitWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var event struct {
-		Type string          `json:"type"`
-		Data json.RawMessage `json:"data"`
+		Event string          `json:"event"`
+		Type  string          `json:"type"` // legacy — `reevit listen`'s fallback envelope still emits this
+		Data  json.RawMessage `json:"data"`
 	}
 
 	if err := json.Unmarshal(payload, &event); err != nil {
@@ -53,7 +54,14 @@ func HandleReevitWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	switch event.Type {
+	// A struct tag cannot express a fallback, and a missing field is not an
+	// unmarshal error — it just leaves the string empty. Resolve here instead.
+	eventType := event.Event
+	if eventType == "" {
+		eventType = event.Type
+	}
+
+	switch eventType {
 	case "payment.succeeded":
 		// TODO: fulfil the order for event.Data
 	case "payment.failed":
