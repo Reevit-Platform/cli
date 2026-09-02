@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Reevit-Platform/cli/internal/api"
 	"github.com/Reevit-Platform/cli/internal/scaffold"
@@ -359,5 +360,150 @@ func TestDoctorE2ESinkFiltersAfterArming(t *testing.T) {
 
 	if n := sink.unrelated.Load(); n != 40 {
 		t.Errorf("unrelated = %d, want 40", n)
+	}
+}
+
+// timestampCheckingHandler is a handler generated from the fixed templates: it
+// verifies the signature and then rejects a delivery whose signature_timestamp
+// is outside the tolerance window.
+func timestampCheckingHandler(secret string, tolerance time.Duration) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		payload, _ := io.ReadAll(r.Body)
+
+		mac := hmac.New(sha256.New, []byte(secret))
+		mac.Write(payload)
+
+		if !hmac.Equal([]byte("sha256="+hex.EncodeToString(mac.Sum(nil))), []byte(r.Header.Get("X-Reevit-Signature"))) {
+			http.Error(w, "invalid signature", http.StatusUnauthorized)
+
+			return
+		}
+
+		var envelope struct {
+			SignatureTimestamp string `json:"signature_timestamp"`
+		}
+
+		if err := json.Unmarshal(payload, &envelope); err != nil {
+			http.Error(w, "invalid payload", http.StatusBadRequest)
+
+			return
+		}
+
+		at, err := time.Parse(time.RFC3339, envelope.SignatureTimestamp)
+		if err != nil || time.Since(at).Abs() > tolerance {
+			http.Error(w, "stale signature", http.StatusBadRequest)
+
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+	}
+}
+
+// TestCheckWebhookEndToEndProbesStaleTimestamps — the probe payload must carry
+// the replay fields production signs into the body, and a handler that honours
+// them must come out clean.
+func TestCheckWebhookEndToEndProbesStaleTimestamps(t *testing.T) {
+	server := httptest.NewServer(timestampCheckingHandler("whsec_doctor", 5*time.Minute))
+	defer server.Close()
+
+	var buf bytes.Buffer
+
+	res := &doctorResult{}
+	checkWebhookEndToEnd(context.Background(), &buf, res, server.URL, "whsec_doctor")
+
+	out := buf.String()
+
+	if res.failures != 0 {
+		t.Fatalf("a timestamp-checking handler must pass every probe; output:\n%s", out)
+	}
+
+	if res.warnings != 0 {
+		t.Fatalf("a timestamp-checking handler must not be warned about; output:\n%s", out)
+	}
+
+	if !strings.Contains(out, "stale event rejected") {
+		t.Errorf("missing the stale-timestamp pass line:\n%s", out)
+	}
+}
+
+// TestCheckWebhookEndToEndWarnsOnMissingTimestampCheck — a handler with no
+// timestamp check is warned, not failed: older scaffolds and hand-written
+// handlers legitimately lack one, and --strict already turns warnings into a
+// failed run.
+func TestCheckWebhookEndToEndWarnsOnMissingTimestampCheck(t *testing.T) {
+	server := httptest.NewServer(verifyingHandler("whsec_doctor"))
+	defer server.Close()
+
+	var buf bytes.Buffer
+
+	res := &doctorResult{}
+	checkWebhookEndToEnd(context.Background(), &buf, res, server.URL, "whsec_doctor")
+
+	out := buf.String()
+
+	if res.failures != 0 {
+		t.Fatalf("a missing timestamp check must not fail the run; output:\n%s", out)
+	}
+
+	if res.warnings != 1 {
+		t.Fatalf("warnings = %d, want exactly 1; output:\n%s", res.warnings, out)
+	}
+
+	want := "handler accepted a 20-minute-old signature — add a timestamp check (rerun reevit init --overwrite to regenerate)"
+	if !strings.Contains(out, want) {
+		t.Errorf("output is missing %q:\n%s", want, out)
+	}
+}
+
+// TestDoctorProbePayloadCarriesTheReplayFields pins the envelope shape: the
+// dispatcher signs delivery_id, attempt and signature_timestamp into the body,
+// so a probe without them is thinner than anything production sends.
+func TestDoctorProbePayloadCarriesTheReplayFields(t *testing.T) {
+	sentAt := time.Now().Add(-20 * time.Minute)
+
+	payload, deliveryID, timestamp := doctorProbePayload(sentAt)
+
+	var envelope struct {
+		Event              string `json:"event"`
+		Type               string `json:"type"`
+		DeliveryID         string `json:"delivery_id"`
+		Attempt            int    `json:"attempt"`
+		SignatureTimestamp string `json:"signature_timestamp"`
+	}
+
+	if err := json.Unmarshal(payload, &envelope); err != nil {
+		t.Fatalf("probe payload is not valid JSON: %v\n%s", err, payload)
+	}
+
+	if envelope.Event != "payment.succeeded" || envelope.Type != "payment.succeeded" {
+		t.Errorf("event = %q, type = %q", envelope.Event, envelope.Type)
+	}
+
+	if envelope.DeliveryID != deliveryID || envelope.DeliveryID == "" {
+		t.Errorf("delivery_id = %q, want %q", envelope.DeliveryID, deliveryID)
+	}
+
+	if envelope.Attempt != 1 {
+		t.Errorf("attempt = %d, want 1", envelope.Attempt)
+	}
+
+	if envelope.SignatureTimestamp != timestamp {
+		t.Errorf("signature_timestamp = %q, want %q", envelope.SignatureTimestamp, timestamp)
+	}
+
+	at, err := time.Parse(time.RFC3339, envelope.SignatureTimestamp)
+	if err != nil {
+		t.Fatalf("signature_timestamp is not RFC3339: %v", err)
+	}
+
+	if delta := at.Sub(sentAt).Abs(); delta > time.Second {
+		t.Errorf("signature_timestamp is %s away from the requested time", delta)
+	}
+
+	// Two probes must never share a delivery id — a handler that dedupes on
+	// it would drop the second and doctor would report it as broken.
+	if _, second, _ := doctorProbePayload(sentAt); second == deliveryID {
+		t.Errorf("delivery ids repeat: %q", second)
 	}
 }

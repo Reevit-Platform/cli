@@ -444,21 +444,40 @@ func runningInCI() bool {
 	return value != "" && value != "0" && value != "false"
 }
 
-// checkWebhookEndToEnd proves the handler's signature verification both ways:
-// a correctly signed synthetic event must be accepted, and the same payload
-// with a tampered signature must be rejected.
-func checkWebhookEndToEnd(ctx context.Context, out io.Writer, res *doctorResult, url, secret string) {
-	payload := []byte(fmt.Sprintf(
+// doctorProbePayload builds a probe in the production delivery envelope: the
+// event named in `event` (with the legacy `type` kept so handlers written
+// against the old scaffolds still recognise it), plus the replay fields the
+// outbound dispatcher signs INTO the body — delivery_id, attempt and
+// signature_timestamp. Probing with a thinner payload than production sends is
+// how a handler can pass doctor and still no-op on a real delivery.
+func doctorProbePayload(sentAt time.Time) (payload []byte, deliveryID, timestamp string) {
+	deliveryID = "evtd_doctor_" + uuid.NewString()
+	timestamp = sentAt.UTC().Format(time.RFC3339)
+
+	payload = []byte(fmt.Sprintf(
 		`{"event":"payment.succeeded","type":"payment.succeeded",`+
-			`"data":{"id":"doctor_check","amount":100,"currency":"GHS"},"created_at":%q}`,
-		time.Now().UTC().Format(time.RFC3339),
+			`"data":{"id":"doctor_check","amount":100,"currency":"GHS"},"created_at":%q,`+
+			`"delivery_id":%q,"attempt":1,"signature_timestamp":%q}`,
+		timestamp, deliveryID, timestamp,
 	))
+
+	return payload, deliveryID, timestamp
+}
+
+// checkWebhookEndToEnd proves the handler's signature verification both ways —
+// a correctly signed synthetic event must be accepted, and the same payload
+// with a tampered signature must be rejected — and then probes replay
+// protection with a correctly signed but 20-minute-old delivery.
+func checkWebhookEndToEnd(ctx context.Context, out io.Writer, res *doctorResult, url, secret string) {
+	now := time.Now()
+
+	payload, deliveryID, timestamp := doctorProbePayload(now)
 
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(payload)
 	goodSig := "sha256=" + hex.EncodeToString(mac.Sum(nil))
 
-	status, err := postWebhook(ctx, url, payload, goodSig)
+	status, err := postWebhook(ctx, url, payload, goodSig, deliveryID, timestamp)
 
 	switch {
 	case err != nil:
@@ -472,7 +491,7 @@ func checkWebhookEndToEnd(ctx context.Context, out io.Writer, res *doctorResult,
 	}
 
 	// Tampered signature must NOT be accepted.
-	status, err = postWebhook(ctx, url, payload, "sha256="+strings.Repeat("0", 64))
+	status, err = postWebhook(ctx, url, payload, "sha256="+strings.Repeat("0", 64), deliveryID, timestamp)
 
 	switch {
 	case err != nil:
@@ -481,6 +500,26 @@ func checkWebhookEndToEnd(ctx context.Context, out io.Writer, res *doctorResult,
 		res.fail(out, "TAMPERED event was accepted (%d) — the handler is not verifying signatures", status)
 	default:
 		res.pass(out, "tampered event rejected (%d)", status)
+	}
+
+	// A correctly signed delivery from 20 minutes ago is a captured replay,
+	// not a delivery. This warns rather than fails: older scaffolds and
+	// hand-written handlers legitimately have no timestamp check, and under
+	// --strict the warning still fails the run.
+	stalePayload, staleID, staleTimestamp := doctorProbePayload(now.Add(-20 * time.Minute))
+
+	staleMAC := hmac.New(sha256.New, []byte(secret))
+	staleMAC.Write(stalePayload)
+
+	status, err = postWebhook(ctx, url, stalePayload, "sha256="+hex.EncodeToString(staleMAC.Sum(nil)), staleID, staleTimestamp)
+
+	switch {
+	case err != nil:
+		res.warn(out, "stale-timestamp check could not run (%v)", err)
+	case status >= 200 && status < 300:
+		res.warn(out, "handler accepted a 20-minute-old signature — add a timestamp check (rerun reevit init --overwrite to regenerate)")
+	default:
+		res.pass(out, "stale event rejected (%d)", status)
 	}
 }
 
@@ -676,7 +715,10 @@ func forwardPlatformEvent(ctx context.Context, targetURL, secret string, evt api
 	return resp.StatusCode, nil
 }
 
-func postWebhook(ctx context.Context, url string, payload []byte, signature string) (int, error) {
+// postWebhook sends a probe with the headers a real delivery carries, so a
+// handler that reads the replay fields from headers rather than the body sees
+// the same thing production sends it.
+func postWebhook(ctx context.Context, url string, payload []byte, signature, deliveryID, timestamp string) (int, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
 		return 0, err
@@ -684,6 +726,9 @@ func postWebhook(ctx context.Context, url string, payload []byte, signature stri
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Reevit-Signature", signature)
+	req.Header.Set("X-Reevit-Delivery-ID", deliveryID)
+	req.Header.Set("X-Reevit-Delivery-Attempt", "1")
+	req.Header.Set("X-Reevit-Signature-Timestamp", timestamp)
 
 	client := &http.Client{Timeout: 10 * time.Second}
 
