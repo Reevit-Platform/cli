@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/google/uuid"
@@ -28,6 +27,19 @@ var triggerAmounts = map[string]int64{
 	"payment.provider_downtime":  4004,
 }
 
+// triggerEventOrder is the order the events are offered in, which is the
+// order a person meets them: the happy path first, then the failure modes in
+// descending likelihood. Ranging over triggerAmounts would order them by map
+// iteration; sorting them would order them alphabetically, which puts
+// `payment.failed` ahead of `payment.succeeded`. Neither is a reading order.
+var triggerEventOrder = []string{
+	"payment.succeeded",
+	"payment.failed",
+	"payment.insufficient_funds",
+	"payment.timeout",
+	"payment.provider_downtime",
+}
+
 var (
 	triggerCurrency string
 	triggerAmountOv int64
@@ -40,7 +52,11 @@ var triggerCmd = &cobra.Command{
 documented magic amount for the requested outcome, so every downstream event
 (webhooks, notifications, SSE) is produced by the production pipeline.
 
-Supported: ` + strings.Join(triggerEventNames(), ", "),
+Supported events, with the magic amount each one uses:
+` + triggerSupportedList(),
+	Example: `  reevit trigger payment.succeeded
+  reevit trigger payment.timeout
+  reevit trigger payment.failed --currency NGN`,
 	Args: exactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		event := strings.ToLower(strings.TrimSpace(args[0]))
@@ -201,14 +217,18 @@ func ensureSimulatorConnection(ctx context.Context, c *api.Client) (string, erro
 }
 
 func triggerEventNames() []string {
-	names := make([]string, 0, len(triggerAmounts))
-	for name := range triggerAmounts {
-		names = append(names, name)
+	return append([]string(nil), triggerEventOrder...)
+}
+
+// triggerSupportedList renders one event per line with its magic amount, so
+// `--amount` stops looking like a free parameter.
+func triggerSupportedList() string {
+	var b strings.Builder
+	for _, name := range triggerEventOrder {
+		fmt.Fprintf(&b, "  %-28s %d\n", name, triggerAmounts[name])
 	}
 
-	sort.Strings(names)
-
-	return names
+	return strings.TrimRight(b.String(), "\n")
 }
 
 func init() {

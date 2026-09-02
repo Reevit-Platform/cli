@@ -10,6 +10,10 @@ fallback is ephemeral.
 Usage:
   reevit listen --forward-to <url> [flags]
 
+Examples:
+  reevit listen --forward-to http://localhost:3000/api/webhooks/reevit
+  reevit listen --forward-to http://localhost:8000/webhooks/reevit --signing-secret whsec_...
+
 Flags:
       --forward-to string       local endpoint to POST events to (required)
   -h, --help                    help for listen

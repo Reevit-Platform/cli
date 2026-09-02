@@ -1,7 +1,14 @@
-List recent payments (current mode)
+Lists the most recent payments in the current mode, newest first.
+
+Shows the id, outcome, amount, provider, method, and how long ago it was
+created. Filter with --status and shorten the list with --limit.
 
 Usage:
   reevit payments list [flags]
+
+Examples:
+  reevit payments list
+  reevit payments list --status failed --limit 5
 
 Flags:
   -h, --help            help for list

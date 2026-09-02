@@ -49,6 +49,8 @@ verification code runs unchanged.
 The signing secret comes from --signing-secret, then the current project's
 REEVIT_WEBHOOK_SECRET, then your webhook configuration. Only the final
 fallback is ephemeral.`,
+	Example: `  reevit listen --forward-to http://localhost:3000/api/webhooks/reevit
+  reevit listen --forward-to http://localhost:8000/webhooks/reevit --signing-secret whsec_...`,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		if listenForwardTo == "" {
 			return fmt.Errorf("--forward-to is required, e.g. --forward-to http://localhost:3000/webhooks")

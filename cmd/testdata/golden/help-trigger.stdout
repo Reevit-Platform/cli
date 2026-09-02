@@ -2,10 +2,20 @@ Creates a real test-mode payment against the simulator connection using the
 documented magic amount for the requested outcome, so every downstream event
 (webhooks, notifications, SSE) is produced by the production pipeline.
 
-Supported: payment.failed, payment.insufficient_funds, payment.provider_downtime, payment.succeeded, payment.timeout
+Supported events, with the magic amount each one uses:
+  payment.succeeded            4000
+  payment.failed               4001
+  payment.insufficient_funds   4002
+  payment.timeout              4003
+  payment.provider_downtime    4004
 
 Usage:
   reevit trigger <event> [flags]
+
+Examples:
+  reevit trigger payment.succeeded
+  reevit trigger payment.timeout
+  reevit trigger payment.failed --currency NGN
 
 Flags:
       --amount int        override the magic amount (advanced)

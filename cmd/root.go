@@ -80,8 +80,16 @@ func exactArgs(n int) cobra.PositionalArgs {
 }
 
 var rootCmd = &cobra.Command{
-	Use:           "reevit",
-	Short:         "Reevit CLI — set up Reevit in your project, test payments, drive the sandbox simulator",
+	Use:   "reevit",
+	Short: "Reevit CLI — set up Reevit in your project, test payments, drive the sandbox simulator",
+	Long: `Sets Reevit up in your project and gives you a real sandbox to test it
+against — signed webhooks, simulated payment outcomes, and a check that says
+whether any of it actually works.
+
+Start here: reevit login → reevit init → reevit doctor.`,
+	Example: `  reevit init                      # set up Reevit in the current project
+  reevit listen --forward-to http://localhost:3000/api/webhooks/reevit
+  reevit trigger payment.succeeded`,
 	Version:       Version,
 	SilenceUsage:  true,
 	SilenceErrors: true,

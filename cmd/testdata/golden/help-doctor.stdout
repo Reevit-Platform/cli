@@ -15,6 +15,11 @@ command.
 Usage:
   reevit doctor [flags]
 
+Examples:
+  reevit doctor
+  reevit doctor --webhook-url http://localhost:3000/api/webhooks/reevit
+  reevit doctor --strict           # treat warnings as problems too
+
 Flags:
       --app-url string       your running checkout demo URL, e.g. http://localhost:3000/reevit-demo
       --e2e                  also fire a REAL sandbox payment through the simulator and deliver the resulting platform event to --webhook-url

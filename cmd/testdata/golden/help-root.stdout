@@ -1,7 +1,16 @@
-Reevit CLI — set up Reevit in your project, test payments, drive the sandbox simulator
+Sets Reevit up in your project and gives you a real sandbox to test it
+against — signed webhooks, simulated payment outcomes, and a check that says
+whether any of it actually works.
+
+Start here: reevit login → reevit init → reevit doctor.
 
 Usage:
   reevit [command]
+
+Examples:
+  reevit init                      # set up Reevit in the current project
+  reevit listen --forward-to http://localhost:3000/api/webhooks/reevit
+  reevit trigger payment.succeeded
 
 Available Commands:
   completion  Generate the autocompletion script for the specified shell

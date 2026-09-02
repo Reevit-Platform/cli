@@ -121,6 +121,9 @@ so the check proves your handler's signature verification end to end.
 
 Exits 3 when it finds problems, so CI can tell a failed check from a failed
 command.`,
+	Example: `  reevit doctor
+  reevit doctor --webhook-url http://localhost:3000/api/webhooks/reevit
+  reevit doctor --strict           # treat warnings as problems too`,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		// The diagnosis is conversation, not data: on stderr it stays on the
 		// terminal when the user redirects stdout, and plan 032's --json has

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -348,6 +349,78 @@ func TestIsMagicAmountCoversEveryDocumentedOutcome(t *testing.T) {
 	for _, amount := range []int64{0, 1, 3999, 4005, 100000} {
 		if isMagicAmount(amount) {
 			t.Errorf("%d is not a documented magic amount", amount)
+		}
+	}
+}
+
+// The listed order is the order a person meets these outcomes, not the order
+// Go's map iteration or sort.Strings would produce. Alphabetical would open
+// with `payment.failed`, which reads like the CLI expects you to fail.
+func TestTriggerEventsAreListedInReadingOrderNotAlphabetically(t *testing.T) {
+	t.Parallel()
+
+	want := []string{
+		"payment.succeeded",
+		"payment.failed",
+		"payment.insufficient_funds",
+		"payment.timeout",
+		"payment.provider_downtime",
+	}
+
+	got := triggerEventNames()
+	if len(got) != len(want) {
+		t.Fatalf("triggerEventNames() = %v, want %d entries", got, len(want))
+	}
+
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("triggerEventNames()[%d] = %q, want %q (full order: %v)", i, got[i], want[i], got)
+		}
+	}
+
+	if sorted := append([]string(nil), got...); sort.StringsAreSorted(sorted) {
+		t.Fatalf("triggerEventNames() came back alphabetically sorted: %v", got)
+	}
+}
+
+// Every event the CLI accepts must be offered, and every event it offers must
+// be accepted. A name in one list and not the other is a dead menu entry.
+func TestTriggerEventOrderCoversTheWholeAmountTable(t *testing.T) {
+	t.Parallel()
+
+	if len(triggerEventOrder) != len(triggerAmounts) {
+		t.Fatalf("order lists %d events, the amount table has %d", len(triggerEventOrder), len(triggerAmounts))
+	}
+
+	for _, name := range triggerEventOrder {
+		if _, ok := triggerAmounts[name]; !ok {
+			t.Errorf("%q is offered but has no magic amount", name)
+		}
+	}
+}
+
+// The help text exists so nobody has to guess what --amount would override.
+func TestTriggerSupportedListPairsEveryEventWithItsAmount(t *testing.T) {
+	t.Parallel()
+
+	lines := strings.Split(triggerSupportedList(), "\n")
+	if len(lines) != len(triggerEventOrder) {
+		t.Fatalf("supported list has %d lines, want %d:\n%s", len(lines), len(triggerEventOrder), triggerSupportedList())
+	}
+
+	for i, name := range triggerEventOrder {
+		fields := strings.Fields(lines[i])
+		if len(fields) != 2 || fields[0] != name {
+			t.Fatalf("line %d = %q, want %q and its amount", i, lines[i], name)
+		}
+
+		amount, err := strconv.ParseInt(fields[1], 10, 64)
+		if err != nil {
+			t.Fatalf("line %d = %q: amount is not a number: %v", i, lines[i], err)
+		}
+
+		if amount != triggerAmounts[name] {
+			t.Errorf("%s is documented as %d, the CLI sends %d", name, amount, triggerAmounts[name])
 		}
 	}
 }

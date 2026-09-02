@@ -33,11 +33,18 @@ var (
 var paymentsCmd = &cobra.Command{
 	Use:   "payments",
 	Short: "Inspect payments",
+	Long:  `Reads payments in the current mode. Live keys read live payments.`,
 }
 
 var paymentsListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List recent payments (current mode)",
+	Long: `Lists the most recent payments in the current mode, newest first.
+
+Shows the id, outcome, amount, provider, method, and how long ago it was
+created. Filter with --status and shorten the list with --limit.`,
+	Example: `  reevit payments list
+  reevit payments list --status failed --limit 5`,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		c, err := client()
 		if err != nil {

@@ -14,6 +14,11 @@ history. Keys are stored in your user config with owner-only permissions.
 Usage:
   reevit login [flags]
 
+Examples:
+  reevit login                     # browser pairing, test-mode key
+  reevit login --no-browser        # print the URL instead of opening it
+  reevit login --key -             # read a key from stdin, not your history
+
 Flags:
   -h, --help         help for login
       --key string   API key (use '-' to read from stdin; skips the browser flow)

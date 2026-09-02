@@ -35,6 +35,9 @@ Dashboard → Developers → API keys and store it with:
 
 Passing "-" reads the key from stdin instead, which keeps it out of your shell
 history. Keys are stored in your user config with owner-only permissions.`,
+	Example: `  reevit login                     # browser pairing, test-mode key
+  reevit login --no-browser        # print the URL instead of opening it
+  reevit login --key -             # read a key from stdin, not your history`,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		key := strings.TrimSpace(loginKey)
 

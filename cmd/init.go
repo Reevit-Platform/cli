@@ -51,6 +51,9 @@ component, or a server-side client, depending on the project.
 Existing files are preserved by default. Interactive setup can replace
 generated integration files after creating a backup. Checkout can optionally
 be inserted into an existing page using an idempotent marked block.`,
+	Example: `  reevit init
+  reevit init --goal checkout      # scaffold the checkout page, not just the client
+  reevit init --overwrite          # replace generated files, keeping backups`,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		// Setup narrates on stderr; only the --dry-run plan is data.
 		sty := styleOf(cmd)
