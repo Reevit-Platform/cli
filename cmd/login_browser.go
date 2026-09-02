@@ -83,6 +83,12 @@ func browserLogin(cmd *cobra.Command, openBrowser bool) error {
 	fmt.Fprint(out, "Waiting for approval")
 
 	result, err := pollPairing(ctx, httpc, cfg.BaseURL, start, out)
+
+	// Close the line of progress dots however polling ended. The dots and the
+	// error now share stderr, so without this the failure reads
+	// "Waiting for approval.error: …".
+	fmt.Fprintln(out)
+
 	if err != nil {
 		return err
 	}
@@ -121,7 +127,7 @@ func browserLogin(cmd *cobra.Command, openBrowser bool) error {
 		orgName = "your organization"
 	}
 
-	fmt.Fprintf(out, "\n%s\n", sty.Success(fmt.Sprintf("Logged in to %s as %s", orgName, result.APIKey.Name)))
+	fmt.Fprintf(out, "%s\n", sty.Success(fmt.Sprintf("Logged in to %s as %s", orgName, result.APIKey.Name)))
 	fmt.Fprintf(out, "%s\n\n", sty.Success(fmt.Sprintf("Saved to %s (test mode)", p)))
 	fmt.Fprintln(out, "Heads up: this is a TEST-MODE key — perfect for `reevit listen`, `reevit trigger`,")
 	fmt.Fprintln(out, "and integrating safely. When you're ready for live traffic, create a live key in")
@@ -199,7 +205,7 @@ func pollPairing(ctx context.Context, httpc *http.Client, baseURL string, start 
 
 	for {
 		if time.Now().After(deadline) {
-			return pairingPollResponse{}, fmt.Errorf("\nthe pairing request expired before it was approved — run `reevit login` again")
+			return pairingPollResponse{}, fmt.Errorf("the pairing request expired before it was approved — run `reevit login` again")
 		}
 
 		fmt.Fprint(out, ".")
@@ -218,18 +224,18 @@ func pollPairing(ctx context.Context, httpc *http.Client, baseURL string, start 
 			case "pending":
 			case "approved":
 				if result.APIKey == nil || result.APIKey.Raw == "" {
-					return pairingPollResponse{}, fmt.Errorf("\nthe server approved the pairing but sent no key — run `reevit login` again")
+					return pairingPollResponse{}, fmt.Errorf("the server approved the pairing but sent no key — run `reevit login` again")
 				}
 
 				return result, nil
 			case "denied":
-				return pairingPollResponse{}, fmt.Errorf("\nthe pairing request was denied in the dashboard")
+				return pairingPollResponse{}, fmt.Errorf("the pairing request was denied in the dashboard")
 			case "expired":
-				return pairingPollResponse{}, fmt.Errorf("\nthe pairing request expired before it was approved — run `reevit login` again")
+				return pairingPollResponse{}, fmt.Errorf("the pairing request expired before it was approved — run `reevit login` again")
 			case "consumed":
-				return pairingPollResponse{}, fmt.Errorf("\nthis pairing request was already used — run `reevit login` again")
+				return pairingPollResponse{}, fmt.Errorf("this pairing request was already used — run `reevit login` again")
 			default:
-				return pairingPollResponse{}, fmt.Errorf("\nunexpected pairing status %q", result.Status)
+				return pairingPollResponse{}, fmt.Errorf("unexpected pairing status %q", result.Status)
 			}
 		}
 
