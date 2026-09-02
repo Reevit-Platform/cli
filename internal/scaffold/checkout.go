@@ -236,16 +236,31 @@ func checkoutPageEdit(project Project, page, component string) (FileEdit, error)
 			if strings.Contains(content, checkoutPlacementMarker+":start") {
 				return content, nil
 			}
+
+			var (
+				updated string
+				err     error
+			)
+
 			switch project.Stack {
 			case StackNext, StackReact:
-				return injectReactCheckout(content, importPath)
+				updated, err = injectReactCheckout(content, importPath)
 			case StackVue:
-				return injectVueCheckout(content, importPath)
+				updated, err = injectVueCheckout(content, importPath)
 			case StackSvelte:
-				return injectSvelteCheckout(content, importPath)
+				updated, err = injectSvelteCheckout(content, importPath)
 			default:
-				return "", fmt.Errorf("checkout page insertion is not supported for %s", project.Stack)
+				err = fmt.Errorf("checkout page insertion is not supported for %s", project.Stack)
 			}
+
+			if err != nil {
+				// Every one of these errors means "we would not touch your
+				// file blind" — say what to do next, since the caller only
+				// prefixes the path.
+				return "", fmt.Errorf("%w — pass --checkout-page - to keep the component standalone", err)
+			}
+
+			return updated, nil
 		},
 	}, nil
 }
@@ -369,8 +384,12 @@ func findDefaultExportJSXRoot(content string) (start, end int, selfClosing bool,
 		return start, first[1], true, nil
 	}
 	firstName := ""
+
 	if firstText != "<>" {
 		firstName = jsxTagName(firstText)
+		if firstName == "" {
+			return 0, 0, false, fmt.Errorf("could not read the checkout page JSX root tag %q", firstText)
+		}
 	}
 	stack := []string{firstName}
 	for _, tag := range tags[1:] {
@@ -386,6 +405,10 @@ func findDefaultExportJSXRoot(content string) (start, end int, selfClosing bool,
 			stack = stack[:len(stack)-1]
 		case strings.HasPrefix(text, "</"):
 			name := jsxTagName(text)
+			if name == "" {
+				return 0, 0, false, fmt.Errorf("could not read a closing JSX tag %q on the checkout page", text)
+			}
+
 			if len(stack) == 0 || stack[len(stack)-1] != name {
 				return 0, 0, false, fmt.Errorf("could not safely match the checkout page JSX root")
 			}
@@ -393,7 +416,12 @@ func findDefaultExportJSXRoot(content string) (start, end int, selfClosing bool,
 		case strings.HasSuffix(strings.TrimSpace(text), "/>"):
 			continue
 		default:
-			stack = append(stack, jsxTagName(text))
+			name := jsxTagName(text)
+			if name == "" {
+				return 0, 0, false, fmt.Errorf("could not read an opening JSX tag %q on the checkout page", text)
+			}
+
+			stack = append(stack, name)
 		}
 		if len(stack) == 0 {
 			return start, tagStart, false, nil
@@ -566,9 +594,17 @@ func isJSIdentifierByte(ch byte) bool {
 		(ch >= '0' && ch <= '9') || ch == '_' || ch == '$'
 }
 
+// scanJSXTags collects the JSX tags of the element that opens at or after
+// start, and stops as soon as that element closes. Scanning on to end-of-file
+// meant a TypeScript generic further down the file — `useState<Record<string,
+// string>>()` — could be tokenised as a tag and desynchronise the caller's
+// depth tracking; nothing after the root's close tag is any of our business.
 func scanJSXTags(content string, start int) [][2]int {
 	var tags [][2]int
 	braceDepth := 0
+	// depth mirrors the caller's tag stack, coarsely: it only needs to know
+	// when the root element has closed, not which names matched.
+	depth := 0
 	var quote byte
 	escaped := false
 	for i := start; i < len(content); i++ {
@@ -602,6 +638,13 @@ func scanJSXTags(content string, start int) [][2]int {
 		if !(next == '>' || next == '/' || (next >= 'A' && next <= 'Z') || (next >= 'a' && next <= 'z')) {
 			continue
 		}
+		// Outside any JSX element, a `<` glued to the end of an identifier is
+		// a type argument list, not a tag: `useState<Record<string, string>>`.
+		// Inside an element the same shape is legitimate JSX text followed by
+		// a child tag, so the rule is only safe at depth 0.
+		if depth == 0 && next != '/' && i > start && isJSIdentifierByte(content[i-1]) {
+			continue
+		}
 		tagBraceDepth := 0
 		var tagQuote byte
 		tagEscaped := false
@@ -631,16 +674,50 @@ func scanJSXTags(content string, start int) [][2]int {
 			}
 			if tagCh == '>' && tagBraceDepth == 0 {
 				tags = append(tags, [2]int{i, j + 1})
+				depth += jsxTagDepthDelta(content[i : j+1])
 				i = j
+
 				break
 			}
 		}
+
+		// The root element has closed (or a malformed run of close tags has
+		// driven the depth negative). Either way the caller has everything it
+		// can use, and anything further is unrelated source.
+		if len(tags) > 0 && depth <= 0 {
+			return tags
+		}
 	}
+
 	return tags
 }
 
+// jsxTagDepthDelta classifies one scanned tag: self-closing tags and
+// unreadable fragments leave the depth alone, `</…>` closes, anything else
+// opens.
+func jsxTagDepthDelta(text string) int {
+	trimmed := strings.TrimSpace(text)
+
+	switch {
+	case strings.HasSuffix(trimmed, "/>") && !strings.HasPrefix(trimmed, "</"):
+		return 0
+	case strings.HasPrefix(trimmed, "</"):
+		return -1
+	default:
+		return 1
+	}
+}
+
+// jsxTagName returns "" for a tag with no name — `</>`, `<//>`, `</ >` and
+// friends. It used to index Fields()[0] unconditionally and panic on them;
+// every caller must now treat "" as "not a usable tag".
 func jsxTagName(tag string) string {
-	return strings.Trim(strings.Fields(strings.Trim(tag, "<>/ \t\r\n"))[0], "/")
+	fields := strings.Fields(strings.Trim(tag, "<>/ \t\r\n"))
+	if len(fields) == 0 {
+		return ""
+	}
+
+	return strings.Trim(fields[0], "/")
 }
 
 func injectVueCheckout(content, importPath string) (string, error) {
