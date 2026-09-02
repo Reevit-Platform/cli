@@ -54,6 +54,15 @@ the project:
 | Server API | Server-only Reevit client wired to the scoped project key and organization |
 | Test resources | Project credentials, sandbox simulator connection, allowed local origin, and `.reevit/manifest.json` |
 
+**Webhook replay protection.** A captured delivery can be re-sent verbatim and
+its signature still verifies, so the generated handlers do two more things
+before they act on an event: they reject a `signature_timestamp` older than
+5 minutes, and they acknowledge a `delivery_id` they have already seen with a
+2xx without re-processing it. The dedupe set is in-process and bounded — it
+does not survive a restart and is not shared across instances. Before
+production, back it with a persistent store, such as a unique index on
+`delivery_id`.
+
 Choose **Customize setup** in the wizard when you only need part of the
 integration, or state the goal directly:
 
@@ -190,7 +199,10 @@ that the generated checkout route is reachable. With `--webhook-url`, it
 signs a synthetic `payment.succeeded` with your
 `REEVIT_WEBHOOK_SECRET` and POSTs it — your handler must accept it — then
 sends the same payload with a tampered signature — your handler must reject
-it. `--strict` turns skipped/unreachable runtime checks into CI failures.
+it — and finally replays the event with a correctly signed 20-minute-old
+timestamp, which your handler should also reject (accepting it is a warning,
+not a failure). `--strict` turns skipped/unreachable runtime checks and
+warnings into CI failures.
 
 Add `--e2e` for the strongest check: doctor fires a **real** sandbox payment
 through the simulator, waits for the platform-generated event on your
