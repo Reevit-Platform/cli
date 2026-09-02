@@ -121,6 +121,33 @@ func TestInitFreshNextProjectAndIdempotentRerun(t *testing.T) {
 		t.Fatalf("first init: %v\n%s", err, out.String())
 	}
 
+	// The transcript is the only thing most users see. It has to name the
+	// three long-running stages and close each one, label the files it wrote,
+	// and end on what to run next rather than on a paragraph about live keys.
+	for _, want := range []string{
+		"Configuring Reevit test mode…",
+		"Reevit test mode configured",
+		"Installing dependencies (pnpm)…",
+		"Dependencies installed (pnpm)",
+		"Verifying project credentials against the sandbox…",
+		"Project credentials verified against the sandbox",
+		// Anchored to whole lines: "Next" on its own would be satisfied by
+		// the "Found Next.js" detection line above it.
+		"\nFiles\n",
+		"\nNext\n",
+		"You are in test mode. Live keys: reevit login --help",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("init transcript is missing %q:\n%s", want, out.String())
+		}
+	}
+
+	// The live-key paragraph moved to `reevit login --help`; leaving a copy
+	// here is how the two drift apart.
+	if strings.Contains(out.String(), "TEST-MODE key") {
+		t.Errorf("init transcript still carries the live-key paragraph:\n%s", out.String())
+	}
+
 	env := acceptanceRead(t, root, ".env.local")
 	if strings.Contains(env, "pfk_test_login.secret") ||
 		!strings.Contains(env, "REEVIT_API_KEY=pfk_test_server.secret") ||
