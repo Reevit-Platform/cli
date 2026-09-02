@@ -44,10 +44,10 @@ func path() (string, error) {
 	return filepath.Join(dir, "reevit", "config.json"), nil
 }
 
-// loadFile returns only what is on disk — no env overlay, no defaults. A
+// LoadFile returns only what is on disk — no env overlay, no defaults. A
 // missing file yields the zero Config. Anything that writes the file back
 // must start here rather than from Load, or it persists env-supplied values.
-func loadFile() (Config, error) {
+func LoadFile() (Config, error) {
 	var cfg Config
 
 	p, err := path()
@@ -74,7 +74,7 @@ func loadFile() (Config, error) {
 // Load returns the effective config: file values overridden by env vars.
 // A missing file is fine as long as REEVIT_API_KEY is set.
 func Load() (Config, error) {
-	cfg, err := loadFile()
+	cfg, err := LoadFile()
 	if err != nil {
 		return cfg, err
 	}
@@ -97,6 +97,20 @@ func Load() (Config, error) {
 
 	cfg.BaseURL = strings.TrimRight(cfg.BaseURL, "/")
 
+	// The key decides the mode. The backend resolves an API-key principal's
+	// mode from the key itself and ignores X-Reevit-Mode (it is only read for
+	// session principals), so a file or env value that disagrees is a lie the
+	// CLI would otherwise print back at the user.
+	if keyMode, ok := ModeFromKey(cfg.APIKey); ok {
+		if cfg.Mode != "" && cfg.Mode != keyMode {
+			return cfg, fmt.Errorf(
+				"REEVIT_MODE is %q but the API key is a %s key — mode is determined by the key; unset REEVIT_MODE or use a matching key",
+				cfg.Mode, keyMode)
+		}
+
+		cfg.Mode = keyMode
+	}
+
 	if cfg.Mode == "" {
 		cfg.Mode = DefaultMode
 	}
@@ -108,6 +122,21 @@ func Load() (Config, error) {
 	return cfg, nil
 }
 
+// ModeFromKey reports the mode a Reevit API key belongs to, mirroring the rule
+// the backend and the MCP server already use: pfk_live_… is live, pfk_test_…
+// is test. Keys with any other shape return ok=false so non-standard or
+// legacy keys keep whatever the file or environment says.
+func ModeFromKey(key string) (string, bool) {
+	switch {
+	case strings.HasPrefix(key, "pfk_live_"):
+		return "live", true
+	case strings.HasPrefix(key, "pfk_test_"):
+		return "test", true
+	default:
+		return "", false
+	}
+}
+
 // SaveTelemetryID persists just the anonymous install id, leaving every other
 // field as it is on disk.
 //
@@ -117,7 +146,7 @@ func Load() (Config, error) {
 // credential to disk. A CI-only or shell-local key must stay ephemeral, and
 // minting an analytics id is no reason to make it permanent.
 func SaveTelemetryID(id string) (string, error) {
-	cfg, err := loadFile()
+	cfg, err := LoadFile()
 	if err != nil {
 		return "", err
 	}
@@ -129,7 +158,7 @@ func SaveTelemetryID(id string) (string, error) {
 
 // Save writes the config file with owner-only permissions.
 //
-// The Config must come from loadFile or from an explicit assignment (as the
+// The Config must come from LoadFile or from an explicit assignment (as the
 // login flows do) — never straight from Load, whose env overlay would be
 // persisted. See SaveTelemetryID.
 func Save(cfg Config) (string, error) {
