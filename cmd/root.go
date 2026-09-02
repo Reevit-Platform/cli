@@ -97,8 +97,21 @@ func executeWith(
 	rootCmd.SetIn(in)
 	rootCmd.SetOut(out)
 	rootCmd.SetErr(errOut)
+	// cobra only pushes the root's context down to a subcommand that has none
+	// yet (command.go:1113), so a subcommand run twice in one process keeps
+	// the first run's context and never observes the second one's
+	// cancellation. Push this run's context over the whole tree instead.
+	applyContext(rootCmd, ctx)
 
 	return rootCmd.ExecuteContextC(ctx)
+}
+
+func applyContext(cmd *cobra.Command, ctx context.Context) {
+	cmd.SetContext(ctx)
+
+	for _, sub := range cmd.Commands() {
+		applyContext(sub, ctx)
+	}
 }
 
 // renderError formats the error of a failed run the way the process itself

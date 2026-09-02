@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -203,5 +205,42 @@ func TestBrowserLoginPollsBeforeSleeping(t *testing.T) {
 	// interval is 1s; an immediate first poll finishes well inside it.
 	if elapsed := time.Since(started); elapsed >= time.Second {
 		t.Fatalf("took %s, want the first poll to precede the first sleep", elapsed)
+	}
+}
+
+// Ctrl-C during the pairing wait must unwind with the conventional 130
+// instead of leaving the poll running until the request expires.
+func TestBrowserLoginPollStopsOnCancellation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"pending"}`))
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	start := pairingStartResponse{ID: "pair_1", PollSecret: "secret", Interval: 5}
+
+	done := make(chan error, 1)
+
+	go func() {
+		_, err := pollPairing(ctx, server.Client(), server.URL, start, io.Discard)
+		done <- err
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		if got := ExitCode(err); got != 130 {
+			t.Fatalf("ExitCode = %d, want 130 (err %v)", got, err)
+		}
+
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("err = %v, want it to wrap context.Canceled", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the pairing poll ignored cancellation")
 	}
 }
