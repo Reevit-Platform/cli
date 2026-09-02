@@ -6,10 +6,12 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/Reevit-Platform/cli/internal/api"
@@ -202,5 +204,106 @@ func TestPythonSDKProbeUsesDetectedEnvironmentManager(t *testing.T) {
 		if got := strings.Join(pythonSDKProbeCommand(installer), " "); got != want {
 			t.Errorf("%s probe = %q, want %q", installer, got, want)
 		}
+	}
+}
+
+// doctor reused one delivery id for every run, so a handler that dedupes on
+// delivery id — the production-correct behaviour — was reported as broken.
+func TestDoctorSendsAUniqueDeliveryIDPerCall(t *testing.T) {
+	var (
+		mu  sync.Mutex
+		ids []string
+	)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		ids = append(ids, r.Header.Get("X-Reevit-Delivery-ID"))
+		mu.Unlock()
+
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	evt := api.SSEEvent{Type: "payment.succeeded", Data: `{"type":"payment.succeeded"}`}
+
+	for range 2 {
+		if _, err := forwardPlatformEvent(context.Background(), server.URL, "whsec", evt); err != nil {
+			t.Fatalf("forwardPlatformEvent: %v", err)
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(ids) != 2 {
+		t.Fatalf("got %d deliveries, want 2", len(ids))
+	}
+
+	if ids[0] == ids[1] {
+		t.Fatalf("both deliveries used %q — ids must be unique", ids[0])
+	}
+
+	for _, id := range ids {
+		if !strings.HasPrefix(id, "evtd_doctor_") || id == "evtd_doctor_e2e" {
+			t.Fatalf("delivery id = %q", id)
+		}
+	}
+}
+
+// The old 16-slot channel with a `default:` discard threw away the matching
+// event whenever the account was busy enough to fill it first.
+func TestDoctorE2ESinkKeepsTheMatchBehindABusyStream(t *testing.T) {
+	events := make(chan api.SSEEvent, 16)
+	sink := &e2eEventSink{out: events}
+
+	// 40 unrelated events arrive before the payment id is known, then the
+	// matching one.
+	for i := range 40 {
+		sink.accept(api.SSEEvent{Type: "other", Data: fmt.Sprintf(`{"id":"pay_other_%d"}`, i)})
+	}
+
+	sink.accept(api.SSEEvent{Type: "payment.succeeded", Data: `{"id":"pay_target"}`})
+
+	sink.arm("pay_target")
+
+	select {
+	case got := <-events:
+		if !strings.Contains(got.Data, "pay_target") {
+			t.Fatalf("delivered %q, want the matching event", got.Data)
+		}
+	default:
+		t.Fatal("the matching event never reached the consumer")
+	}
+
+	if n := sink.unrelated.Load(); n != 40 {
+		t.Errorf("unrelated = %d, want 40 — the timeout message reports this", n)
+	}
+}
+
+// Events arriving after arm are filtered in the callback, so a firehose of
+// unrelated traffic can no longer evict the one event that matters.
+func TestDoctorE2ESinkFiltersAfterArming(t *testing.T) {
+	events := make(chan api.SSEEvent, 16)
+	sink := &e2eEventSink{out: events}
+
+	sink.arm("pay_target")
+
+	for i := range 40 {
+		sink.accept(api.SSEEvent{Type: "other", Data: fmt.Sprintf(`{"id":"pay_other_%d"}`, i)})
+	}
+
+	sink.accept(api.SSEEvent{Type: "payment.succeeded", Data: `{"id":"pay_target"}`})
+
+	select {
+	case got := <-events:
+		if !strings.Contains(got.Data, "pay_target") {
+			t.Fatalf("delivered %q", got.Data)
+		}
+	default:
+		t.Fatal("the matching event never reached the consumer")
+	}
+
+	if n := sink.unrelated.Load(); n != 40 {
+		t.Errorf("unrelated = %d, want 40", n)
 	}
 }
