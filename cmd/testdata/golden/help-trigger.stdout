@@ -11,3 +11,6 @@ Flags:
       --amount int        override the magic amount (advanced)
       --currency string   payment currency (default "GHS")
   -h, --help              help for trigger
+
+Global Flags:
+      --no-color   disable colour and glyphs

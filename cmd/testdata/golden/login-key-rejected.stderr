@@ -1,1 +1,4 @@
-error: that key was rejected by the API: Reevit API 401 (unauthorized): invalid key
+error: that key was rejected by the API: Reevit API 401 (unauthorized): invalid
+       key
+
+  > run `reevit login` to get a fresh key

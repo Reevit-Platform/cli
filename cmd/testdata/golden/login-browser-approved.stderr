@@ -1,0 +1,11 @@
+
+Your pairing code is  GX7M-4KP9
+Confirm it in your browser:  https://dashboard.example/cli/confirm?code=GX7M-4KP9
+
+Waiting for approval..
+ok Logged in to Acme as CLI (host)
+ok Saved to <CONFIG> (test mode)
+
+Heads up: this is a TEST-MODE key — perfect for `reevit listen`, `reevit trigger`,
+and integrating safely. When you're ready for live traffic, create a live key in
+Dashboard → Developers → API keys, then run:  reevit login --key <live_key>

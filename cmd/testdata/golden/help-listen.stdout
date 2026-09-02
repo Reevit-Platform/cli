@@ -15,3 +15,6 @@ Flags:
   -h, --help                    help for listen
       --secret string           override the signing secret
       --signing-secret string   override the signing secret
+
+Global Flags:
+      --no-color   disable colour and glyphs

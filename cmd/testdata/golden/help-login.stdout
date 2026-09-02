@@ -13,3 +13,6 @@ Flags:
       --key string   API key (use '-' to read from stdin; skips the browser flow)
       --manual       prompt for an API key instead of using the browser
       --no-browser   print the pairing link instead of opening a browser
+
+Global Flags:
+      --no-color   disable colour and glyphs

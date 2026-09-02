@@ -425,3 +425,51 @@ func TestStreamParsesEventIDs(t *testing.T) {
 		t.Fatalf("parsed %+v, want one event with ID 42", got)
 	}
 }
+
+// The per-event line is why anyone runs `listen`: it has to say, at a glance,
+// whether the handler accepted the delivery. A 4xx that looks exactly like a
+// 200 is the failure mode this guards.
+func TestForwarderMarksTheHandlerVerdict(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		status int
+		want   string
+		reject string
+	}{
+		{name: "2xx is a success", status: http.StatusOK, want: "ok ", reject: "x "},
+		{name: "4xx is a failure", status: http.StatusBadRequest, want: "x ", reject: "ok "},
+		{name: "5xx is a failure", status: http.StatusInternalServerError, want: "x ", reject: "ok "},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(test.status)
+			}))
+			defer local.Close()
+
+			var out bytes.Buffer
+
+			command := &cobra.Command{}
+			command.SetOut(&out)
+			command.SetErr(io.Discard)
+			command.SetContext(context.Background())
+
+			f := newEventForwarder(local.URL, "whsec_test", command, ui.Styler{}, local.Client())
+			f.handle(api.SSEEvent{Type: "payment.succeeded", Data: `{"id":"pay_1"}`})
+
+			line := out.String()
+			if !strings.HasPrefix(line, test.want) {
+				t.Fatalf("line = %q, want it to start with %q", line, test.want)
+			}
+
+			if strings.HasPrefix(line, test.reject) {
+				t.Fatalf("line = %q, must not start with %q", line, test.reject)
+			}
+
+			// The arrow degrades with the rest of the vocabulary, so a
+			// non-UTF-8 terminal never sees a stray U+2192.
+			if strings.Contains(line, "→") {
+				t.Fatalf("line = %q, want the ASCII arrow from the plain styler", line)
+			}
+		})
+	}
+}

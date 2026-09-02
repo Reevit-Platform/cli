@@ -9,6 +9,9 @@ Webhook check:
 It signs a synthetic event with the REEVIT_WEBHOOK_SECRET from your env file,
 so the check proves your handler's signature verification end to end.
 
+Exits 3 when it finds problems, so CI can tell a failed check from a failed
+command.
+
 Usage:
   reevit doctor [flags]
 
@@ -18,3 +21,6 @@ Flags:
   -h, --help                 help for doctor
       --strict               treat warnings as failures (useful in CI)
       --webhook-url string   your running app's webhook endpoint, e.g. http://localhost:3000/api/webhooks/reevit
+
+Global Flags:
+      --no-color   disable colour and glyphs

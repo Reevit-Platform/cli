@@ -533,7 +533,7 @@ func goldenCases() []goldenCase {
 			env:      map[string]string{"REEVIT_API_KEY": testKey},
 			dir:      func(t *testing.T) string { return t.TempDir() },
 			server:   paymentsServer(http.StatusOK, `[]`),
-			wantExit: exitDoctor,
+			wantExit: 3,
 		},
 		// A legacy key shape: config.Load cannot derive the mode from it, so
 		// doctor says where the label actually came from.
@@ -543,7 +543,7 @@ func goldenCases() []goldenCase {
 			env:      map[string]string{"REEVIT_API_KEY": "rk_legacy_key", "REEVIT_MODE": "live"},
 			dir:      func(t *testing.T) string { return t.TempDir() },
 			server:   paymentsServer(http.StatusOK, `[]`),
-			wantExit: exitDoctor,
+			wantExit: 3,
 		},
 		{
 			name:     "doctor-next-project-offline",
@@ -551,7 +551,7 @@ func goldenCases() []goldenCase {
 			env:      map[string]string{"REEVIT_API_KEY": testKey},
 			dir:      nextProjectDirUnbootstrapped,
 			server:   paymentsServer(http.StatusOK, `[]`),
-			wantExit: exitDoctor,
+			wantExit: 3,
 		},
 
 		// init-non-tty must stay ahead of init-dry-run: it is what proves
@@ -578,7 +578,7 @@ func goldenCases() []goldenCase {
 			unsetEnv: []string{"NO_COLOR", "TERM", "LC_ALL", "LC_CTYPE"},
 			dir:      nextProjectDirUnbootstrapped,
 			server:   paymentsServer(http.StatusOK, `[]`),
-			wantExit: exitDoctor,
+			wantExit: 3,
 		},
 		// The counter-example: `payments list` is data, so turning colour on
 		// must change nothing. This golden is byte-identical to

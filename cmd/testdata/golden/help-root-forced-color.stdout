@@ -14,7 +14,8 @@ Available Commands:
   trigger     Fire a test event by driving the sandbox simulator
 
 Flags:
-  -h, --help      help for reevit
-  -v, --version   version for reevit
+  -h, --help       help for reevit
+      --no-color   disable colour and glyphs
+  -v, --version    version for reevit
 
 Use "reevit [command] --help" for more information about a command.
