@@ -2,10 +2,12 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/Reevit-Platform/cli/internal/config"
@@ -316,6 +318,42 @@ func TestDoSurfacesAPIErrors(t *testing.T) {
 			if tc.wantText != "" && !regexp.MustCompile(regexp.QuoteMeta(tc.wantText)).
 				MatchString(apiErr.Error()) {
 				t.Fatalf("Error() = %q, want it to mention %q", apiErr.Error(), tc.wantText)
+			}
+		})
+	}
+}
+
+// TestAPIErrorHint — the status codes a developer can act on each get one next
+// step, and the ones they cannot get silence rather than noise.
+func TestAPIErrorHint(t *testing.T) {
+	t.Parallel()
+
+	tests := map[int]string{
+		401: "reevit login",
+		403: "scope",
+		429: "rate limited",
+		500: "server error",
+		503: "server error",
+		404: "",
+		400: "",
+	}
+
+	for status, want := range tests {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			t.Parallel()
+
+			got := (&APIError{Status: status}).Hint()
+
+			if want == "" {
+				if got != "" {
+					t.Fatalf("Hint() = %q, want empty", got)
+				}
+
+				return
+			}
+
+			if !strings.Contains(got, want) {
+				t.Fatalf("Hint() = %q, want it to mention %q", got, want)
 			}
 		})
 	}

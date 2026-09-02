@@ -44,6 +44,25 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("Reevit API %d (%s): %s", e.Status, e.Code, msg)
 }
 
+// Hint returns a one-line next step for the API failures a developer can
+// actually act on, or "" when there is nothing useful to say. The CLI's error
+// printer looks for this method (cmd.RenderError).
+func (e *APIError) Hint() string {
+	switch {
+	case e.Status == 401:
+		return "run `reevit login` to get a fresh key"
+	case e.Status == 403:
+		return "your key lacks a required scope — run `reevit login` for a fresh test-mode key, " +
+			"or use a key with the scope from Dashboard → Developers → API keys"
+	case e.Status == 429:
+		return "you are being rate limited — wait a moment and retry"
+	case e.Status >= 500:
+		return "Reevit returned a server error — retry; if it persists, check https://status.reevit.io"
+	}
+
+	return ""
+}
+
 type Request struct {
 	Method     string
 	Path       string // e.g. /payments
