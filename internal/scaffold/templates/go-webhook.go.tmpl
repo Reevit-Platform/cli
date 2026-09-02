@@ -15,7 +15,62 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
+	"time"
 )
+
+// Reevit signs delivery_id, attempt and signature_timestamp into the BODY —
+// the same bytes the signature covers — so a handler can refuse a replayed
+// capture and acknowledge a retry without doing the work twice. They also
+// arrive as X-Reevit-Delivery-ID and X-Reevit-Signature-Timestamp headers.
+const (
+	reevitWebhookToleranceSeconds = 300
+	reevitDedupeLimit             = 1000
+)
+
+// Replace with a persistent store (database unique index on delivery_id) before production.
+var (
+	reevitSeenMu    sync.Mutex
+	reevitSeen      = make(map[string]struct{}, reevitDedupeLimit)
+	reevitSeenOrder []string
+)
+
+func reevitSignatureIsStale(timestamp string) bool {
+	at, err := time.Parse(time.RFC3339, timestamp)
+	if err != nil {
+		return true
+	}
+
+	drift := time.Since(at)
+	if drift < 0 {
+		drift = -drift
+	}
+
+	return drift > reevitWebhookToleranceSeconds*time.Second
+}
+
+func reevitIsDuplicate(deliveryID string) bool {
+	if deliveryID == "" {
+		return false
+	}
+
+	reevitSeenMu.Lock()
+	defer reevitSeenMu.Unlock()
+
+	if _, seen := reevitSeen[deliveryID]; seen {
+		return true
+	}
+
+	reevitSeen[deliveryID] = struct{}{}
+	reevitSeenOrder = append(reevitSeenOrder, deliveryID)
+
+	if len(reevitSeenOrder) > reevitDedupeLimit {
+		delete(reevitSeen, reevitSeenOrder[0])
+		reevitSeenOrder = reevitSeenOrder[1:]
+	}
+
+	return false
+}
 
 func verifyReevitSignature(payload []byte, signature, secret string) bool {
 	const prefix = "sha256="
@@ -44,9 +99,11 @@ func HandleReevitWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var event struct {
-		Event string          `json:"event"`
-		Type  string          `json:"type"` // legacy — `reevit listen`'s fallback envelope still emits this
-		Data  json.RawMessage `json:"data"`
+		Event              string          `json:"event"`
+		Type               string          `json:"type"` // legacy — `reevit listen`'s fallback envelope still emits this
+		Data               json.RawMessage `json:"data"`
+		DeliveryID         string          `json:"delivery_id"`
+		SignatureTimestamp string          `json:"signature_timestamp"`
 	}
 
 	if err := json.Unmarshal(payload, &event); err != nil {
@@ -59,6 +116,30 @@ func HandleReevitWebhook(w http.ResponseWriter, r *http.Request) {
 	eventType := event.Event
 	if eventType == "" {
 		eventType = event.Type
+	}
+
+	signatureTimestamp := event.SignatureTimestamp
+	if signatureTimestamp == "" {
+		signatureTimestamp = r.Header.Get("X-Reevit-Signature-Timestamp")
+	}
+
+	if reevitSignatureIsStale(signatureTimestamp) {
+		http.Error(w, "stale signature timestamp", http.StatusBadRequest)
+
+		return
+	}
+
+	deliveryID := event.DeliveryID
+	if deliveryID == "" {
+		deliveryID = r.Header.Get("X-Reevit-Delivery-ID")
+	}
+
+	if reevitIsDuplicate(deliveryID) {
+		// Already handled. Reevit retries until it sees a 2xx, so ack rather
+		// than re-dispatch.
+		w.WriteHeader(http.StatusOK)
+
+		return
 	}
 
 	switch eventType {

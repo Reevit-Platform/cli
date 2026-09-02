@@ -85,6 +85,52 @@ func TestEveryWebhookTemplateDispatchesOnEvent(t *testing.T) {
 	}
 }
 
+// webhookReplayNeedles pins the replay guard every generated handler must
+// carry: the named tolerance constant, a read of the signed signature_timestamp
+// and delivery_id, and the "make this persistent" instruction on the dedupe
+// stub.
+var webhookReplayNeedles = []string{
+	"signature_timestamp",
+	"delivery_id",
+	"Replace with a persistent store (database unique index on delivery_id) before production.",
+}
+
+// TestEveryWebhookTemplateGuardsAgainstReplay — the CLI signs delivery_id,
+// attempt and signature_timestamp into the body precisely so handlers can
+// reject a replayed capture and dedupe a retry storm. Generated handlers used
+// to ignore all three.
+func TestEveryWebhookTemplateGuardsAgainstReplay(t *testing.T) {
+	t.Parallel()
+
+	names, err := webhookTemplateNames()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range names {
+		for _, ts := range []bool{true, false} {
+			out, err := render(name, templateData{TS: ts})
+			if err != nil {
+				t.Fatalf("render %s (TS=%v): %v", name, ts, err)
+			}
+
+			needles := webhookReplayNeedles
+			// The constant is spelled in each language's own convention.
+			if strings.HasSuffix(name, ".go.tmpl") {
+				needles = append([]string{"reevitWebhookToleranceSeconds = 300"}, needles...)
+			} else {
+				needles = append([]string{"REEVIT_WEBHOOK_TOLERANCE_SECONDS"}, needles...)
+			}
+
+			for _, needle := range needles {
+				if !strings.Contains(out, needle) {
+					t.Errorf("%s (TS=%v) is missing %q", name, ts, needle)
+				}
+			}
+		}
+	}
+}
+
 func webhookTemplateNames() ([]string, error) {
 	entries, err := templateFS.ReadDir("templates")
 	if err != nil {
@@ -107,12 +153,26 @@ func webhookTemplateNames() ([]string, error) {
 func productionBody(t *testing.T) []byte {
 	t.Helper()
 
+	return deliveryBody(t, "evtd_dispatch_1", time.Now().UTC())
+}
+
+// staleBody is the same delivery with a signature timestamp far outside the
+// five-minute tolerance — a captured delivery being replayed.
+func staleBody(t *testing.T) []byte {
+	t.Helper()
+
+	return deliveryBody(t, "evtd_dispatch_stale", time.Now().UTC().Add(-20*time.Minute))
+}
+
+func deliveryBody(t *testing.T, deliveryID string, at time.Time) []byte {
+	t.Helper()
+
 	body, err := json.Marshal(map[string]any{
 		"event":               "payment.succeeded",
 		"data":                map[string]any{"id": "pay_dispatch"},
-		"delivery_id":         "evtd_dispatch_1",
+		"delivery_id":         deliveryID,
 		"attempt":             1,
-		"signature_timestamp": time.Now().UTC().Format(time.RFC3339),
+		"signature_timestamp": at.Format(time.RFC3339),
 		"api_version":         "2026-03-05",
 	})
 	if err != nil {
@@ -160,8 +220,15 @@ func TestGoWebhookTemplateDispatchesOnEvent(t *testing.T) {
 
 	source = instrument(t, source,
 		"// TODO: fulfil the order for event.Data",
-		`if err := os.WriteFile("dispatched.txt", []byte("payment.succeeded"), 0o600); err != nil {
-			panic(err)
+		`sink, openErr := os.OpenFile("dispatched.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+		if openErr != nil {
+			panic(openErr)
+		}
+		if _, writeErr := sink.WriteString("payment.succeeded\n"); writeErr != nil {
+			panic(writeErr)
+		}
+		if closeErr := sink.Close(); closeErr != nil {
+			panic(closeErr)
 		}`)
 
 	root := t.TempDir()
@@ -169,6 +236,7 @@ func TestGoWebhookTemplateDispatchesOnEvent(t *testing.T) {
 	write(t, root, "reevit_webhook.go", source)
 	write(t, root, "dispatch_test.go", goDispatchTest)
 	write(t, root, "body.json", string(productionBody(t)))
+	write(t, root, "stale.json", string(staleBody(t)))
 
 	cmd := exec.Command(goBin, "test", "./...")
 	cmd.Dir = root
@@ -189,11 +257,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 )
 
-func TestDispatchesOnEvent(t *testing.T) {
-	body, err := os.ReadFile("body.json")
+func post(t *testing.T, name string) int {
+	t.Helper()
+
+	body, err := os.ReadFile(name)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,17 +278,51 @@ func TestDispatchesOnEvent(t *testing.T) {
 	rec := httptest.NewRecorder()
 	HandleReevitWebhook(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	return rec.Code
+}
+
+func dispatches(t *testing.T) int {
+	t.Helper()
+
+	raw, err := os.ReadFile("dispatched.txt")
+	if os.IsNotExist(err) {
+		return 0
 	}
 
-	got, err := os.ReadFile("dispatched.txt")
 	if err != nil {
-		t.Fatalf("handler returned 200 without dispatching: %v", err)
+		t.Fatal(err)
 	}
 
-	if string(got) != "payment.succeeded" {
-		t.Fatalf("dispatched = %q", got)
+	return len(strings.Fields(string(raw)))
+}
+
+func TestDispatchesOnEvent(t *testing.T) {
+	if code := post(t, "body.json"); code != http.StatusOK {
+		t.Fatalf("status = %d", code)
+	}
+
+	if got := dispatches(t); got != 1 {
+		t.Fatalf("dispatched %d times, want 1 — the handler answered 200 without dispatching", got)
+	}
+}
+
+func TestAcksAReplayedDeliveryWithoutRedispatching(t *testing.T) {
+	if code := post(t, "body.json"); code != http.StatusOK {
+		t.Fatalf("replay status = %d, want an idempotent 200", code)
+	}
+
+	if got := dispatches(t); got != 1 {
+		t.Fatalf("dispatched %d times after a replay, want 1", got)
+	}
+}
+
+func TestRejectsAStaleSignatureTimestamp(t *testing.T) {
+	if code := post(t, "stale.json"); code != http.StatusBadRequest {
+		t.Fatalf("stale status = %d, want 400", code)
+	}
+
+	if got := dispatches(t); got != 1 {
+		t.Fatalf("a 20-minute-old delivery was dispatched (%d total)", got)
 	}
 }
 `
@@ -240,7 +345,7 @@ func TestNextWebhookTemplateDispatchesOnEvent(t *testing.T) {
 
 	source = instrument(t, source,
 		"// TODO: fulfil the order for event.data",
-		`globalThis.__dispatched = "payment.succeeded";`)
+		`globalThis.__dispatched = (globalThis.__dispatched ?? 0) + 1;`)
 
 	root := t.TempDir()
 	write(t, root, "node_modules/@reevit/node/package.json",
@@ -249,6 +354,7 @@ func TestNextWebhookTemplateDispatchesOnEvent(t *testing.T) {
 	write(t, root, "handler.mjs", source)
 	write(t, root, "run.mjs", nodeDispatchRunner)
 	write(t, root, "body.json", string(productionBody(t)))
+	write(t, root, "stale.json", string(staleBody(t)))
 
 	cmd := exec.Command(nodeBin, "run.mjs")
 	cmd.Dir = root
@@ -276,22 +382,31 @@ const nodeDispatchRunner = `import { readFileSync } from "node:fs";
 import { createHmac } from "node:crypto";
 import { POST } from "./handler.mjs";
 
-const body = readFileSync("body.json", "utf8");
-const signature = "sha256=" + createHmac("sha256", process.env.REEVIT_WEBHOOK_SECRET).update(body).digest("hex");
+globalThis.__dispatched = 0;
 
-const response = await POST(new Request("http://localhost/api/webhooks/reevit", {
-  method: "POST",
-  headers: { "x-reevit-signature": signature, "content-type": "application/json" },
-  body,
-}));
+async function post(name) {
+  const body = readFileSync(name, "utf8");
+  const signature = "sha256=" + createHmac("sha256", process.env.REEVIT_WEBHOOK_SECRET).update(body).digest("hex");
 
-if (response.status !== 200) {
-  throw new Error("status " + response.status + ": " + (await response.text()));
+  return POST(new Request("http://localhost/api/webhooks/reevit", {
+    method: "POST",
+    headers: { "x-reevit-signature": signature, "content-type": "application/json" },
+    body,
+  }));
 }
 
-if (globalThis.__dispatched !== "payment.succeeded") {
-  throw new Error("handler returned 200 without dispatching (dispatched=" + globalThis.__dispatched + ")");
+function expect(label, actual, wanted) {
+  if (actual !== wanted) throw new Error(label + ": got " + actual + ", want " + wanted);
 }
+
+expect("signed delivery status", (await post("body.json")).status, 200);
+expect("dispatches after one delivery (200 with nothing dispatched?)", globalThis.__dispatched, 1);
+
+expect("replayed delivery status", (await post("body.json")).status, 200);
+expect("dispatches after a replay", globalThis.__dispatched, 1);
+
+expect("stale delivery status", (await post("stale.json")).status, 400);
+expect("dispatches after a stale delivery", globalThis.__dispatched, 1);
 `
 
 // TestPythonWebhookTemplateDispatchesOnEvent runs the generated module-style
@@ -311,13 +426,14 @@ func TestPythonWebhookTemplateDispatchesOnEvent(t *testing.T) {
 
 	source = instrument(t, source,
 		`pass  # TODO: fulfil the order for event["data"]`,
-		`open("dispatched.txt", "w", encoding="utf-8").write("payment.succeeded")`)
+		`open("dispatched.txt", "a", encoding="utf-8").write("payment.succeeded\n")`)
 
 	root := t.TempDir()
 	write(t, root, "reevit.py", reevitPythonStub)
 	write(t, root, "reevit_webhook.py", source)
 	write(t, root, "run.py", pythonDispatchRunner)
 	write(t, root, "body.json", string(productionBody(t)))
+	write(t, root, "stale.json", string(staleBody(t)))
 
 	cmd := exec.Command(pythonBin, "run.py")
 	cmd.Dir = root
@@ -351,19 +467,39 @@ import sys
 
 import reevit_webhook
 
-body = pathlib.Path("body.json").read_bytes()
-secret = os.environ["REEVIT_WEBHOOK_SECRET"]
-signature = "sha256=" + hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+SECRET = os.environ["REEVIT_WEBHOOK_SECRET"].encode("utf-8")
 
-if not reevit_webhook.handle_reevit_event(body, signature):
+
+def post(name):
+    body = pathlib.Path(name).read_bytes()
+    signature = "sha256=" + hmac.new(SECRET, body, hashlib.sha256).hexdigest()
+
+    return reevit_webhook.handle_reevit_event(body, signature)
+
+
+def dispatches():
+    path = pathlib.Path("dispatched.txt")
+
+    return len(path.read_text(encoding="utf-8").split()) if path.exists() else 0
+
+
+if not post("body.json"):
     sys.exit("handler rejected a correctly signed production body")
 
-dispatched = pathlib.Path("dispatched.txt")
-if not dispatched.exists():
-    sys.exit("handler accepted the delivery without dispatching")
+if dispatches() != 1:
+    sys.exit("accepted the delivery but dispatched %d times" % dispatches())
 
-if dispatched.read_text(encoding="utf-8") != "payment.succeeded":
-    sys.exit("dispatched = " + dispatched.read_text(encoding="utf-8"))
+if not post("body.json"):
+    sys.exit("a replayed delivery must be acknowledged, not rejected")
+
+if dispatches() != 1:
+    sys.exit("a replayed delivery was dispatched again (%d total)" % dispatches())
+
+if post("stale.json"):
+    sys.exit("a 20-minute-old signature was accepted")
+
+if dispatches() != 1:
+    sys.exit("a stale delivery was dispatched (%d total)" % dispatches())
 `
 
 // TestPHPWebhookTemplateDispatchesOnEvent runs the generated standalone PHP

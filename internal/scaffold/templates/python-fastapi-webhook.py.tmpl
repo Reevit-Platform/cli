@@ -6,11 +6,57 @@ Local dev: reevit listen --forward-to http://localhost:8000/webhooks/reevit
 
 import json
 import os
+from collections import OrderedDict
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Request, Response
 from reevit import verify_webhook_signature
 
 router = APIRouter()
+
+
+# Reevit signs delivery_id, attempt and signature_timestamp into the BODY —
+# the same bytes the signature covers — so a handler can refuse a replayed
+# capture and acknowledge a retry without doing the work twice. They also
+# arrive as X-Reevit-Delivery-ID and X-Reevit-Signature-Timestamp headers.
+REEVIT_WEBHOOK_TOLERANCE_SECONDS = 300
+REEVIT_DEDUPE_LIMIT = 1000
+
+# Replace with a persistent store (database unique index on delivery_id) before production.
+_reevit_seen_deliveries = OrderedDict()
+
+
+def reevit_signature_is_stale(timestamp) -> bool:
+    if not timestamp:
+        return True
+
+    # fromisoformat only learned to read a trailing "Z" in 3.11.
+    try:
+        at = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
+    except ValueError:
+        return True
+
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=timezone.utc)
+
+    drift = abs((datetime.now(timezone.utc) - at).total_seconds())
+
+    return drift > REEVIT_WEBHOOK_TOLERANCE_SECONDS
+
+
+def reevit_is_duplicate(delivery_id) -> bool:
+    if not delivery_id:
+        return False
+
+    if delivery_id in _reevit_seen_deliveries:
+        return True
+
+    _reevit_seen_deliveries[delivery_id] = None
+
+    while len(_reevit_seen_deliveries) > REEVIT_DEDUPE_LIMIT:
+        _reevit_seen_deliveries.popitem(last=False)
+
+    return False
 
 
 @router.post("/webhooks/reevit")
@@ -23,6 +69,17 @@ async def reevit_webhook(request: Request) -> Response:
         return Response(content="invalid signature", status_code=401)
 
     event = json.loads(raw_body)
+
+    if reevit_signature_is_stale(
+        event.get("signature_timestamp") or request.headers.get("x-reevit-signature-timestamp")
+    ):
+        return Response(content="stale signature timestamp", status_code=400)
+
+    if reevit_is_duplicate(event.get("delivery_id") or request.headers.get("x-reevit-delivery-id")):
+        # Already handled. Reevit retries until it sees a 2xx, so ack rather
+        # than re-dispatch.
+        return Response(content="ok", status_code=200)
+
     # Production deliveries name the event in "event"; `reevit listen`'s
     # fallback envelope and older payloads use "type". Read both.
     event_type = event.get("event") or event.get("type")

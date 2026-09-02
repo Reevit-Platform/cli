@@ -11,6 +11,53 @@ require __DIR__ . '/vendor/autoload.php';
 
 use Reevit\Webhooks\SignatureVerifier;
 
+// Reevit signs delivery_id, attempt and signature_timestamp into the BODY —
+// the same bytes the signature covers — so a handler can refuse a replayed
+// capture and acknowledge a retry without doing the work twice. They also
+// arrive as X-Reevit-Delivery-ID and X-Reevit-Signature-Timestamp headers.
+const REEVIT_WEBHOOK_TOLERANCE_SECONDS = 300;
+const REEVIT_DEDUPE_LIMIT = 1000;
+
+function reevit_signature_is_stale(?string $timestamp): bool
+{
+    if ($timestamp === null || $timestamp === '') {
+        return true;
+    }
+
+    try {
+        $at = new DateTimeImmutable($timestamp);
+    } catch (Exception $error) {
+        return true;
+    }
+
+    return abs(time() - $at->getTimestamp()) > REEVIT_WEBHOOK_TOLERANCE_SECONDS;
+}
+
+// Replace with a persistent store (database unique index on delivery_id) before production.
+// PHP is shared-nothing: this static survives only the current request (or the
+// current worker under FrankenPHP/Swoole), so on its own it is a stub, not
+// protection.
+function reevit_is_duplicate(?string $deliveryId): bool
+{
+    static $seen = [];
+
+    if ($deliveryId === null || $deliveryId === '') {
+        return false;
+    }
+
+    if (isset($seen[$deliveryId])) {
+        return true;
+    }
+
+    $seen[$deliveryId] = true;
+
+    if (count($seen) > REEVIT_DEDUPE_LIMIT) {
+        array_shift($seen);
+    }
+
+    return false;
+}
+
 $payload = file_get_contents('php://input');
 $signature = $_SERVER['HTTP_X_REEVIT_SIGNATURE'] ?? null;
 $secret = getenv('REEVIT_WEBHOOK_SECRET') ?: '';
@@ -22,6 +69,24 @@ if (!SignatureVerifier::verify($payload, $signature, $secret)) {
 }
 
 $event = json_decode($payload, true);
+
+$signatureTimestamp = $event['signature_timestamp'] ?? $_SERVER['HTTP_X_REEVIT_SIGNATURE_TIMESTAMP'] ?? null;
+
+if (reevit_signature_is_stale($signatureTimestamp)) {
+    http_response_code(400);
+    echo 'stale signature timestamp';
+    exit;
+}
+
+$deliveryId = $event['delivery_id'] ?? $_SERVER['HTTP_X_REEVIT_DELIVERY_ID'] ?? null;
+
+if (reevit_is_duplicate($deliveryId)) {
+    // Already handled. Reevit retries until it sees a 2xx, so ack rather than
+    // re-dispatch.
+    http_response_code(200);
+    echo 'ok';
+    exit;
+}
 
 // Production deliveries name the event in 'event'; `reevit listen`'s fallback
 // envelope and older payloads use 'type'. Read both.
