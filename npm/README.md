@@ -228,14 +228,20 @@ reevit init \
 
 | Command | Purpose |
 | --- | --- |
-| `reevit login` | Authorize the CLI through browser pairing and receive a scoped test-mode key |
+| `reevit login` | Authorize the CLI through browser pairing and receive a test-mode key scoped to `payments:read`, `payments:write`, `webhooks:read`, `webhooks:write` — never `api_keys:*` |
 | `reevit init` | Detect, provision, install, configure, generate, and verify sandbox access |
 | `reevit doctor` | Check credentials, env wiring, SDKs, generated files, checkout routes, and webhook behavior |
 | `reevit payments list` | Inspect recent payments in the current mode |
 | `reevit trigger <event>` | Create a real simulator payment for a test outcome |
 | `reevit listen --forward-to <url>` | Stream and sign test events for a local endpoint |
+| `reevit completion <shell>` | Print a completion script for bash, zsh, fish, or PowerShell |
 
-Run `reevit <command> --help` for every option.
+Run `reevit <command> --help` for every option. Every command accepts
+`--no-color`, and honours `NO_COLOR`; on a non-UTF-8 locale or `TERM=dumb` the
+glyphs fall back to ASCII.
+
+Exit codes: `0` success, `1` runtime error, `2` usage error, `3` `reevit
+doctor` found problems, `130` cancelled with Ctrl-C.
 
 ## Other installation options
 

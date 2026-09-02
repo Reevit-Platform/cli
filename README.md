@@ -96,22 +96,37 @@ repository happens to contain stale lockfiles.
 
 | Command | What it does |
 | --- | --- |
-| `reevit login` | Opens the dashboard in your browser to authorize the CLI — a **test-mode** key is created for you and stored locally (0600). `--key pfk_...` pastes a key manually; `--no-browser` prints the URL instead of opening it |
+| `reevit login` | Opens the dashboard in your browser to authorize the CLI — a **test-mode** key is created for you and stored locally (0600). `--key -` reads a key from stdin (nothing lands in your shell history); `--no-browser` prints the URL instead of opening it; `--manual` skips pairing and prompts for a key |
 | `reevit init` | Detects the framework, router, source layout, and installer; creates project test credentials; configures the simulator/origin; installs SDKs; writes env and runnable integration files; and performs API-level payment/checkout verification. `--yes` accepts the recommendation without prompts; `--goal`/`--target` customize it |
 | `reevit doctor [--app-url url] [--webhook-url url] [--strict] [--e2e]` | Verifies the manifest, scoped project credentials, simulator, allowed origin, env, generated files, running checkout route, and signed/tampered webhook behavior. Exits **3** when it finds problems, so CI can tell a failed check from a failed command |
 | `reevit payments list [--status s] [--limit n]` | Recent payments in the current mode |
 | `reevit trigger <event>` | Fire a test event by creating a **real** sandbox payment through the simulator |
 | `reevit listen --forward-to <url>` | Stream live test-mode events to a local endpoint, signed like production |
+| `reevit completion <shell>` | Print a completion script for bash, zsh, fish, or PowerShell |
+
+Every command accepts `--no-color`. See [Colour and glyphs](#colour-and-glyphs)
+and [Streams and exit codes](#streams-and-exit-codes).
 
 ### `login`
 
 `reevit login` starts a pairing session, prints a code, and opens
 `dashboard.reevit.io/cli/confirm`. Check the code matches your terminal, pick
 your organization, and approve — the CLI receives a freshly minted
-**test-mode** API key scoped to what the CLI actually needs (payments,
-webhooks:read). The key is delivered exactly once and never shown in the
-browser. When you're ready for live traffic, create a live key in
-Dashboard → Developers → API keys and run `reevit login --key <live_key>`.
+**test-mode** API key scoped to what the CLI actually needs:
+`payments:read`, `payments:write`, `webhooks:read`, and `webhooks:write`. It
+is never granted `api_keys:*` — a paired key cannot mint another key. The key
+is delivered exactly once and never shown in the browser.
+
+When you're ready for live traffic, create a live key in Dashboard →
+Developers → API keys and hand it to the CLI without putting it in your shell
+history:
+
+```bash
+printf '%s' "$LIVE_KEY" | reevit login --key -
+```
+
+`--manual` prompts for a key instead of pairing, for a machine with no
+browser and no way to pipe one in.
 
 ### `init`
 
@@ -145,7 +160,7 @@ the user's config; it is never copied into the project or browser bundle.
 Place code wherever you like with `--webhook-path`, `--checkout-path`, and
 `--client-path`. With a webhook target, `--register-webhook https://…` (or the
 interactive prompt) registers the production endpoint in your dashboard —
-needs a key with `webhooks:write` (fresh `reevit login` keys have it).
+needs a key with `webhooks:write`, which paired keys have.
 
 Checkout placement can also be fully scripted:
 
@@ -255,7 +270,8 @@ Opt out any time:
 export REEVIT_TELEMETRY=0   # or the cross-tool convention: DO_NOT_TRACK=1
 ```
 
-A one-time notice is printed on first use.
+A one-time notice is printed on stderr **before** the first reported command
+runs, not after it.
 
 ## Configuration
 
@@ -293,8 +309,13 @@ locale is UTF-8. Everything degrades on its own, and you can override it:
 
 Each stream is resolved on its own, so `reevit payments list > out.txt` keeps
 the messages on your terminal coloured while the redirected file stays plain.
-The payments table is never coloured in either case: its columns are aligned by
-byte count, and escape sequences would skew them.
+The payments table colours its status column, but measures every column on the
+undecorated text, so the layout is identical with and without colour — strip
+the escape sequences from a coloured table and you get the plain one byte for
+byte.
+
+Glyphs render best in a monospace font with full Unicode coverage: JetBrains
+Mono, SF Mono, Menlo, Cascadia Code, or Fira Code.
 
 ### Streams and exit codes
 
