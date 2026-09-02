@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -22,12 +23,18 @@ var (
 var loginCmd = &cobra.Command{
 	Use:   "login",
 	Short: "Log in via your browser, or store an API key with --key",
-	Long: `Logs the CLI in. By default this opens the Reevit dashboard in your
-browser: you confirm a pairing code there and the CLI receives a freshly
-minted TEST-MODE API key scoped to what the CLI needs — no copy-pasting.
+	Long: `Opens the Reevit dashboard in your browser, waits for you to confirm the
+pairing code, and stores the TEST-MODE API key it hands back — scoped to what
+the CLI needs, with no copy-pasting.
 
-To use an existing key instead (e.g. a live key), pass --key or --manual.
-Keys are stored in your user config with owner-only permissions.`,
+A test-mode key is what reevit init, reevit listen and reevit trigger want.
+When you are ready for live traffic, create a live key in
+Dashboard → Developers → API keys and store it with:
+
+    reevit login --key <live_key>
+
+Passing "-" reads the key from stdin instead, which keeps it out of your shell
+history. Keys are stored in your user config with owner-only permissions.`,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		key := strings.TrimSpace(loginKey)
 
@@ -110,7 +117,11 @@ Keys are stored in your user config with owner-only permissions.`,
 			return err
 		}
 
-		fmt.Fprintf(cmd.ErrOrStderr(), "Saved to %s (%s mode)\n", p, saved.Mode)
+		sty := styleOf(cmd).err
+		out := cmd.ErrOrStderr()
+
+		fmt.Fprintln(out, sty.Success(fmt.Sprintf("Key accepted (%s mode)", saved.Mode)))
+		fmt.Fprintln(out, "  "+sty.Note("saved to "+shortenHome(p)))
 
 		return nil
 	},
@@ -127,6 +138,26 @@ func readKeyFromStdin(cmd *cobra.Command) (string, error) {
 	}
 
 	return strings.TrimSpace(line), nil
+}
+
+// shortenHome rewrites the user's home directory back to "~". Config paths are
+// long enough on macOS ("/Users/x/Library/Application Support/reevit/…") that
+// the literal path buries the sentence it sits in.
+func shortenHome(path string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" || home == "/" {
+		return path
+	}
+
+	if path == home {
+		return "~"
+	}
+
+	if prefix := home + string(os.PathSeparator); strings.HasPrefix(path, prefix) {
+		return "~" + path[len(home):]
+	}
+
+	return path
 }
 
 func isScopeError(err error) bool {

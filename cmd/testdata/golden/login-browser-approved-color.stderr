@@ -1,0 +1,14 @@
+
+[1mReevit login[0m
+
+  Pairing code   [1m[36mGX7M-4KP9[0m[0m
+  Confirm it at  [36;4mhttps://dashboard.example/cli/confirm?code=GX7M-4KP9[0m
+
+[2m○[0m Waiting for approval..
+
+[32m✓[0m Logged in to Acme as CLI (host)
+  [2m–[0m test-mode key · scopes: payments:read, payments:write, webhooks:read, webhooks:write
+  [2m–[0m saved to <CONFIG>
+
+[1mNext[0m
+    [36mcd your-project && reevit init[0m

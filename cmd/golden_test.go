@@ -593,6 +593,19 @@ func goldenCases() []goldenCase {
 			unsetEnv: []string{"NO_COLOR", "TERM", "LC_ALL", "LC_CTYPE"},
 			server:   paymentsServer(http.StatusOK, twoPayments),
 		},
+		// The pairing code is the one string the user has to read off the
+		// screen and match in a browser, so it is the one string that earns
+		// both weight and colour. Nothing else in the plain golden can prove
+		// that, because the plain golden has no escapes at all.
+		{
+			name:     "login-browser-approved-color",
+			args:     []string{"login", "--no-browser"},
+			env:      map[string]string{"FORCE_COLOR": "1", "LANG": "en_US.UTF-8"},
+			unsetEnv: []string{"NO_COLOR", "TERM", "LC_ALL", "LC_CTYPE"},
+			server: func(t *testing.T) *httptest.Server {
+				return pairingServer(t, []string{"pending", "approved"})
+			},
+		},
 	}
 }
 
@@ -608,7 +621,7 @@ func TestGoldenStreamsAreSeparate(t *testing.T) {
 			t.Errorf("stdout = %q, want empty", got)
 		}
 
-		if got := readGolden(t, "login-key-saved.stderr"); !strings.Contains(got, "Saved to <CONFIG>") {
+		if got := readGolden(t, "login-key-saved.stderr"); !strings.Contains(got, "saved to <CONFIG>") {
 			t.Errorf("stderr = %q, want the saved-to confirmation", got)
 		}
 	})
@@ -638,6 +651,26 @@ func TestGoldenStreamsAreSeparate(t *testing.T) {
 
 		if got := readGolden(t, "doctor-next-project-offline.stderr"); strings.Contains(got, "\x1b") {
 			t.Errorf("stderr = %q, want no escape sequences with NO_COLOR=1", got)
+		}
+	})
+
+	t.Run("colour and weight reach the pairing code", func(t *testing.T) {
+		got := readGolden(t, "login-browser-approved-color.stderr")
+
+		// Bold (1) then cyan (36), from Bold(Accent(code)) — the code is the
+		// only thing on the screen the user has to transcribe.
+		if !strings.Contains(got, "\x1b[1m\x1b[36mGX7M-4KP9") {
+			t.Errorf("stderr = %q, want the pairing code in bold cyan", got)
+		}
+
+		// The confirm link is a URL, so it gets the underline the styler
+		// reserves for links rather than plain accent.
+		if !strings.Contains(got, "\x1b[36;4mhttps://") {
+			t.Errorf("stderr = %q, want the confirm URL underlined", got)
+		}
+
+		if plain := readGolden(t, "login-browser-approved.stderr"); strings.Contains(plain, "\x1b") {
+			t.Errorf("stderr = %q, want no escape sequences with NO_COLOR=1", plain)
 		}
 	})
 

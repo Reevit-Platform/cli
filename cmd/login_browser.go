@@ -71,16 +71,24 @@ func browserLogin(cmd *cobra.Command, openBrowser bool) error {
 	sty := styleOf(cmd).err
 	out := cmd.ErrOrStderr()
 
-	fmt.Fprintf(out, "\nYour pairing code is  %s\n", sty.Accent(start.PairingCode))
-	fmt.Fprintf(out, "Confirm it in your browser:  %s\n\n", sty.URL(start.BrowserURL))
+	fmt.Fprintln(out, sty.Heading("Reevit login"))
+	fmt.Fprintln(out)
+	// The pairing code is the one thing the user has to read off the screen
+	// and match in the browser, so it carries both the weight and the accent.
+	fmt.Fprintf(out, "  Pairing code   %s\n", sty.Bold(sty.Accent(start.PairingCode)))
+	fmt.Fprintf(out, "  Confirm it at  %s\n", sty.URL(start.BrowserURL))
+	fmt.Fprintln(out)
 
 	if openBrowser {
 		if err := openInBrowser(start.BrowserURL); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "could not open a browser (%v) — open the link above manually\n", err)
+			fmt.Fprintln(out, sty.Warning(fmt.Sprintf(
+				"could not open a browser (%v) — open the link above yourself", err)))
+		} else {
+			fmt.Fprintln(out, sty.Step("Opening your browser… (use --no-browser to skip)"))
 		}
 	}
 
-	fmt.Fprint(out, "Waiting for approval")
+	fmt.Fprint(out, sty.Pending("Waiting for approval"))
 
 	result, err := pollPairing(ctx, httpc, cfg.BaseURL, start, out)
 
@@ -127,13 +135,37 @@ func browserLogin(cmd *cobra.Command, openBrowser bool) error {
 		orgName = "your organization"
 	}
 
-	fmt.Fprintf(out, "%s\n", sty.Success(fmt.Sprintf("Logged in to %s as %s", orgName, result.APIKey.Name)))
-	fmt.Fprintf(out, "%s\n\n", sty.Success(fmt.Sprintf("Saved to %s (test mode)", p)))
-	fmt.Fprintln(out, "Heads up: this is a TEST-MODE key — perfect for `reevit listen`, `reevit trigger`,")
-	fmt.Fprintln(out, "and integrating safely. When you're ready for live traffic, create a live key in")
-	fmt.Fprintln(out, "Dashboard → Developers → API keys, then run:  reevit login --key <live_key>")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, sty.Success(fmt.Sprintf("Logged in to %s as %s", orgName, result.APIKey.Name)))
+	fmt.Fprintln(out, "  "+sty.Note(keyDescription(saved.Mode, result.APIKey.Scopes)))
+	fmt.Fprintln(out, "  "+sty.Note("saved to "+shortenHome(p)))
+
+	// `reevit init` calls this same flow when it finds no credential; telling
+	// the user to go and run init in the middle of an init run would be
+	// nonsense, so only the login command itself closes with a next step.
+	if cmd.Name() == "login" {
+		fmt.Fprintln(out, sty.Heading("Next"))
+		fmt.Fprintln(out, sty.Command("cd your-project && reevit init"))
+	}
 
 	return nil
+}
+
+// keyDescription names the key the pairing delivered and, when the server
+// tells us, the scopes it carries — the poll response has always decoded them
+// and never showed them, which is the one question "what can this key do?"
+// that a paired key raises.
+func keyDescription(mode string, scopes []string) string {
+	if mode == "" {
+		mode = "test"
+	}
+
+	description := mode + "-mode key"
+	if len(scopes) > 0 {
+		description += " · scopes: " + strings.Join(scopes, ", ")
+	}
+
+	return description
 }
 
 func startPairing(ctx context.Context, httpc *http.Client, baseURL, deviceName string) (pairingStartResponse, error) {
