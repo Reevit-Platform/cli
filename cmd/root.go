@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -54,11 +56,18 @@ var rootCmd = &cobra.Command{
 // Execute runs the CLI and reports one anonymous usage event per tracked
 // command (see internal/telemetry — opt out with REEVIT_TELEMETRY=0 or
 // DO_NOT_TRACK=1).
+//
+// Interrupts and SIGTERM cancel the command's context, so long-running
+// commands (listen, doctor --e2e, the login poll) unwind and report exit 130
+// instead of relying on Go's default "kill the process" signal handling.
 func Execute() error {
 	start := time.Now()
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	executed, err := executeWith(
-		context.Background(), os.Args[1:], os.Stdin, os.Stdout, os.Stderr,
+		ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr,
 	)
 
 	telemetry.Report(topLevelName(executed), Version, err == nil, time.Since(start), os.Stderr)
@@ -98,6 +107,11 @@ func executeWith(
 // a later restyle can replace the presentation in one place.
 var renderError = func(err error) string {
 	if err == nil {
+		return ""
+	}
+
+	// A cancelled run is the user's own Ctrl-C: exit 130, print nothing.
+	if errors.Is(err, context.Canceled) {
 		return ""
 	}
 
