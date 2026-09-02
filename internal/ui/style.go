@@ -248,7 +248,8 @@ func (s Styler) Wrap(text string, width int) string {
 	wrapped := make([]string, 0, len(lines))
 
 	for _, line := range lines {
-		if strings.HasPrefix(line, "    ") || strings.Contains(line, "://") {
+		if strings.HasPrefix(line, "    ") || strings.HasPrefix(line, "\t") ||
+			strings.Contains(line, "://") {
 			wrapped = append(wrapped, line)
 
 			continue
@@ -261,6 +262,13 @@ func (s Styler) Wrap(text string, width int) string {
 }
 
 func wrapLine(line string, width int) string {
+	// A line that already fits comes back byte for byte. Rewrapping it would
+	// normalise whitespace nobody asked us to touch — cobra indents its "Did
+	// you mean this?" suggestions with a tab, and strings.Fields eats it.
+	if len(line) <= width {
+		return line
+	}
+
 	indent := line[:len(line)-len(strings.TrimLeft(line, " "))]
 
 	words := strings.Fields(line)
@@ -291,18 +299,45 @@ func wrapLine(line string, width int) string {
 	return out.String()
 }
 
+// errorPrefix is the label every failure carries; its width is also the hanging
+// indent the message wraps to.
+const errorPrefix = "error: "
+
 // Errorf renders a failed run: the cause, and — when there is one — the next
 // thing to try.
+//
+// Both parts are folded to DefaultWidth with a hanging indent, because the
+// errors worth explaining (a scope refusal naming the dashboard page to visit)
+// are exactly the ones long enough to wrap into an unreadable block.
 func (s Styler) Errorf(err error, hint string) string {
 	if err == nil {
 		return ""
 	}
 
-	line := s.paint(sgrRed, "error:") + " " + err.Error()
+	line := s.paint(sgrRed, "error:") + " " + s.hang(err.Error(), len(errorPrefix))
 
 	if hint == "" {
 		return line
 	}
 
-	return fmt.Sprintf("%s\n\n  %s", line, s.Step(hint))
+	// The hint sits two columns in and carries a two-column glyph, so its
+	// continuation lines line up four columns from the left.
+	return fmt.Sprintf("%s\n\n  %s", line, s.Step(s.hang(hint, 4)))
+}
+
+// hang wraps text to DefaultWidth and indents the folds it introduces by
+// indent columns, so a long message stays under its own opening.
+//
+// A newline the message wrote itself is a paragraph break and keeps column 0:
+// "unknown flag: --x\n\nRun 'reevit listen --help' for usage" is two
+// statements, not one sentence that ran long.
+func (s Styler) hang(text string, indent int) string {
+	pad := strings.Repeat(" ", indent)
+	lines := strings.Split(text, "\n")
+
+	for i, line := range lines {
+		lines[i] = strings.ReplaceAll(s.Wrap(line, DefaultWidth-indent), "\n", "\n"+pad)
+	}
+
+	return strings.Join(lines, "\n")
 }

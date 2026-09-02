@@ -282,6 +282,27 @@ func TestWrap(t *testing.T) {
 	})
 }
 
+// Wrap is applied to text this package did not write — cobra's usage output
+// among it — so anything that already fits must survive untouched.
+func TestWrapLeavesFittingLinesAlone(t *testing.T) {
+	t.Parallel()
+
+	for _, line := range []string{
+		"\tdoctor",
+		"  ok API key configured (test mode)",
+		"unknown command \"doctro\" for \"reevit\"",
+		"",
+		"    reevit trigger payment.succeeded",
+		// Interior runs of spaces are deliberate alignment, not sloppy
+		// prose: strings.Fields would silently collapse them.
+		"Dashboard → Developers → API keys, then run:  reevit login",
+	} {
+		if got := (Styler{}).Wrap(line, DefaultWidth); got != line {
+			t.Errorf("Wrap(%q) = %q, want it unchanged", line, got)
+		}
+	}
+}
+
 func TestIndent(t *testing.T) {
 	t.Parallel()
 
@@ -327,11 +348,74 @@ func TestErrorf(t *testing.T) {
 		}
 	})
 
+	// cobra writes flag errors as two statements separated by a blank line.
+	// The second is a fresh sentence at column 0, not the tail of the first
+	// running long, so the hanging indent must not reach it.
+	t.Run("a paragraph break keeps column zero", func(t *testing.T) {
+		t.Parallel()
+
+		two := errors.New("unknown flag: --nope\n\nRun 'reevit listen --help' for usage")
+
+		want := "error: unknown flag: --nope\n\nRun 'reevit listen --help' for usage"
+		if got := (Styler{}).Errorf(two, ""); got != want {
+			t.Fatalf("rendered = %q, want %q", got, want)
+		}
+	})
+
 	t.Run("nil is nothing", func(t *testing.T) {
 		t.Parallel()
 
 		if got := (Styler{}).Errorf(nil, "ignored"); got != "" {
 			t.Fatalf("rendered = %q, want empty", got)
+		}
+	})
+
+	// The scope-refusal hint is 150 columns of prose. Unwrapped it is a wall;
+	// wrapped without a hanging indent the continuation lines fall under the
+	// glyph and stop looking like one hint.
+	t.Run("a long message and hint fold with a hanging indent", func(t *testing.T) {
+		t.Parallel()
+
+		long := errors.New(
+			"Reevit API 403 (insufficient_scope): the key you are using cannot read payments in this organization",
+		)
+		hint := "your key lacks a required scope — run `reevit login` for a fresh test-mode key, " +
+			"or use a key with the scope from Dashboard, Developers, API keys"
+
+		got := (Styler{}).Errorf(long, hint)
+
+		for _, line := range strings.Split(got, "\n") {
+			if len(line) > DefaultWidth {
+				t.Fatalf("line is %d columns, want <= %d:\n%q\n(full)\n%s",
+					len(line), DefaultWidth, line, got)
+			}
+		}
+
+		lines := strings.Split(got, "\n")
+		if !strings.HasPrefix(lines[0], "error: ") {
+			t.Fatalf("first line = %q, want the error prefix", lines[0])
+		}
+
+		if !strings.HasPrefix(lines[1], strings.Repeat(" ", len("error: "))) {
+			t.Fatalf("continuation = %q, want it indented under the message", lines[1])
+		}
+
+		hintStart := 0
+
+		for i, line := range lines {
+			if strings.HasPrefix(line, "  > ") {
+				hintStart = i
+
+				break
+			}
+		}
+
+		if hintStart == 0 {
+			t.Fatalf("no hint line in:\n%s", got)
+		}
+
+		if !strings.HasPrefix(lines[hintStart+1], "    ") {
+			t.Fatalf("hint continuation = %q, want four columns of indent", lines[hintStart+1])
 		}
 	})
 }
