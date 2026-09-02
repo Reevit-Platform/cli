@@ -275,47 +275,64 @@ func TestTriggerWarnsWhenAnOverrideStopsBeingMagic(t *testing.T) {
 }
 
 // A generic placeholder makes the suggestion un-pasteable. Whenever init has
-// scaffolded a handler here, its real route is already known.
+// scaffolded a handler here, its real route and the framework's dev port are
+// both already known — and neither is 3000/api/webhooks/reevit in general.
 func TestLocalWebhookURLPrefersTheScaffoldedHandler(t *testing.T) {
-	dir := t.TempDir()
-
-	for rel, body := range map[string]string{
-		"package.json":                     `{"dependencies":{"next":"16"},"scripts":{"dev":"next dev"}}`,
-		"app/api/webhooks/reevit/route.ts": "export async function POST() {}",
+	for _, test := range []struct {
+		name  string
+		files map[string]string
+		want  string
+	}{
+		{
+			name: "laravel routes the handler somewhere else, on another port",
+			files: map[string]string{
+				"composer.json":     `{"require":{"laravel/framework":"^11"}}`,
+				"routes/reevit.php": "<?php",
+			},
+			want: "http://localhost:8000/webhooks/reevit",
+		},
+		{
+			name: "sveltekit keeps the route but moves the port",
+			files: map[string]string{
+				"package.json": `{"devDependencies":{"@sveltejs/kit":"2"}}`,
+				"src/routes/api/webhooks/reevit/+server.ts": "export const POST = () => {}",
+			},
+			want: "http://localhost:5173/api/webhooks/reevit",
+		},
+		{
+			name:  "an empty directory still yields something pasteable",
+			files: map[string]string{},
+			want:  "http://localhost:3000/api/webhooks/reevit",
+		},
 	} {
-		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, rel)), 0o755); err != nil {
-			t.Fatal(err)
-		}
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
 
-		if err := os.WriteFile(filepath.Join(dir, rel), []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
+			for rel, body := range test.files {
+				if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, rel)), 0o755); err != nil {
+					t.Fatal(err)
+				}
 
-	previous, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
+				if err := os.WriteFile(filepath.Join(dir, rel), []byte(body), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
 
-	if err := os.Chdir(dir); err != nil {
-		t.Fatal(err)
-	}
+			previous, err := os.Getwd()
+			if err != nil {
+				t.Fatal(err)
+			}
 
-	t.Cleanup(func() { _ = os.Chdir(previous) })
+			if err := os.Chdir(dir); err != nil {
+				t.Fatal(err)
+			}
 
-	if got := localWebhookURL(); got != "http://localhost:3000/api/webhooks/reevit" {
-		t.Errorf("localWebhookURL() = %q, want the detected handler route", got)
-	}
+			t.Cleanup(func() { _ = os.Chdir(previous) })
 
-	// An empty directory is not a project, and the suggestion still has to be
-	// something the user can paste and edit.
-	empty := t.TempDir()
-	if err := os.Chdir(empty); err != nil {
-		t.Fatal(err)
-	}
-
-	if got := localWebhookURL(); got != "http://localhost:3000/api/webhooks/reevit" {
-		t.Errorf("localWebhookURL() = %q outside a project, want a pasteable default", got)
+			if got := localWebhookURL(); got != test.want {
+				t.Errorf("localWebhookURL() = %q, want %q", got, test.want)
+			}
+		})
 	}
 }
 
