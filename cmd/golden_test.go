@@ -197,6 +197,9 @@ var (
 	// `request GET /payments: Get "…":` prefix was stripped off the front,
 	// so the platform-specific tail is normalised away.
 	goldenDialRe = regexp.MustCompile(`dial tcp \S+.*`)
+	// SGR sequences, for asserting that colour changed the bytes of a table
+	// without changing where its columns fall.
+	goldenSGRRe = regexp.MustCompile("\x1b\\[[0-9;]*m")
 )
 
 func (n normaliser) apply(s string) string {
@@ -698,11 +701,55 @@ func TestGoldenStreamsAreSeparate(t *testing.T) {
 		}
 	})
 
-	t.Run("colour never reaches the payments table", func(t *testing.T) {
+	// Colour reaches the table now — a `failed` that is not red is a `failed`
+	// the eye skips — but it must not move a single column. tabwriter measures
+	// cells in bytes, so this is the property that forced the hand-rolled
+	// layout, and stripping the escapes back out is how it is checked.
+	t.Run("colour changes the payments table's bytes, never its layout", func(t *testing.T) {
 		plain := readGolden(t, "payments-list-rows.stdout")
+		forced := readGolden(t, "payments-list-rows-color.stdout")
 
-		if forced := readGolden(t, "payments-list-rows-color.stdout"); forced != plain {
-			t.Errorf("FORCE_COLOR changed the table:\n%s", lineDiff(plain, forced))
+		if strings.Contains(plain, "\x1b") {
+			t.Errorf("NO_COLOR table carries escapes:\n%q", plain)
+		}
+
+		for _, want := range []string{
+			"\x1b[32msucceeded\x1b[0m", // green
+			"\x1b[31mfailed\x1b[0m",    // red
+			"\x1b[2mStatus\x1b[0m",     // dim header
+		} {
+			if !strings.Contains(forced, want) {
+				t.Errorf("coloured table is missing %q:\n%q", want, forced)
+			}
+		}
+
+		if stripped := goldenSGRRe.ReplaceAllString(forced, ""); stripped != plain {
+			t.Errorf("FORCE_COLOR moved a column:\n%s", lineDiff(plain, stripped))
+		}
+	})
+
+	// Money is read by comparing digit positions. 9.00 under 125.00 with the
+	// decimal points out of line is a column that has to be re-read.
+	t.Run("the amount column is right-aligned", func(t *testing.T) {
+		lines := strings.Split(strings.TrimRight(readGolden(t, "payments-list-rows.stdout"), "\n"), "\n")
+		if len(lines) != 3 {
+			t.Fatalf("lines = %q, want a header and two rows", lines)
+		}
+
+		columns := make([]int, 0, 2)
+
+		for _, line := range lines[1:] {
+			at := strings.Index(line, ".00")
+			if at < 0 {
+				t.Fatalf("line = %q, want a decimal amount", line)
+			}
+
+			columns = append(columns, at)
+		}
+
+		if columns[0] != columns[1] {
+			t.Errorf("decimal points at %d and %d:\n%s", columns[0], columns[1],
+				strings.Join(lines, "\n"))
 		}
 	})
 
