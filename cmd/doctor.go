@@ -57,15 +57,52 @@ func (r *doctorResult) pass(out io.Writer, format string, args ...any) {
 }
 
 func (r *doctorResult) fail(out io.Writer, format string, args ...any) {
-	r.failures++
-
-	fmt.Fprintln(out, "  "+r.sty.Failure(fmt.Sprintf(format, args...)))
+	r.failr(out, "", format, args...)
 }
 
 func (r *doctorResult) warn(out io.Writer, format string, args ...any) {
+	r.warnr(out, "", format, args...)
+}
+
+// failr records a failure together with the command that clears it.
+//
+// The remedy is data, not prose glued on with an em-dash. Two things follow
+// from that: it renders on its own line, in the same style as every other
+// command the CLI tells you to run, so a screen full of diagnoses reads as a
+// list of things to type; and plan 032 can serialise it as its own JSON field
+// without parsing English. `remedy` is always a runnable command line — where
+// the fix is an explanation rather than a command, it stays in the message
+// and the remedy is empty.
+func (r *doctorResult) failr(out io.Writer, remedy, format string, args ...any) {
+	r.failures++
+
+	fmt.Fprintln(out, "  "+r.sty.Failure(fmt.Sprintf(format, args...)))
+	r.printRemedy(out, remedy)
+}
+
+// warnr is failr for warnings: same remedy contract, different tally.
+func (r *doctorResult) warnr(out io.Writer, remedy, format string, args ...any) {
 	r.warnings++
 
 	fmt.Fprintln(out, "  "+r.sty.Warning(fmt.Sprintf(format, args...)))
+	r.printRemedy(out, remedy)
+}
+
+func (r *doctorResult) printRemedy(out io.Writer, remedy string) {
+	if remedy == "" {
+		return
+	}
+
+	// The arrow comes from the styler's own vocabulary so it degrades to ">"
+	// on a terminal that cannot render it, exactly like every other glyph.
+	fmt.Fprintln(out, "    "+marker(r.sty.Step(""))+" "+r.sty.Accent(remedy))
+}
+
+// note prints a dim line under the finding it belongs to: a cause, not a
+// remedy. Kept separate from failr/warnr's remedy because 032 serialises
+// remedies as commands to run, and "connection refused" is not one.
+func (r *doctorResult) note(out io.Writer, text string) {
+	fmt.Fprintln(out, "    "+r.sty.Dim(text))
 }
 
 var doctorCmd = &cobra.Command{
@@ -93,7 +130,7 @@ command.`,
 		res := &doctorResult{sty: sty}
 
 		// --- 1. CLI credentials ---
-		fmt.Fprintln(out, sty.Heading("CLI credentials"))
+		fmt.Fprintln(out, sty.Heading("Credentials"))
 
 		cfg, err := config.Load()
 		if err != nil {
@@ -101,7 +138,7 @@ command.`,
 		}
 
 		if cfg.APIKey == "" {
-			res.fail(out, "no API key configured — run `reevit login`")
+			res.failr(out, "reevit login", "no API key configured")
 		} else {
 			label := cfg.Mode
 			if label == "live" {
@@ -125,11 +162,16 @@ command.`,
 			var probe any
 			if err := api.New(cfg).Do(cmd.Context(), api.Request{Path: "/payments"}, &probe); err != nil {
 				if apiErr, ok := err.(*api.APIError); ok && apiErr.Status == 401 {
-					res.fail(out, "the API rejected your key — run `reevit login` for a fresh one")
+					res.failr(out, "reevit login", "the API rejected your key")
 				} else if apiErr, ok := err.(*api.APIError); ok && apiErr.Status == 403 {
 					res.pass(out, "key authenticates (narrow scopes — some commands may be limited)")
 				} else {
-					res.warn(out, "could not reach the API to verify the key (%v)", err)
+					// The raw wrapped error is four clauses long and three of
+					// them restate a request the user never made and a URL the
+					// line above already showed. The finding and the cause get
+					// a line each.
+					res.warn(out, "could not reach the API to verify the key")
+					res.note(out, shortDialCause(err))
 				}
 			} else {
 				res.pass(out, "key authenticates against %s", cfg.BaseURL)
@@ -137,7 +179,7 @@ command.`,
 		}
 
 		// --- 2. Project files ---
-		fmt.Fprintln(out, sty.Heading("Project files"))
+		fmt.Fprintln(out, sty.Heading("Project"))
 
 		root, err := os.Getwd()
 		if err != nil {
@@ -159,9 +201,9 @@ command.`,
 		case manifestErr != nil:
 			res.fail(out, "cannot read .reevit/manifest.json (%v)", manifestErr)
 		case manifest.ProjectID == "":
-			res.fail(out, "project manifest is missing — run `reevit init`")
+			res.failr(out, "reevit init", "project manifest is missing")
 		case manifest.Status != "complete":
-			res.fail(out, "project setup is %q — rerun `reevit init` to complete it", manifest.Status)
+			res.failr(out, "reevit init", "project setup is %q", manifest.Status)
 		default:
 			res.pass(out, "project manifest complete (%s)", manifest.ProjectID)
 		}
@@ -176,11 +218,11 @@ command.`,
 			if installed {
 				res.pass(out, "SDK installed (%s)", pkg)
 			} else {
-				res.fail(out, "SDK not installed — run `reevit init` or add %s", pkg)
+				res.failr(out, "reevit init", "SDK not installed (%s)", pkg)
 			}
 		}
 
-		fmt.Fprintln(out, "  Environment: "+scaffold.EnvFileName(project))
+		fmt.Fprintln(out, sty.Heading("Environment ("+scaffold.EnvFileName(project)+")"))
 
 		envKey := scaffold.ReadEnvValue(project, "REEVIT_API_KEY")
 		handlerFile, handlerPath := scaffold.WebhookHandler(project)
@@ -191,7 +233,7 @@ command.`,
 		case !hasServer:
 			// Checkout-only projects intentionally have no server credential.
 		case envKey == "":
-			res.fail(out, "REEVIT_API_KEY is not set — run `reevit init` to wire it")
+			res.failr(out, "reevit init", "REEVIT_API_KEY is not set")
 		case strings.HasPrefix(envKey, "pfk_"):
 			res.pass(out, "REEVIT_API_KEY set")
 		default:
@@ -199,7 +241,7 @@ command.`,
 		}
 
 		if scaffold.ReadEnvValue(project, "REEVIT_ORG_ID") == "" {
-			res.warn(out, "REEVIT_ORG_ID is not set — SDK clients need it alongside the key")
+			res.warnr(out, "reevit init", "REEVIT_ORG_ID is not set (SDK clients need it alongside the key)")
 		} else {
 			res.pass(out, "REEVIT_ORG_ID set")
 		}
@@ -207,12 +249,13 @@ command.`,
 		clientVar := scaffold.ClientKeyVar(project.Stack)
 		checkoutKey := scaffold.ReadEnvValue(project, clientVar)
 		if cfg.APIKey != "" && (cfg.APIKey == envKey || (checkoutKey != "" && cfg.APIKey == checkoutKey)) {
-			res.fail(out, "CLI login credential is also used as a project key — run `reevit login`, then `reevit init --rotate-test-keys`")
+			res.failr(out, "reevit login && reevit init --rotate-test-keys",
+				"CLI login credential is also used as a project key")
 		}
 
 		webhookSecret := scaffold.ReadEnvValue(project, "REEVIT_WEBHOOK_SECRET")
 		if hasWebhook && webhookSecret == "" {
-			res.fail(out, "REEVIT_WEBHOOK_SECRET is empty — rerun `reevit init` to wire the webhook handler")
+			res.failr(out, "reevit init", "REEVIT_WEBHOOK_SECRET is empty (the webhook handler cannot verify anything)")
 		} else if hasWebhook {
 			res.pass(out, "REEVIT_WEBHOOK_SECRET set")
 		}
@@ -228,7 +271,7 @@ command.`,
 
 			if scaffold.CheckoutComponent(project) != "" || frontendSDK {
 				if scaffold.ReadEnvValue(project, clientVar) == "" {
-					res.fail(out, "%s is not set — checkout components read it (browser-side); rerun `reevit init` or add it", clientVar)
+					res.failr(out, "reevit init", "%s is not set (checkout components read it browser-side)", clientVar)
 				} else {
 					res.pass(out, "%s set (browser-exposed checkout key)", clientVar)
 				}
@@ -236,7 +279,7 @@ command.`,
 		}
 
 		// --- 4. Platform bootstrap ---
-		fmt.Fprintln(out, sty.Heading("Platform sandbox"))
+		fmt.Fprintln(out, sty.Heading("Sandbox"))
 		if manifest.ProjectID != "" && cfg.APIKey != "" {
 			status, statusErr := api.New(cfg).BootstrapStatus(cmd.Context(), manifest.ProjectID, manifest.Origin)
 			if statusErr != nil {
@@ -269,13 +312,13 @@ command.`,
 		if len(manifest.GeneratedFiles) > 0 {
 			for _, rel := range manifest.GeneratedFiles {
 				if _, statErr := os.Stat(filepath.Join(project.Root, rel)); statErr != nil {
-					res.fail(out, "generated file is missing: %s — rerun `reevit init`", rel)
+					res.failr(out, "reevit init", "generated file is missing: %s", rel)
 				}
 			}
 		}
 
 		// --- 6. Runnable checkout ---
-		fmt.Fprintln(out, sty.Heading("Running application"))
+		fmt.Fprintln(out, sty.Heading("App"))
 		if doctorAppURL != "" {
 			checkAppURL(cmd.Context(), out, res, doctorAppURL)
 		} else if demoPath := scaffold.DemoPath(project); demoPath != "" {
@@ -293,19 +336,21 @@ command.`,
 		}
 
 		// --- 7. Webhook handler ---
-		fmt.Fprintln(out, sty.Heading("Signed webhooks"))
+		fmt.Fprintln(out, sty.Heading("Webhooks"))
 
 		if handlerFile != "" {
 			res.pass(out, "handler found at %s", handlerFile)
 		} else if hasWebhook {
-			res.fail(out, "configured webhook handler is missing — rerun `reevit init`")
+			res.failr(out, "reevit init", "configured webhook handler is missing")
 		} else {
 			res.pass(out, "webhook integration not selected")
 		}
 
 		switch {
 		case doctorWebhookURL == "" && hasWebhook:
-			res.warn(out, "live check skipped — start your dev server and run:\n      reevit doctor --webhook-url http://localhost:<port>%s", handlerPath)
+			res.warnr(out,
+				fmt.Sprintf("reevit doctor --webhook-url http://localhost:<port>%s", handlerPath),
+				"live check skipped (start your dev server first)")
 		case doctorWebhookURL == "":
 			// nothing to check against
 		case webhookSecret == "":
@@ -314,7 +359,7 @@ command.`,
 			checkWebhookEndToEnd(cmd.Context(), out, res, doctorWebhookURL, webhookSecret)
 
 			if doctorE2E {
-				fmt.Fprintln(out, sty.Heading("End-to-end (simulator → platform → your handler)"))
+				fmt.Fprintln(out, sty.Heading("End-to-end"))
 				checkWebhookE2E(cmd, out, res, doctorWebhookURL, webhookSecret)
 			}
 		}
@@ -444,13 +489,13 @@ func checkOptionalAppURL(
 	resp, err := (&http.Client{Timeout: 1500 * time.Millisecond}).Do(req)
 	if err != nil {
 		if len(devCommand) > 0 {
-			res.warn(
+			res.warnr(
 				out,
-				"checkout app is not running — start it with `%s`, then rerun `reevit doctor --strict` (%s)",
-				strings.Join(devCommand, " "), target,
+				strings.Join(devCommand, " "),
+				"checkout app is not running (%s)", target,
 			)
 		} else {
-			res.warn(out, "checkout app is not running — start it, then rerun `reevit doctor --strict` (%s)", target)
+			res.warn(out, "checkout app is not running (%s)", target)
 		}
 		return
 	}
@@ -541,7 +586,8 @@ func checkWebhookEndToEnd(ctx context.Context, out io.Writer, res *doctorResult,
 	case err != nil:
 		res.warn(out, "stale-timestamp check could not run (%v)", err)
 	case status >= 200 && status < 300:
-		res.warn(out, "handler accepted a 20-minute-old signature — add a timestamp check (rerun reevit init --overwrite to regenerate)")
+		res.warnr(out, "reevit init --overwrite",
+			"handler accepted a 20-minute-old signature; it has no replay window")
 	default:
 		res.pass(out, "stale event rejected (%d)", status)
 	}
@@ -772,21 +818,56 @@ func printDoctorSummary(out io.Writer, res *doctorResult) {
 
 	switch {
 	case res.failures > 0:
+		// Two lines, because they answer two questions: what did it find, and
+		// what do I do now. The old single sentence answered the second and
+		// left the counts to be inferred from scrollback.
+		tally := plural(res.failures, "problem")
+		if res.warnings > 0 {
+			tally += ", " + plural(res.warnings, "warning")
+		}
+
+		fmt.Fprintln(out, res.sty.Bold(tally+"."))
 		// The glyph in the sentence has to be the same one the failing lines
 		// carry, whichever mode we are in — and it is painted on its own, so
 		// its reset cannot end the bold halfway through the sentence.
 		fmt.Fprintf(out, "%s %s %s\n",
-			res.sty.Bold(plural(res.failures, "problem")+" found — fix the"),
+			res.sty.Bold("Fix the"),
 			marker(res.sty.Failure("")),
-			res.sty.Bold("items above and rerun `reevit doctor`."),
+			res.sty.Bold("items above and run `reevit doctor` again."),
 		)
 	case res.warnings > 0:
 		fmt.Fprintln(out, res.sty.Bold(fmt.Sprintf(
-			"Setup looks good (%s above).", plural(res.warnings, "note"),
+			"Setup looks good (%s).", plural(res.warnings, "warning"),
 		)))
 	default:
 		fmt.Fprintln(out, res.sty.Bold("Everything checks out."))
 	}
+}
+
+// shortDialCause reduces a transport failure to the part that tells the user
+// what to change. api.Client wraps them as
+//
+//	request GET /payments: Get "http://host/v1/payments": dial tcp …: connection refused
+//
+// The first clause restates a request the user did not make by hand, and the
+// second repeats a base URL doctor printed one line earlier; only the tail is
+// news.
+func shortDialCause(err error) string {
+	cause := err.Error()
+
+	if rest, ok := strings.CutPrefix(cause, "request "); ok {
+		if _, after, found := strings.Cut(rest, ": "); found {
+			cause = after
+		}
+	}
+
+	// net/http prefixes its own errors with `Get "<url>": `. Cutting on the
+	// closing quote keeps URLs that contain ": " (a port, say) intact.
+	if quoted := strings.Index(cause, `": `); quoted >= 0 && strings.Contains(cause[:quoted], `"`) {
+		cause = cause[quoted+len(`": `):]
+	}
+
+	return cause
 }
 
 // plural renders a count with its noun: "1 problem", "2 problems".

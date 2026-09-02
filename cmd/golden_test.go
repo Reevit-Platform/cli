@@ -190,6 +190,11 @@ var (
 	goldenTimeRe     = regexp.MustCompile(`\d{2}:\d{2}:\d{2}`)
 	goldenMillisRe   = regexp.MustCompile(`\(\d+ms\)`)
 	goldenLoopbackRe = regexp.MustCompile(`127\.0\.0\.1:\d+`)
+	// Everything after "dial tcp" is the operating system's wording, not
+	// ours. The property doctor-api-unreachable exists to pin is that the
+	// `request GET /payments: Get "…":` prefix was stripped off the front,
+	// so the platform-specific tail is normalised away.
+	goldenDialRe = regexp.MustCompile(`dial tcp \S+.*`)
 )
 
 func (n normaliser) apply(s string) string {
@@ -213,6 +218,7 @@ func (n normaliser) apply(s string) string {
 	s = goldenTimeRe.ReplaceAllString(s, "<TIME>")
 	s = goldenMillisRe.ReplaceAllString(s, "(<MS>ms)")
 	s = goldenLoopbackRe.ReplaceAllString(s, "<ADDR>")
+	s = goldenDialRe.ReplaceAllString(s, "dial tcp <DIAL>")
 
 	return s
 }
@@ -535,6 +541,22 @@ func goldenCases() []goldenCase {
 			server:   paymentsServer(http.StatusOK, `[]`),
 			wantExit: 3,
 		},
+		// The API is not there at all. The finding and the transport cause get
+		// a line each: the wrapped error names a request the user never typed
+		// and repeats a URL doctor printed a line earlier, and dragging all of
+		// that onto the warning line pushed the real cause off an 80-column
+		// terminal.
+		{
+			name: "doctor-api-unreachable",
+			args: []string{"doctor"},
+			env: map[string]string{
+				"REEVIT_API_KEY": testKey,
+				// Port 1 is reserved and never listening.
+				"REEVIT_API_URL": "http://127.0.0.1:1",
+			},
+			dir:      func(t *testing.T) string { return t.TempDir() },
+			wantExit: 3,
+		},
 		// A legacy key shape: config.Load cannot derive the mode from it, so
 		// doctor says where the label actually came from.
 		{
@@ -671,6 +693,18 @@ func TestGoldenStreamsAreSeparate(t *testing.T) {
 
 		if plain := readGolden(t, "login-browser-approved.stderr"); strings.Contains(plain, "\x1b") {
 			t.Errorf("stderr = %q, want no escape sequences with NO_COLOR=1", plain)
+		}
+	})
+
+	t.Run("doctor names the cause, not the request that wrapped it", func(t *testing.T) {
+		got := readGolden(t, "doctor-api-unreachable.stderr")
+
+		if strings.Contains(got, "request GET /payments") {
+			t.Errorf("stderr = %q, want the api.Client wrapper stripped from the cause", got)
+		}
+
+		if !strings.Contains(got, "! could not reach the API to verify the key\n    dial tcp") {
+			t.Errorf("stderr = %q, want the cause on its own dim line under the warning", got)
 		}
 	})
 
