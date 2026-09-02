@@ -639,6 +639,44 @@ func goldenCases() []goldenCase {
 // Plan 030 moved `login`'s confirmation to stderr — `reevit login > key.log`
 // is not a thing anyone wants, and the command produces no data — so the
 // expectation is inverted here rather than dropped.
+// The normaliser is what makes a golden independent of the wall clock, so it
+// is tested directly: `listen`'s delivery lines never reach a golden case
+// (the command does not exit, and the harness has no cancellable context),
+// which would otherwise leave the clock-dependent patterns unexercised.
+func TestNormaliserErasesEveryClockValue(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "a forwarded delivery line",
+			in:   "12:04:07  payment.succeeded          > 200  12ms",
+			want: "<TIME>  payment.succeeded          > 200  <MS>ms",
+		},
+		{
+			name: "a payments table timestamp",
+			in:   "pay_1  GHS 100.00  succeeded  2026-08-31 09:15",
+			want: "pay_1  GHS 100.00  succeeded  <CREATED>",
+		},
+		{
+			name: "an ephemeral listen port",
+			in:   `dial tcp 127.0.0.1:54321: connect: connection refused`,
+			want: "dial tcp <DIAL>",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := (normaliser{}).apply(test.in); got != test.want {
+				t.Errorf("apply(%q) = %q, want %q", test.in, got, test.want)
+			}
+		})
+	}
+}
+
 func TestGoldenStreamsAreSeparate(t *testing.T) {
 	t.Run("login-key-saved writes nothing to stdout", func(t *testing.T) {
 		if got := readGolden(t, "login-key-saved.stdout"); got != "" {
