@@ -1,0 +1,3 @@
+Id     Status         Amount  Provider  Method        Created
+pmt_1  succeeded  GHS 125.00  paystack  card          2026-01-02
+pmt_2  failed       GHS 9.00  hubtel    mobile_money  2026-01-02

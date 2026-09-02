@@ -1,0 +1,4 @@
+
+- reevit sends anonymous usage data (command, version, OS — never files, paths or keys).
+  Opt out: REEVIT_TELEMETRY=0 or DO_NOT_TRACK=1 · docs.reevit.io/cli
+

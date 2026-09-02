@@ -525,6 +525,19 @@ func goldenCases() []goldenCase {
 			env:    map[string]string{"REEVIT_API_KEY": testKey, "TZ": "UTC"},
 			server: paymentsServer(http.StatusOK, twoPayments),
 		},
+		// The one-time telemetry disclosure. It has to be the FIRST thing on
+		// stderr: it used to be printed by telemetry.Report, which runs after
+		// the command, so the notice landed underneath the output of the very
+		// run it was disclosing. REEVIT_TELEMETRY is unset (the baseline
+		// turns telemetry off for every other case) and REEVIT_CONFIG points
+		// at a file that does not exist yet, so this is a genuine first run.
+		{
+			name:     "first-run-notice",
+			args:     []string{"payments", "list", "--limit", "2"},
+			env:      map[string]string{"REEVIT_API_KEY": testKey, "TZ": "UTC"},
+			unsetEnv: []string{"REEVIT_TELEMETRY", "DO_NOT_TRACK"},
+			server:   paymentsServer(http.StatusOK, twoPayments),
+		},
 		{
 			name: "payments-list-forbidden",
 			args: []string{"payments", "list"},

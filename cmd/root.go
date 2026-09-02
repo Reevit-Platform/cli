@@ -93,6 +93,30 @@ Start here: reevit login → reevit init → reevit doctor.`,
 	Version:       Version,
 	SilenceUsage:  true,
 	SilenceErrors: true,
+	// The first-run telemetry notice belongs before the run it is disclosing,
+	// not after it: Report fires once the command has finished, so the
+	// disclosure used to appear below the output of the very run it covered.
+	//
+	// No subcommand defines PreRun or PersistentPreRun, so nothing shadows
+	// this. cobra only runs the closest PersistentPreRunE it finds.
+	PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
+		if !telemetry.Tracked(topLevelName(cmd)) {
+			return nil
+		}
+
+		// TODO(032): --json makes stderr part of a machine-readable
+		// contract for some commands; skip the notice when it is set. The
+		// flag does not exist yet, so this looks it up rather than reading
+		// a variable that would have to be declared here first.
+		if json := cmd.Flags().Lookup("json"); json != nil && json.Value.String() == "true" {
+			return nil
+		}
+
+		sty := styleOf(cmd).err
+		telemetry.EnsureNotice(cmd.ErrOrStderr(), sty.Note, sty.Dim)
+
+		return nil
+	},
 }
 
 // Execute runs the CLI and reports one anonymous usage event per tracked
@@ -112,7 +136,7 @@ func Execute() error {
 		ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr,
 	)
 
-	telemetry.Report(topLevelName(executed), Version, err == nil, time.Since(start), os.Stderr)
+	telemetry.Report(topLevelName(executed), Version, err == nil, time.Since(start))
 
 	return err
 }
