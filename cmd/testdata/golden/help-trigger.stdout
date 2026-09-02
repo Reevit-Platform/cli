@@ -1,0 +1,13 @@
+Creates a real test-mode payment against the simulator connection using the
+documented magic amount for the requested outcome, so every downstream event
+(webhooks, notifications, SSE) is produced by the production pipeline.
+
+Supported: payment.failed, payment.insufficient_funds, payment.provider_downtime, payment.succeeded, payment.timeout
+
+Usage:
+  reevit trigger <event> [flags]
+
+Flags:
+      --amount int        override the magic amount (advanced)
+      --currency string   payment currency (default "GHS")
+  -h, --help              help for trigger

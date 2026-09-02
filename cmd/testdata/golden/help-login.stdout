@@ -1,0 +1,15 @@
+Logs the CLI in. By default this opens the Reevit dashboard in your
+browser: you confirm a pairing code there and the CLI receives a freshly
+minted TEST-MODE API key scoped to what the CLI needs — no copy-pasting.
+
+To use an existing key instead (e.g. a live key), pass --key or --manual.
+Keys are stored in your user config with owner-only permissions.
+
+Usage:
+  reevit login [flags]
+
+Flags:
+  -h, --help         help for login
+      --key string   API key (use '-' to read from stdin; skips the browser flow)
+      --manual       prompt for an API key instead of using the browser
+      --no-browser   print the pairing link instead of opening a browser

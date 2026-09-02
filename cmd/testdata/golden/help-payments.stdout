@@ -1,0 +1,12 @@
+Inspect payments
+
+Usage:
+  reevit payments [command]
+
+Available Commands:
+  list        List recent payments (current mode)
+
+Flags:
+  -h, --help   help for payments
+
+Use "reevit payments [command] --help" for more information about a command.
