@@ -50,7 +50,19 @@ Supported: ` + strings.Join(triggerEventNames(), ", "),
 			return fmt.Errorf("unknown event %q — supported: %s", event, strings.Join(triggerEventNames(), ", "))
 		}
 
+		sty := styleOf(cmd)
+		notice := cmd.ErrOrStderr()
+
 		if triggerAmountOv > 0 {
+			// An override silently discards the outcome the user asked for:
+			// the simulator branches on the amount, so 4000 is what makes
+			// `payment.succeeded` succeed. Say so before it looks broken.
+			if !isMagicAmount(triggerAmountOv) {
+				fmt.Fprintln(notice, sty.err.Warning(fmt.Sprintf(
+					"%d is not a magic amount — this will be an ordinary sandbox payment",
+					triggerAmountOv)))
+			}
+
 			amount = triggerAmountOv
 		}
 
@@ -63,18 +75,69 @@ Supported: ` + strings.Join(triggerEventNames(), ", "),
 			return fmt.Errorf("trigger only runs in test mode (REEVIT_MODE=%s)", c.Mode())
 		}
 
+		// `trigger` creates a real payment through a real connection. Naming
+		// the simulator is what stops "did this just charge someone?".
+		//
+		// The line is unconditional: api.BootstrapResult reports no "created"
+		// flag, so the CLI cannot tell a fresh simulator from an existing one
+		// without an API change that is out of this plan's scope.
+		fmt.Fprintln(notice, sty.err.Step("Using the sandbox simulator"))
+
 		paymentID, status, err := triggerSimulatorEvent(cmd.Context(), c, event, amount, triggerCurrency)
 		if err != nil {
 			return err
 		}
 
-		// The arrow comes from the styler so it degrades to ">" on a terminal
-		// that cannot render U+2192.
-		fmt.Fprintf(cmd.OutOrStdout(), "Triggered %s %s payment %s (status: %s)\n",
-			event, marker(styleOf(cmd).out.Step("")), paymentID, status)
+		fmt.Fprintln(notice, sty.err.Success("Triggered "+event))
+		fmt.Fprintln(notice, "  "+sty.err.Note(fmt.Sprintf(
+			"payment %s created through the sandbox simulator (status: %s)", paymentID, status)))
+		fmt.Fprintln(notice, "  "+sty.err.Note("the outcome resolves asynchronously; watch it land with:"))
+		fmt.Fprintln(notice, sty.err.Command("reevit listen --forward-to "+localWebhookURL()))
+		fmt.Fprintln(notice, sty.err.Command("reevit payments list"))
+
+		// stdout carries the id and nothing else, so `id=$(reevit trigger …)`
+		// is a working idiom rather than a string to parse.
+		fmt.Fprintln(cmd.OutOrStdout(), paymentID)
 
 		return nil
 	},
+}
+
+// isMagicAmount reports whether an amount still drives a simulator outcome.
+// Every magic value is one of the documented ones; anything else produces an
+// ordinary payment whose result has nothing to do with the requested event.
+func isMagicAmount(amount int64) bool {
+	for _, magic := range triggerAmounts {
+		if magic == amount {
+			return true
+		}
+	}
+
+	return false
+}
+
+// localWebhookURL builds the `--forward-to` the user should actually run.
+// A generic placeholder makes the suggestion un-pasteable, and the scaffolded
+// handler's route is already known whenever init has run here.
+func localWebhookURL() string {
+	root, err := os.Getwd()
+	if err != nil {
+		return "http://localhost:3000/api/webhooks/reevit"
+	}
+
+	project := scaffold.Detect(root)
+
+	_, path := scaffold.WebhookHandler(project)
+	if path == "" {
+		path = "/api/webhooks/reevit"
+	}
+
+	port := scaffold.DefaultPort(project)
+	if port == 0 {
+		port = 3000
+	}
+
+	return fmt.Sprintf("http://localhost:%d%s", port, path)
 }
 
 // triggerSimulatorEvent creates a real sandbox payment through the simulator
