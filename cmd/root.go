@@ -6,8 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/url"
 	"os"
 	"os/signal"
+	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -16,6 +20,7 @@ import (
 	"github.com/Reevit-Platform/cli/internal/api"
 	"github.com/Reevit-Platform/cli/internal/config"
 	"github.com/Reevit-Platform/cli/internal/telemetry"
+	"github.com/Reevit-Platform/cli/internal/ui"
 )
 
 // Version is stamped by goreleaser at build time (-X …/cmd.Version=v1.2.3).
@@ -37,12 +42,41 @@ func (e ExitError) Error() string {
 
 func (e ExitError) Unwrap() error { return e.Err }
 
+// Exit codes are part of the CLI's contract with CI:
+//
+//	0   success
+//	1   runtime error
+//	2   usage error (unknown flag, wrong number of arguments)
+//	3   doctor found problems
+//	130 cancelled (Ctrl-C)
+const (
+	exitUsage  = 2
+	exitDoctor = 3
+)
+
 func ExitCode(err error) int {
 	var exitErr ExitError
 	if errors.As(err, &exitErr) && exitErr.Code > 0 {
 		return exitErr.Code
 	}
 	return 1
+}
+
+// usageErr marks an error as the user having called the command wrongly, which
+// exits 2 — distinguishable in a pipeline from a command that ran and failed.
+func usageErr(err error) error {
+	return ExitError{Code: exitUsage, Err: err}
+}
+
+// exactArgs is cobra.ExactArgs with the exit code a usage error deserves.
+func exactArgs(n int) cobra.PositionalArgs {
+	return func(cmd *cobra.Command, args []string) error {
+		if err := cobra.ExactArgs(n)(cmd, args); err != nil {
+			return usageErr(err)
+		}
+
+		return nil
+	}
 }
 
 var rootCmd = &cobra.Command{
@@ -116,9 +150,28 @@ func applyContext(cmd *cobra.Command, ctx context.Context) {
 
 // renderError formats the error of a failed run the way the process itself
 // prints it (main.go), including the trailing newline. It is a package-level
-// variable so the golden tests capture exactly what a user sees on stderr and
-// a later restyle can replace the presentation in one place.
+// variable so the golden tests capture exactly what a user sees on stderr.
+//
+// The plain Styler is deliberate: goldens compare bytes, and the coloured
+// variants are covered by their own cases.
 var renderError = func(err error) string {
+	rendered := RenderError(err, ui.Styler{})
+	if rendered == "" {
+		return ""
+	}
+
+	return rendered + "\n"
+}
+
+// hinter is implemented by errors that can name the user's next step.
+type hinter interface{ Hint() string }
+
+// RenderError turns a failed run into the block the user reads: what went
+// wrong and, when we know it, what to do about it.
+//
+// It returns "" for the errors that have already said their piece — a Ctrl-C,
+// and doctor's own verdict, which the command printed itself.
+func RenderError(err error, sty ui.Styler) string {
 	if err == nil {
 		return ""
 	}
@@ -128,11 +181,117 @@ var renderError = func(err error) string {
 		return ""
 	}
 
-	if ExitCode(err) == 130 {
-		return err.Error() + "\n"
+	if errors.Is(err, errDoctorFailed) {
+		return ""
 	}
 
-	return "error: " + err.Error() + "\n"
+	// A cancelled wizard already printed its own message; it is not a failure
+	// to explain.
+	if ExitCode(err) == 130 {
+		return err.Error()
+	}
+
+	// ExitError is a carrier for the exit code, not part of the message.
+	cause := err
+
+	var exitErr ExitError
+	if errors.As(err, &exitErr) && exitErr.Err != nil {
+		cause = exitErr.Err
+	}
+
+	return sty.Errorf(cause, hintFor(err))
+}
+
+// hintFor finds the one-line next step for an error: the error's own Hint if
+// it has one, otherwise the network advice that every unreachable-API failure
+// shares.
+func hintFor(err error) string {
+	var withHint hinter
+	if errors.As(err, &withHint) {
+		if hint := withHint.Hint(); hint != "" {
+			return hint
+		}
+	}
+
+	return networkHint(err)
+}
+
+// networkHint recognises "the request never got an answer" — a DNS failure, a
+// refused connection, a timeout — and points at the two things the user
+// controls.
+func networkHint(err error) string {
+	var (
+		urlErr *url.Error
+		opErr  *net.OpError
+	)
+
+	if !errors.As(err, &urlErr) && !errors.As(err, &opErr) &&
+		!errors.Is(err, context.DeadlineExceeded) {
+		return ""
+	}
+
+	target := ""
+	if cfg, cfgErr := config.Load(); cfgErr == nil && cfg.BaseURL != "" {
+		target = " " + cfg.BaseURL
+	}
+
+	return "could not reach" + target + " — check your connection or REEVIT_API_URL"
+}
+
+// styles carries one Styler per stream. Their TTY-ness genuinely differs:
+// `reevit payments list | less` has a piped stdout and a terminal stderr, and
+// the table should lose its colour while the conversation keeps it.
+type styles struct {
+	out ui.Styler
+	err ui.Styler
+}
+
+// styleOf resolves the stylers for one command run. It must not be called
+// before cobra has parsed flags — --no-color is not readable until then —
+// which is why every command calls it inside RunE rather than at construction.
+func styleOf(cmd *cobra.Command) styles {
+	noColor, _ := cmd.Flags().GetBool("no-color")
+	env := os.Environ()
+
+	return styles{
+		out: ui.New(ui.Options{
+			NoColorFlag: noColor, Env: env,
+			IsTerminal: isTerminalWriter(cmd.OutOrStdout()), GOOS: runtime.GOOS,
+		}),
+		err: ui.New(ui.Options{
+			NoColorFlag: noColor, Env: env,
+			IsTerminal: isTerminalWriter(cmd.ErrOrStderr()), GOOS: runtime.GOOS,
+		}),
+	}
+}
+
+// StderrStyler builds the styler for the real process stderr. main.go needs it
+// to render an error that happened before — or instead of — a command run, so
+// the --no-color flag may not have been parsed; NO_COLOR and TERM still apply.
+func StderrStyler() ui.Styler {
+	return ui.New(ui.Options{
+		Env:        os.Environ(),
+		IsTerminal: isTerminalWriter(os.Stderr),
+		GOOS:       runtime.GOOS,
+	})
+}
+
+// marker extracts the bare glyph from a glyph method, for the few places that
+// need the symbol inside a sentence or a line rather than in front of one.
+func marker(rendered string) string { return strings.TrimSpace(rendered) }
+
+// isTerminalWriter reports whether a writer is a character device — the same
+// check cmd/init.go makes of stdin, and the reason this package needs no
+// terminal dependency.
+func isTerminalWriter(w io.Writer) bool {
+	file, ok := w.(*os.File)
+	if !ok {
+		return false
+	}
+
+	info, err := file.Stat()
+
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }
 
 // topLevelName resolves the first-level subcommand a run belongs to, so
@@ -162,4 +321,15 @@ func client() (*api.Client, error) {
 	}
 
 	return api.New(cfg), nil
+}
+
+func init() {
+	rootCmd.PersistentFlags().Bool("no-color", false, "disable colour and glyphs")
+
+	// Inherited by every subcommand: a mistyped flag is a usage error, and it
+	// should say where to look. CommandPath is used whole — for the root it is
+	// just "reevit", and slicing it would panic.
+	rootCmd.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
+		return usageErr(fmt.Errorf("%w\n\nRun '%s --help' for usage", err, cmd.CommandPath()))
+	})
 }

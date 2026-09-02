@@ -41,7 +41,7 @@ documented magic amount for the requested outcome, so every downstream event
 (webhooks, notifications, SSE) is produced by the production pipeline.
 
 Supported: ` + strings.Join(triggerEventNames(), ", "),
-	Args: cobra.ExactArgs(1),
+	Args: exactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		event := strings.ToLower(strings.TrimSpace(args[0]))
 
@@ -68,7 +68,10 @@ Supported: ` + strings.Join(triggerEventNames(), ", "),
 			return err
 		}
 
-		fmt.Fprintf(cmd.OutOrStdout(), "Triggered %s → payment %s (status: %s)\n", event, paymentID, status)
+		// The arrow comes from the styler so it degrades to ">" on a terminal
+		// that cannot render U+2192.
+		fmt.Fprintf(cmd.OutOrStdout(), "Triggered %s %s payment %s (status: %s)\n",
+			event, marker(styleOf(cmd).out.Step("")), paymentID, status)
 
 		return nil
 	},

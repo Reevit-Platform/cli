@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -26,6 +27,7 @@ import (
 	"github.com/Reevit-Platform/cli/internal/config"
 	"github.com/Reevit-Platform/cli/internal/sandbox"
 	"github.com/Reevit-Platform/cli/internal/scaffold"
+	"github.com/Reevit-Platform/cli/internal/ui"
 )
 
 var (
@@ -35,26 +37,35 @@ var (
 	doctorStrict     bool
 )
 
+// errDoctorFailed is doctor's verdict expressed as an error: it carries the
+// exit code and nothing else. The summary line on screen is the message, so
+// RenderError recognises this sentinel and prints nothing after it — a run
+// used to end with the verdict and then repeat it as `error: doctor found 2
+// problem(s)`.
+var errDoctorFailed = errors.New("")
+
 // doctorResult tallies outcomes so the command can exit non-zero on failures.
+// The zero value renders in plain ASCII, which is what the unit tests want.
 type doctorResult struct {
 	failures int
 	warnings int
+	sty      ui.Styler
 }
 
 func (r *doctorResult) pass(out io.Writer, format string, args ...any) {
-	fmt.Fprintf(out, "  ✔ "+format+"\n", args...)
+	fmt.Fprintln(out, "  "+r.sty.Success(fmt.Sprintf(format, args...)))
 }
 
 func (r *doctorResult) fail(out io.Writer, format string, args ...any) {
 	r.failures++
 
-	fmt.Fprintf(out, "  ✖ "+format+"\n", args...)
+	fmt.Fprintln(out, "  "+r.sty.Failure(fmt.Sprintf(format, args...)))
 }
 
 func (r *doctorResult) warn(out io.Writer, format string, args ...any) {
 	r.warnings++
 
-	fmt.Fprintf(out, "  • "+format+"\n", args...)
+	fmt.Fprintln(out, "  "+r.sty.Warning(fmt.Sprintf(format, args...)))
 }
 
 var doctorCmd = &cobra.Command{
@@ -69,13 +80,20 @@ Webhook check:
   reevit doctor --webhook-url http://localhost:3000/api/webhooks/reevit
 
 It signs a synthetic event with the REEVIT_WEBHOOK_SECRET from your env file,
-so the check proves your handler's signature verification end to end.`,
+so the check proves your handler's signature verification end to end.
+
+Exits 3 when it finds problems, so CI can tell a failed check from a failed
+command.`,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		out := cmd.OutOrStdout()
-		res := &doctorResult{}
+		// The diagnosis is conversation, not data: on stderr it stays on the
+		// terminal when the user redirects stdout, and plan 032's --json has
+		// stdout to itself.
+		sty := styleOf(cmd).err
+		out := cmd.ErrOrStderr()
+		res := &doctorResult{sty: sty}
 
 		// --- 1. CLI credentials ---
-		fmt.Fprintln(out, "\nCLI credentials")
+		fmt.Fprintln(out, sty.Heading("CLI credentials"))
 
 		cfg, err := config.Load()
 		if err != nil {
@@ -119,7 +137,7 @@ so the check proves your handler's signature verification end to end.`,
 		}
 
 		// --- 2. Project files ---
-		fmt.Fprintln(out, "\nProject files")
+		fmt.Fprintln(out, sty.Heading("Project files"))
 
 		root, err := os.Getwd()
 		if err != nil {
@@ -131,7 +149,7 @@ so the check proves your handler's signature verification end to end.`,
 			res.fail(out, "no project detected here — run doctor from your project root")
 			printDoctorSummary(out, res)
 
-			return fmt.Errorf("doctor found %d problem(s)", res.failures)
+			return ExitError{Code: exitDoctor, Err: errDoctorFailed}
 		}
 
 		res.pass(out, "%s project", project.Stack)
@@ -218,7 +236,7 @@ so the check proves your handler's signature verification end to end.`,
 		}
 
 		// --- 4. Platform bootstrap ---
-		fmt.Fprintln(out, "\nPlatform sandbox")
+		fmt.Fprintln(out, sty.Heading("Platform sandbox"))
 		if manifest.ProjectID != "" && cfg.APIKey != "" {
 			status, statusErr := api.New(cfg).BootstrapStatus(cmd.Context(), manifest.ProjectID, manifest.Origin)
 			if statusErr != nil {
@@ -257,7 +275,7 @@ so the check proves your handler's signature verification end to end.`,
 		}
 
 		// --- 6. Runnable checkout ---
-		fmt.Fprintln(out, "\nRunning application")
+		fmt.Fprintln(out, sty.Heading("Running application"))
 		if doctorAppURL != "" {
 			checkAppURL(cmd.Context(), out, res, doctorAppURL)
 		} else if demoPath := scaffold.DemoPath(project); demoPath != "" {
@@ -275,7 +293,7 @@ so the check proves your handler's signature verification end to end.`,
 		}
 
 		// --- 7. Webhook handler ---
-		fmt.Fprintln(out, "\nSigned webhooks")
+		fmt.Fprintln(out, sty.Heading("Signed webhooks"))
 
 		if handlerFile != "" {
 			res.pass(out, "handler found at %s", handlerFile)
@@ -296,7 +314,7 @@ so the check proves your handler's signature verification end to end.`,
 			checkWebhookEndToEnd(cmd.Context(), out, res, doctorWebhookURL, webhookSecret)
 
 			if doctorE2E {
-				fmt.Fprintln(out, "\nEnd-to-end (simulator → platform → your handler)")
+				fmt.Fprintln(out, sty.Heading("End-to-end (simulator → platform → your handler)"))
 				checkWebhookE2E(cmd, out, res, doctorWebhookURL, webhookSecret)
 			}
 		}
@@ -310,9 +328,15 @@ so the check proves your handler's signature verification end to end.`,
 		strict := doctorStrict || runningInCI()
 		if res.failures > 0 || (strict && res.warnings > 0) {
 			if res.failures == 0 {
-				return fmt.Errorf("doctor found %d warning(s) in strict mode", res.warnings)
+				// Nothing on screen says a clean-but-warned run is a failure,
+				// so this one keeps its message.
+				return ExitError{
+					Code: exitDoctor,
+					Err:  fmt.Errorf("doctor found %s in strict mode", plural(res.warnings, "warning")),
+				}
 			}
-			return fmt.Errorf("doctor found %d problem(s)", res.failures)
+
+			return ExitError{Code: exitDoctor, Err: errDoctorFailed}
 		}
 
 		return nil
@@ -748,12 +772,28 @@ func printDoctorSummary(out io.Writer, res *doctorResult) {
 
 	switch {
 	case res.failures > 0:
-		fmt.Fprintf(out, "%d problem(s) found — fix the ✖ items above and rerun `reevit doctor`.\n", res.failures)
+		// The glyph in the sentence has to be the same one the failing lines
+		// carry, whichever mode we are in.
+		fmt.Fprintln(out, res.sty.Bold(fmt.Sprintf(
+			"%s found — fix the %s items above and rerun `reevit doctor`.",
+			plural(res.failures, "problem"), marker(res.sty.Failure("")),
+		)))
 	case res.warnings > 0:
-		fmt.Fprintf(out, "Setup looks good (%d note(s) above).\n", res.warnings)
+		fmt.Fprintln(out, res.sty.Bold(fmt.Sprintf(
+			"Setup looks good (%s above).", plural(res.warnings, "note"),
+		)))
 	default:
-		fmt.Fprintln(out, "Everything checks out.")
+		fmt.Fprintln(out, res.sty.Bold("Everything checks out."))
 	}
+}
+
+// plural renders a count with its noun: "1 problem", "2 problems".
+func plural(n int, word string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, word)
+	}
+
+	return fmt.Sprintf("%d %ss", n, word)
 }
 
 func init() {
