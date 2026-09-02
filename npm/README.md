@@ -288,6 +288,16 @@ hostnames. Run `reevit --help` or read the
   `--webhook-url` to `reevit doctor`.
 - **Need CI-safe verification:** run `reevit doctor --strict`; skipped runtime
   checks become failures.
+- **Colour or symbols look wrong:** set `NO_COLOR=1` (or pass `--no-color`) to
+  turn colour off; `TERM=dumb` or a non-UTF-8 locale also switches the `✓`/`✗`
+  symbols to `ok`/`x`. Set `FORCE_COLOR=1` to keep colour when you pipe the
+  output somewhere.
+- **A script cannot tell why the CLI failed:** exit `0` is success, `1` a
+  runtime error, `2` a usage error (unknown flag, wrong arguments), `3` means
+  `reevit doctor` ran fine and found problems, and `130` means Ctrl-C.
+- **`reevit doctor > report.txt` produced an empty file:** the diagnosis is
+  conversation, so it goes to stderr; redirect with `2>` (or `2>&1`). stdout is
+  reserved for data such as the payments table and `reevit listen` events.
 
 For bugs and feature requests, open an issue in the
 [CLI repository](https://github.com/Reevit-Platform/cli/issues).
