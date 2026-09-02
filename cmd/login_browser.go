@@ -163,21 +163,28 @@ func startPairing(ctx context.Context, httpc *http.Client, baseURL, deviceName s
 	return start, nil
 }
 
+// pairingDefaultTTL bounds the poll when the server omits expires_at. Without
+// it an old or misbehaving backend leaves `reevit login` polling forever.
+// A package var so tests can shorten it.
+var pairingDefaultTTL = 10 * time.Minute
+
 // pollPairing polls until the session resolves. It honors the server's
-// interval, backs off on 429 Retry-After, and gives up at the session expiry.
+// interval, backs off on 429 Retry-After, and gives up at the session expiry
+// (or pairingDefaultTTL when the server did not send one).
+//
+// The first poll happens immediately: a code approved before the CLI even
+// asked should not cost the user a full interval of waiting.
 func pollPairing(ctx context.Context, httpc *http.Client, baseURL string, start pairingStartResponse, out io.Writer) (pairingPollResponse, error) {
 	interval := time.Duration(start.Interval) * time.Second
+
 	deadline := start.ExpiresAt
+	if deadline.IsZero() {
+		deadline = time.Now().Add(pairingDefaultTTL)
+	}
 
 	for {
-		if !deadline.IsZero() && time.Now().After(deadline) {
+		if time.Now().After(deadline) {
 			return pairingPollResponse{}, fmt.Errorf("\nthe pairing request expired before it was approved — run `reevit login` again")
-		}
-
-		select {
-		case <-ctx.Done():
-			return pairingPollResponse{}, fmt.Errorf("\nlogin canceled")
-		case <-time.After(interval):
 		}
 
 		fmt.Fprint(out, ".")
@@ -189,29 +196,32 @@ func pollPairing(ctx context.Context, httpc *http.Client, baseURL string, start 
 
 		if retryAfter > 0 {
 			interval = retryAfter
+		} else {
+			interval = time.Duration(start.Interval) * time.Second
 
-			continue
+			switch result.Status {
+			case "pending":
+			case "approved":
+				if result.APIKey == nil || result.APIKey.Raw == "" {
+					return pairingPollResponse{}, fmt.Errorf("\nthe server approved the pairing but sent no key — run `reevit login` again")
+				}
+
+				return result, nil
+			case "denied":
+				return pairingPollResponse{}, fmt.Errorf("\nthe pairing request was denied in the dashboard")
+			case "expired":
+				return pairingPollResponse{}, fmt.Errorf("\nthe pairing request expired before it was approved — run `reevit login` again")
+			case "consumed":
+				return pairingPollResponse{}, fmt.Errorf("\nthis pairing request was already used — run `reevit login` again")
+			default:
+				return pairingPollResponse{}, fmt.Errorf("\nunexpected pairing status %q", result.Status)
+			}
 		}
 
-		interval = time.Duration(start.Interval) * time.Second
-
-		switch result.Status {
-		case "pending":
-			continue
-		case "approved":
-			if result.APIKey == nil || result.APIKey.Raw == "" {
-				return pairingPollResponse{}, fmt.Errorf("\nthe server approved the pairing but sent no key — run `reevit login` again")
-			}
-
-			return result, nil
-		case "denied":
-			return pairingPollResponse{}, fmt.Errorf("\nthe pairing request was denied in the dashboard")
-		case "expired":
-			return pairingPollResponse{}, fmt.Errorf("\nthe pairing request expired before it was approved — run `reevit login` again")
-		case "consumed":
-			return pairingPollResponse{}, fmt.Errorf("\nthis pairing request was already used — run `reevit login` again")
-		default:
-			return pairingPollResponse{}, fmt.Errorf("\nunexpected pairing status %q", result.Status)
+		select {
+		case <-ctx.Done():
+			return pairingPollResponse{}, ExitError{Code: 130, Err: context.Canceled}
+		case <-time.After(interval):
 		}
 	}
 }
