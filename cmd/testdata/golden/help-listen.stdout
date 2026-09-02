@@ -13,7 +13,6 @@ Usage:
 Flags:
       --forward-to string       local endpoint to POST events to (required)
   -h, --help                    help for listen
-      --secret string           override the signing secret
       --signing-secret string   override the signing secret
 
 Global Flags:

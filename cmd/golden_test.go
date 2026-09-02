@@ -188,7 +188,9 @@ var (
 	// rendered value is normalised rather than trusted.
 	goldenDateTimeRe = regexp.MustCompile(`\d{4}-\d{2}-\d{2} \d{2}:\d{2}`)
 	goldenTimeRe     = regexp.MustCompile(`\d{2}:\d{2}:\d{2}`)
-	goldenMillisRe   = regexp.MustCompile(`\(\d+ms\)`)
+	// The forwarded-event line prints its round trip as a bare `12ms`
+	// column; it used to be parenthesised, and the pattern moved with it.
+	goldenMillisRe   = regexp.MustCompile(`\b\d+ms\b`)
 	goldenLoopbackRe = regexp.MustCompile(`127\.0\.0\.1:\d+`)
 	// Everything after "dial tcp" is the operating system's wording, not
 	// ours. The property doctor-api-unreachable exists to pin is that the
@@ -216,7 +218,7 @@ func (n normaliser) apply(s string) string {
 
 	s = goldenDateTimeRe.ReplaceAllString(s, "<CREATED>")
 	s = goldenTimeRe.ReplaceAllString(s, "<TIME>")
-	s = goldenMillisRe.ReplaceAllString(s, "(<MS>ms)")
+	s = goldenMillisRe.ReplaceAllString(s, "<MS>ms")
 	s = goldenLoopbackRe.ReplaceAllString(s, "<ADDR>")
 	s = goldenDialRe.ReplaceAllString(s, "dial tcp <DIAL>")
 

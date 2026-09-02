@@ -36,7 +36,7 @@ var healthyStreamAge = 30 * time.Second
 // listenGapNotice is printed on every reconnect. The backend discards
 // Last-Event-ID, so events emitted while the CLI was disconnected are gone —
 // saying so beats letting the user assume the gap was replayed.
-const listenGapNotice = "  events emitted while disconnected are not replayed — resend them from the dashboard"
+const listenGapNotice = "events emitted while disconnected are not replayed — resend them from the dashboard"
 
 var listenCmd = &cobra.Command{
 	Use:   "listen --forward-to <url>",
@@ -68,16 +68,33 @@ fallback is ephemeral.`,
 		// The stream itself is this command's data; everything it says about
 		// the stream is conversation and belongs on stderr.
 		sty := styleOf(cmd)
+		notice := cmd.ErrOrStderr()
 
-		secret, err := resolveListenSecret(cmd, c, root)
+		source, err := resolveListenSecret(cmd, c, root)
 		if err != nil {
 			return err
 		}
 
-		fmt.Fprintf(cmd.ErrOrStderr(), "Forwarding test-mode events to %s\n", sty.err.URL(listenForwardTo))
+		// Header first. Secret resolution used to print as it went, which put
+		// the ephemeral secret — the one string the user has to copy — above
+		// the header that says what they are looking at.
+		fmt.Fprintln(notice, sty.err.Heading("Reevit listen"))
+		fmt.Fprintln(notice)
+		fmt.Fprintf(notice, "  Forwarding to   %s\n", sty.err.URL(listenForwardTo))
+		fmt.Fprintf(notice, "  Signing with    %s\n", source.description)
+
+		if source.display != "" {
+			fmt.Fprintln(notice, sty.err.Command(source.display))
+			fmt.Fprintln(notice, "  "+sty.err.Step(source.guidance))
+		}
+
+		// Without a ready line, "connected and idle" and "hung" look identical,
+		// and `listen` is idle by design for most of its life.
+		fmt.Fprintln(notice)
+		fmt.Fprintln(notice, sty.err.Success("Connected — waiting for test-mode events (Ctrl-C to stop)"))
 
 		forwarder := newEventForwarder(
-			listenForwardTo, secret, cmd, sty.out, &http.Client{Timeout: 15 * time.Second},
+			listenForwardTo, source.secret, cmd, sty.out, sty.err, &http.Client{Timeout: 15 * time.Second},
 		)
 
 		// Reconnect with backoff: local dev streams drop on hot reloads.
@@ -98,8 +115,9 @@ fallback is ephemeral.`,
 				backoff = time.Second
 			}
 
-			fmt.Fprintf(cmd.ErrOrStderr(), "stream dropped (%v) — reconnecting in %s\n", err, backoff)
-			fmt.Fprintln(cmd.ErrOrStderr(), listenGapNotice)
+			fmt.Fprintln(notice, sty.err.Warning(fmt.Sprintf("stream dropped — reconnecting in %s", backoff)))
+			fmt.Fprintln(notice, "  "+sty.err.Dim(streamDropCause(err)))
+			fmt.Fprintln(notice, "  "+sty.err.Dim(listenGapNotice))
 
 			select {
 			case <-cmd.Context().Done():
@@ -114,23 +132,50 @@ fallback is ephemeral.`,
 	},
 }
 
-func resolveListenSecret(cmd *cobra.Command, c *api.Client, root string) (string, error) {
+// listenSecretSource is what the header needs to say about signing. Resolution
+// used to print as it went, so the ephemeral secret — the one string the user
+// has to copy — landed above the header explaining what they were looking at.
+// Returning the description instead lets the caller order the screen.
+type listenSecretSource struct {
+	secret      string
+	description string // fills the "Signing with" line
+	display     string // the secret itself, when the user has to copy it
+	guidance    string // what to do with it
+}
+
+// streamDropCause names why the stream ended. Stream returns a nil error when
+// the server closes the connection cleanly, which is the common case behind a
+// dev-server restart — and has no message of its own to print.
+func streamDropCause(err error) string {
+	if err == nil {
+		return "the server closed the stream"
+	}
+
+	return shortDialCause(err)
+}
+
+func resolveListenSecret(cmd *cobra.Command, c *api.Client, root string) (listenSecretSource, error) {
 	if listenSecret != "" {
-		return listenSecret, nil
+		return listenSecretSource{
+			secret:      listenSecret,
+			description: "the --signing-secret you passed",
+		}, nil
 	}
 	if root != "" {
 		project := scaffold.Detect(root)
 		if project.Stack != scaffold.StackUnknown {
 			if secret := scaffold.ReadEnvValue(project, "REEVIT_WEBHOOK_SECRET"); secret != "" {
-				fmt.Fprintln(cmd.ErrOrStderr(), "Using signing secret from "+scaffold.EnvFileName(project)+".")
-				return secret, nil
+				return listenSecretSource{
+					secret:      secret,
+					description: "REEVIT_WEBHOOK_SECRET from " + scaffold.EnvFileName(project),
+				}, nil
 			}
 		}
 	}
 	if c != nil {
 		return fetchOrMintSecret(cmd, c)
 	}
-	return "", nil
+	return listenSecretSource{description: "nothing — no secret resolved"}, nil
 }
 
 // fetchOrMintSecret prefers the org's real signing secret so existing verify
@@ -140,39 +185,48 @@ func resolveListenSecret(cmd *cobra.Command, c *api.Client, root string) (string
 // API is down, the key is dead, the URL is wrong) used to be swallowed into a
 // throwaway secret, so every forwarded event failed the merchant's signature
 // check for a reason nothing on screen explained.
-func fetchOrMintSecret(cmd *cobra.Command, c *api.Client) (string, error) {
+func fetchOrMintSecret(cmd *cobra.Command, c *api.Client) (listenSecretSource, error) {
 	var cfg struct {
 		SigningSecret string `json:"signing_secret"`
 	}
 
 	err := c.Do(cmd.Context(), api.Request{Path: "/webhooks/config"}, &cfg)
 
+	// Why the secret is ephemeral belongs on the header line: "ephemeral"
+	// alone does not tell the user whether to grant a scope or create a
+	// secret, and those are different afternoons.
+	var why string
+
 	switch {
 	case err == nil && cfg.SigningSecret != "":
-		fmt.Fprintln(cmd.ErrOrStderr(), "Signing with your account's webhook secret.")
-
-		return cfg.SigningSecret, nil
+		return listenSecretSource{
+			secret:      cfg.SigningSecret,
+			description: "your account's webhook secret",
+		}, nil
 	case err == nil:
-		fmt.Fprintln(cmd.ErrOrStderr(), "Your account has no webhook signing secret configured.")
+		why = "no webhook secret configured for this account"
 	default:
 		var apiErr *api.APIError
 		if !errors.As(err, &apiErr) || apiErr.Status != http.StatusForbidden {
-			return "", fmt.Errorf("read webhook config: %w", err)
+			return listenSecretSource{}, fmt.Errorf("read webhook config: %w", err)
 		}
 
-		fmt.Fprintln(cmd.ErrOrStderr(), "Your key cannot read the webhook config (needs webhooks:read).")
+		why = "no webhook config readable — needs webhooks:read"
 	}
 
 	raw := make([]byte, 24)
 	if _, err := rand.Read(raw); err != nil {
-		return "", fmt.Errorf("generate ephemeral secret: %w", err)
+		return listenSecretSource{}, fmt.Errorf("generate ephemeral secret: %w", err)
 	}
 
 	secret := "whsec_local_" + hex.EncodeToString(raw)
 
-	fmt.Fprintf(cmd.ErrOrStderr(), "Signing with an ephemeral secret:\n  %s\n", styleOf(cmd).err.Accent(secret))
-
-	return secret, nil
+	return listenSecretSource{
+		secret:      secret,
+		description: "an ephemeral secret (" + why + ")",
+		display:     secret,
+		guidance:    "Put it in REEVIT_WEBHOOK_SECRET so your handler can verify these events",
+	}, nil
 }
 
 // envelopeFor decodes an event's data into the envelope the delivery
@@ -197,6 +251,10 @@ type eventForwarder struct {
 	secret string
 	out    *cobra.Command
 	sty    ui.Styler
+	// errSty styles the stderr commentary. The event lines are this
+	// command's data and stay on stdout; why a delivery failed is
+	// conversation and must not corrupt a piped log.
+	errSty ui.Styler
 	httpc  *http.Client
 	// runID makes delivery ids unique per process. A handler that dedupes on
 	// delivery id — the production-correct behaviour — silently dropped every
@@ -209,6 +267,7 @@ func newEventForwarder(
 	target, secret string,
 	out *cobra.Command,
 	sty ui.Styler,
+	errSty ui.Styler,
 	httpc *http.Client,
 ) *eventForwarder {
 	return &eventForwarder{
@@ -216,6 +275,7 @@ func newEventForwarder(
 		secret: secret,
 		out:    out,
 		sty:    sty,
+		errSty: errSty,
 		httpc:  httpc,
 		runID:  uuid.NewString()[:8],
 	}
@@ -276,7 +336,9 @@ func (f *eventForwarder) handle(evt api.SSEEvent) {
 
 	_ = resp.Body.Close()
 
-	line := fmt.Sprintf("%s  %s %s %d (%dms)",
+	// %-26s so the status codes line up into a column the eye can scan; a
+	// ragged right edge is what makes a long `listen` session unreadable.
+	line := fmt.Sprintf("%s  %-26s %s %d  %dms",
 		time.Now().Format("15:04:05"), eventType, marker(f.sty.Step("")),
 		resp.StatusCode, time.Since(started).Milliseconds())
 
@@ -289,6 +351,13 @@ func (f *eventForwarder) handle(evt api.SSEEvent) {
 	}
 
 	fmt.Fprintln(f.out.OutOrStdout(), line)
+
+	// A bare 404 in the status column reads as "Reevit failed". Naming the
+	// handler as the author of the status points the fix at the right file.
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		fmt.Fprintln(f.out.ErrOrStderr(),
+			"  "+f.errSty.Dim(fmt.Sprintf("your handler returned %d for %s", resp.StatusCode, eventType)))
+	}
 }
 
 // SignBody produces the production webhook signature for a payload:
@@ -304,5 +373,8 @@ func init() {
 	listenCmd.Flags().StringVar(&listenForwardTo, "forward-to", "", "local endpoint to POST events to (required)")
 	listenCmd.Flags().StringVar(&listenSecret, "secret", "", "override the signing secret")
 	listenCmd.Flags().StringVar(&listenSecret, "signing-secret", "", "override the signing secret")
+	// Two flags for one variable is a compatibility alias, not a choice the
+	// user should have to make. Hide the older spelling so --help offers one.
+	_ = listenCmd.Flags().MarkHidden("secret")
 	rootCmd.AddCommand(listenCmd)
 }

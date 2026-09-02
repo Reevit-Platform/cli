@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -36,15 +37,23 @@ func TestListenPrefersProjectSigningSecret(t *testing.T) {
 	command := &cobra.Command{}
 	command.SetOut(&out)
 
-	secret, err := resolveListenSecret(command, nil, dir)
+	source, err := resolveListenSecret(command, nil, dir)
 	if err != nil {
 		t.Fatalf("resolveListenSecret: %v", err)
 	}
 
-	if secret != "whsec_project" {
-		t.Fatalf("secret = %q", secret)
+	if source.secret != "whsec_project" {
+		t.Fatalf("secret = %q", source.secret)
 	}
-	if strings.Contains(out.String(), secret) {
+	if source.description != "REEVIT_WEBHOOK_SECRET from .env.local" {
+		t.Errorf("description = %q, want the file it came from", source.description)
+	}
+	// A secret the user already has needs no echo, and the header line must
+	// name the file so a stale value is findable.
+	if source.display != "" {
+		t.Errorf("display = %q, want no echo of a secret the user already has", source.display)
+	}
+	if strings.Contains(out.String(), source.secret) {
 		t.Fatalf("project secret was printed: %s", out.String())
 	}
 }
@@ -68,8 +77,11 @@ func TestListenFlagTakesPrecedenceOverProjectSecret(t *testing.T) {
 		t.Fatalf("resolveListenSecret: %v", err)
 	}
 
-	if got != "whsec_flag" {
-		t.Fatalf("secret = %q, want flag value", got)
+	if got.secret != "whsec_flag" {
+		t.Fatalf("secret = %q, want flag value", got.secret)
+	}
+	if !strings.Contains(got.description, "--signing-secret") {
+		t.Errorf("description = %q, want it to name the flag", got.description)
 	}
 }
 
@@ -176,7 +188,7 @@ func TestForwarderSurvivesNullEventData(t *testing.T) {
 	}))
 	defer local.Close()
 
-	f := newEventForwarder(local.URL, "whsec_test", listenCmd, ui.Styler{}, local.Client())
+	f := newEventForwarder(local.URL, "whsec_test", listenCmd, ui.Styler{}, ui.Styler{}, local.Client())
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -330,8 +342,8 @@ func (b *lockedBuffer) String() string {
 // Two runs must not reuse delivery ids: a handler that dedupes on delivery id
 // dropped every event of the second run.
 func TestForwardersUseDistinctDeliveryIDsPerRun(t *testing.T) {
-	first := newEventForwarder("http://127.0.0.1:1", "s", listenCmd, ui.Styler{}, &http.Client{})
-	second := newEventForwarder("http://127.0.0.1:1", "s", listenCmd, ui.Styler{}, &http.Client{})
+	first := newEventForwarder("http://127.0.0.1:1", "s", listenCmd, ui.Styler{}, ui.Styler{}, &http.Client{})
+	second := newEventForwarder("http://127.0.0.1:1", "s", listenCmd, ui.Styler{}, ui.Styler{}, &http.Client{})
 
 	if first.runID == "" || first.runID == second.runID {
 		t.Fatalf("run ids %q and %q must differ", first.runID, second.runID)
@@ -385,21 +397,39 @@ func TestListenMintsEphemeralSecretOnScopeRefusal(t *testing.T) {
 
 	c := api.New(config.Config{APIKey: "pfk_test_x.sec", BaseURL: server.URL, Mode: "test"})
 
-	secret, err := fetchOrMintSecret(command, c)
+	source, err := fetchOrMintSecret(command, c)
 	if err != nil {
 		t.Fatalf("fetchOrMintSecret: %v", err)
 	}
 
-	if !strings.HasPrefix(secret, "whsec_local_") {
-		t.Fatalf("secret = %q, want an ephemeral one", secret)
+	if !strings.HasPrefix(source.secret, "whsec_local_") {
+		t.Fatalf("secret = %q, want an ephemeral one", source.secret)
 	}
 
-	if !strings.Contains(out.String(), "webhooks:read") {
-		t.Errorf("output does not name the missing scope:\n%s", out.String())
+	// "an ephemeral secret" on its own does not tell the user whether to
+	// grant a scope or create a webhook secret. The reason must survive, and
+	// the scope name is the only actionable half of it.
+	if !strings.Contains(source.description, "no webhook config readable") {
+		t.Errorf("description does not say why it is ephemeral: %q", source.description)
 	}
 
-	if !strings.Contains(out.String(), secret) {
-		t.Errorf("the ephemeral secret must be printed:\n%s", out.String())
+	if !strings.Contains(source.description, "webhooks:read") {
+		t.Errorf("description does not name the missing scope: %q", source.description)
+	}
+
+	// The user cannot verify a signature with a secret they never saw.
+	if source.display != source.secret {
+		t.Errorf("display = %q, want the ephemeral secret itself", source.display)
+	}
+
+	if !strings.Contains(source.guidance, "REEVIT_WEBHOOK_SECRET") {
+		t.Errorf("guidance = %q, want it to say where the secret goes", source.guidance)
+	}
+
+	// Resolution is silent now: the caller owns the order of the screen, so
+	// the secret cannot be printed above the header that explains it.
+	if out.String() != "" {
+		t.Errorf("secret resolution printed on its own:\n%s", out.String())
 	}
 }
 
@@ -453,7 +483,7 @@ func TestForwarderMarksTheHandlerVerdict(t *testing.T) {
 			command.SetErr(io.Discard)
 			command.SetContext(context.Background())
 
-			f := newEventForwarder(local.URL, "whsec_test", command, ui.Styler{}, local.Client())
+			f := newEventForwarder(local.URL, "whsec_test", command, ui.Styler{}, ui.Styler{}, local.Client())
 			f.handle(api.SSEEvent{Type: "payment.succeeded", Data: `{"id":"pay_1"}`})
 
 			line := out.String()
@@ -471,5 +501,211 @@ func TestForwarderMarksTheHandlerVerdict(t *testing.T) {
 				t.Fatalf("line = %q, want the ASCII arrow from the plain styler", line)
 			}
 		})
+	}
+}
+
+// The event line is a column layout, not a sentence: a long session is only
+// readable if the status codes stack up under one another. `%-26s` on the
+// event type is what makes that true, so the padding is asserted directly
+// rather than inferred from one example.
+func TestForwardedEventLinesAlignIntoColumns(t *testing.T) {
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer local.Close()
+
+	var out bytes.Buffer
+
+	command := &cobra.Command{}
+	command.SetOut(&out)
+	command.SetErr(io.Discard)
+	command.SetContext(context.Background())
+
+	f := newEventForwarder(local.URL, "whsec_test", command, ui.Styler{}, ui.Styler{}, local.Client())
+	f.handle(api.SSEEvent{Type: "payment.succeeded", Data: `{"id":"pay_1"}`})
+	f.handle(api.SSEEvent{Type: "refund.created", Data: `{"id":"pay_2"}`})
+
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("lines = %q, want two event lines", lines)
+	}
+
+	columns := make([]int, 0, 2)
+
+	for _, line := range lines {
+		at := strings.Index(line, "> ")
+		if at < 0 {
+			t.Fatalf("line = %q, want the status marker", line)
+		}
+
+		columns = append(columns, at)
+	}
+
+	if columns[0] != columns[1] {
+		t.Fatalf("status column at %d and %d; the event type is not padded", columns[0], columns[1])
+	}
+
+	// Alignment is worthless if it collapses the moment a long event type
+	// arrives, so pin the width rather than just the agreement.
+	if !strings.Contains(lines[0], "payment.succeeded          > 200") {
+		t.Errorf("line = %q, want the event type padded to 26 columns", lines[0])
+	}
+
+	// The duration is a scannable column now, not a parenthetical aside.
+	if !strings.HasSuffix(lines[0], "ms") || strings.Contains(lines[0], "ms)") {
+		t.Errorf("line = %q, want a bare duration column", lines[0])
+	}
+}
+
+// A red "404" in the status column reads as "Reevit failed". It did not: the
+// developer's own handler answered, and the fix is in their code.
+func TestForwarderBlamesTheHandlerForNon2xxOnStderr(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		status  int
+		wantErr string
+	}{
+		{name: "404 is explained", status: http.StatusNotFound, wantErr: "your handler returned 404 for payment.succeeded"},
+		{name: "200 says nothing", status: http.StatusOK, wantErr: ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(test.status)
+			}))
+			defer local.Close()
+
+			var stdout, stderr bytes.Buffer
+
+			command := &cobra.Command{}
+			command.SetOut(&stdout)
+			command.SetErr(&stderr)
+			command.SetContext(context.Background())
+
+			f := newEventForwarder(local.URL, "whsec_test", command, ui.Styler{}, ui.Styler{}, local.Client())
+			f.handle(api.SSEEvent{Type: "payment.succeeded", Data: `{"id":"pay_1"}`})
+
+			if test.wantErr == "" {
+				if stderr.String() != "" {
+					t.Fatalf("stderr = %q, want nothing said about a healthy delivery", stderr.String())
+				}
+
+				return
+			}
+
+			if !strings.Contains(stderr.String(), test.wantErr) {
+				t.Fatalf("stderr = %q, want %q", stderr.String(), test.wantErr)
+			}
+
+			// The explanation is commentary. Keeping it out of stdout is what
+			// lets `reevit listen > deliveries.log` stay parseable.
+			if strings.Contains(stdout.String(), "your handler") {
+				t.Fatalf("stdout = %q, must carry only the delivery line", stdout.String())
+			}
+		})
+	}
+}
+
+// api.Client.Stream returns nil when the server closes the connection — the
+// ordinary outcome of a dev-server restart. Formatting that as a cause used to
+// dereference a nil error.
+func TestStreamDropCauseNamesACleanCloseWithoutPanicking(t *testing.T) {
+	t.Parallel()
+
+	if got := streamDropCause(nil); got != "the server closed the stream" {
+		t.Errorf("streamDropCause(nil) = %q", got)
+	}
+
+	if got := streamDropCause(errors.New("request GET /events: dial tcp 1.2.3.4:1: refused")); got != "dial tcp 1.2.3.4:1: refused" {
+		t.Errorf("streamDropCause = %q, want the transport cause only", got)
+	}
+}
+
+// `listen` spends most of its life idle, so "connected and waiting" and "hung
+// on startup" look identical without a ready line — and the ephemeral secret,
+// the one string the user has to copy, used to print above the header that
+// explains what they are looking at.
+func TestListenOpensWithAHeaderThenTheReadyLine(t *testing.T) {
+	stream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/v1/events/stream") {
+			w.WriteHeader(http.StatusNotFound)
+
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer stream.Close()
+
+	resetFlags()
+	t.Cleanup(resetFlags)
+
+	t.Setenv("REEVIT_CONFIG", filepath.Join(t.TempDir(), "config.json"))
+	t.Setenv("REEVIT_API_KEY", "pfk_test_header.sec")
+	t.Setenv("REEVIT_API_URL", stream.URL)
+	t.Setenv("REEVIT_MODE", "")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var stdout, stderr lockedBuffer
+
+	done := make(chan error, 1)
+
+	go func() {
+		done <- ExecuteWith(ctx,
+			[]string{"listen", "--forward-to", "http://127.0.0.1:1", "--signing-secret", "whsec_x"},
+			strings.NewReader(""), &stdout, &stderr)
+	}()
+
+	deadline := time.After(10 * time.Second)
+
+	for !strings.Contains(stderr.String(), "stream dropped") {
+		select {
+		case err := <-done:
+			t.Fatalf("listen returned early: %v", err)
+		case <-deadline:
+			t.Fatalf("never reconnected; stderr:\n%s", stderr.String())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	cancel()
+	<-done
+
+	transcript := stderr.String()
+
+	for _, want := range []string{
+		"\nReevit listen\n",
+		"  Forwarding to   http://127.0.0.1:1\n",
+		"  Signing with    the --signing-secret you passed\n",
+		"ok Connected — waiting for test-mode events (Ctrl-C to stop)\n",
+	} {
+		if !strings.Contains(transcript, want) {
+			t.Errorf("stderr is missing %q:\n%s", want, transcript)
+		}
+	}
+
+	// Order is the point: a ready line above the header would describe a
+	// connection the user cannot yet identify.
+	header, ready := strings.Index(transcript, "Reevit listen"), strings.Index(transcript, "Connected")
+	if header >= 0 && ready >= 0 && header > ready {
+		t.Errorf("the ready line precedes the header:\n%s", transcript)
+	}
+
+	// A drop must say what happened and what the CLI will do about it,
+	// without a raw Go error on the headline.
+	if !strings.Contains(transcript, "! stream dropped — reconnecting in 1s\n") {
+		t.Errorf("stderr does not carry the reconnect notice:\n%s", transcript)
+	}
+
+	if !strings.Contains(transcript, "the server closed the stream") {
+		t.Errorf("stderr does not say why the stream ended:\n%s", transcript)
+	}
+
+	// The whole transcript is conversation. Nothing but delivered events is
+	// allowed on stdout, which is what makes redirecting it useful.
+	if stdout.String() != "" {
+		t.Errorf("stdout = %q, want only forwarded-event lines", stdout.String())
 	}
 }
