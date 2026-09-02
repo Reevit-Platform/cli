@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/Reevit-Platform/cli/internal/config"
 	"time"
 )
 
@@ -221,19 +223,40 @@ func TestEnsureNoticeSaysNothingWhenTelemetryIsOff(t *testing.T) {
 
 // Printing without persisting would re-disclose on every run, and Report
 // would keep minting a fresh "install" each time.
+//
+// The failure has to happen in Save, not in Load: an unreadable config makes
+// EnsureNotice bail one guard earlier, which would pass this test without
+// ever exercising the guard it is about. So the directory exists and is
+// readable, and only writing into it is refused.
 func TestEnsureNoticeStaysSilentWhenTheIDCannotBePersisted(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+
 	t.Setenv("DO_NOT_TRACK", "")
 	t.Setenv("REEVIT_TELEMETRY", "")
 	t.Setenv("REEVIT_API_KEY", "")
 
-	// A directory where the config file's parent is a regular file: nothing
-	// can be created underneath it.
-	blocked := filepath.Join(t.TempDir(), "not-a-dir")
-	if err := os.WriteFile(blocked, []byte("x"), 0o600); err != nil {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+
+	t.Setenv("REEVIT_CONFIG", configPath)
+
+	// Sanity: the config is loadable (absent is fine) before we lock the
+	// directory, so a later silence cannot be blamed on Load.
+	if _, err := config.Load(); err != nil {
+		t.Fatalf("config must be loadable for this test to mean anything: %v", err)
+	}
+
+	if err := os.Chmod(dir, 0o500); err != nil {
 		t.Fatal(err)
 	}
 
-	t.Setenv("REEVIT_CONFIG", filepath.Join(blocked, "config.json"))
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	if _, err := config.SaveTelemetryID("probe"); err == nil {
+		t.Fatal("the config directory is still writable; the mutation this test guards cannot be detected")
+	}
 
 	var out bytes.Buffer
 
