@@ -768,12 +768,13 @@ func goldenCases() []goldenCase {
 		// init-non-tty must stay ahead of init-dry-run: it is what proves
 		// resetFlags clears pflag's Changed("goal") between cases.
 		{name: "init-non-tty", args: []string{"init"}, dir: nextProjectDir, wantExit: 1},
-		// --goal webhook, not full: the dry-run plan lists a target's files by
-		// ranging over scaffold.Target.Files, a map (internal/setup/plan.go:117),
-		// so any goal whose targets contribute more than one file prints them
-		// in a random order. webhook is the one single-file target. See
-		// AGENTS.md — fixing that ordering is production work, not this plan's.
 		{name: "init-dry-run", args: []string{"init", "--dry-run", "--goal", "webhook"}, dir: nextProjectDir},
+		// --goal full pulls in the checkout and client targets, which contribute
+		// several files each. Those used to print in a random order because the
+		// plan ranged scaffold.Target.Files, a map; Target.SortedFiles fixed it.
+		// This golden is the lock on that order — if anyone ranges the map
+		// directly again, this snapshot starts flapping.
+		{name: "init-dry-run-full", args: []string{"init", "--dry-run", "--goal", "full"}, dir: nextProjectDir},
 
 		// The coloured pair. The harness writes to bytes.Buffers, so nothing is
 		// a TTY: FORCE_COLOR is what turns colour on, which is the documented

@@ -44,6 +44,30 @@ type Target struct {
 	Checkout *CheckoutOptions
 }
 
+// FileMapping is one template name paired with its output path.
+type FileMapping struct {
+	Template string
+	Path     string
+}
+
+// SortedFiles returns the target's template/output pairs ordered by output
+// path. Files is a map, so ranging it directly yields a different order on
+// every run. Anything whose order the user can observe — the init plan, the
+// created-file list, the conflict list — must iterate through here instead.
+func (t Target) SortedFiles() []FileMapping {
+	out := make([]FileMapping, 0, len(t.Files))
+	for tmpl, path := range t.Files {
+		out = append(out, FileMapping{Template: tmpl, Path: path})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Path != out[j].Path {
+			return out[i].Path < out[j].Path
+		}
+		return out[i].Template < out[j].Template
+	})
+	return out
+}
+
 // templateData feeds the .tmpl files.
 type templateData struct {
 	TS             bool
@@ -496,7 +520,8 @@ func Apply(project Project, targets []Target, opts ApplyOptions) ([]FileResult, 
 
 	for _, target := range targets {
 		data := checkoutTemplateData(project.TypeScript, target.Checkout)
-		for tmplName, outRel := range target.Files {
+		for _, file := range target.SortedFiles() {
+			tmplName, outRel := file.Template, file.Path
 			if err := validateOutputPath(project.Root, outRel); err != nil {
 				return results, err
 			}
