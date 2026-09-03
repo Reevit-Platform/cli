@@ -121,7 +121,7 @@ history. Keys are stored in your user config with owner-only permissions.`,
 		}
 
 		sty := styleOf(cmd).err
-		out := cmd.ErrOrStderr()
+		out := noticeStream(cmd)
 
 		fmt.Fprintln(out, sty.Success(fmt.Sprintf("Key accepted (%s mode)", saved.Mode)))
 		fmt.Fprintln(out, "  "+sty.Note("saved to "+shortenHome(p)))

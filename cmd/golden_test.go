@@ -547,6 +547,29 @@ func goldenCases() []goldenCase {
 			wantExit: 1,
 		},
 
+		// --quiet trims the conversation and nothing else. The three cases
+		// below pin the three halves of that: a hint disappears, a success
+		// confirmation disappears, and a failure does not.
+		{
+			name:   "payments-list-empty-quiet",
+			args:   []string{"payments", "list", "--quiet"},
+			env:    map[string]string{"REEVIT_API_KEY": testKey},
+			server: paymentsServer(http.StatusOK, `[]`),
+		},
+		{
+			name:   "login-key-saved-quiet",
+			args:   []string{"login", "-q", "--key", testKey},
+			server: paymentsServer(http.StatusOK, `[]`),
+		},
+		{
+			name: "payments-list-forbidden-quiet",
+			args: []string{"payments", "list", "--quiet"},
+			env:  map[string]string{"REEVIT_API_KEY": testKey},
+			server: paymentsServer(http.StatusForbidden,
+				`{"code":"insufficient_scope","message":"missing payments:read"}`),
+			wantExit: 1,
+		},
+
 		{name: "trigger-unknown-event", args: []string{"trigger", "payment.bogus"}, wantExit: 1},
 		{name: "trigger-not-logged-in", args: []string{"trigger", "payment.succeeded"}, wantExit: 1},
 		{name: "listen-missing-forward-to", args: []string{"listen"}, wantExit: 1},
@@ -805,6 +828,27 @@ func TestGoldenStreamsAreSeparate(t *testing.T) {
 
 		if !strings.Contains(got, "! could not reach the API to verify the key\n    dial tcp") {
 			t.Errorf("stderr = %q, want the cause on its own dim line under the warning", got)
+		}
+	})
+
+	// --quiet is a promise about the conversation, not about the outcome. A
+	// quiet flag that also swallows the reason a command failed turns a CI
+	// log into an exit code with no explanation.
+	t.Run("quiet drops the hints and the confirmations, never the failure", func(t *testing.T) {
+		if got := readGolden(t, "payments-list-empty-quiet.stderr"); got != "" {
+			t.Errorf("stderr = %q, want the \"No payments\" hint suppressed", got)
+		}
+
+		if loud := readGolden(t, "payments-list-empty.stderr"); !strings.Contains(loud, "No payments") {
+			t.Errorf("stderr = %q, want the hint without --quiet — otherwise the case above proves nothing", loud)
+		}
+
+		if got := readGolden(t, "login-key-saved-quiet.stderr"); got != "" {
+			t.Errorf("stderr = %q, want the saved-to confirmation suppressed", got)
+		}
+
+		if got := readGolden(t, "payments-list-forbidden-quiet.stderr"); !strings.Contains(got, "insufficient_scope") {
+			t.Errorf("stderr = %q, want --quiet to leave the failure intact", got)
 		}
 	})
 

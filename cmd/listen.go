@@ -70,7 +70,7 @@ fallback is ephemeral.`,
 		// The stream itself is this command's data; everything it says about
 		// the stream is conversation and belongs on stderr.
 		sty := styleOf(cmd)
-		notice := cmd.ErrOrStderr()
+		notice := noticeStream(cmd)
 
 		source, err := resolveListenSecret(cmd, c, root)
 		if err != nil {
@@ -117,9 +117,14 @@ fallback is ephemeral.`,
 				backoff = time.Second
 			}
 
-			fmt.Fprintln(notice, sty.err.Warning(fmt.Sprintf("stream dropped — reconnecting in %s", backoff)))
-			fmt.Fprintln(notice, "  "+sty.err.Dim(streamDropCause(err)))
-			fmt.Fprintln(notice, "  "+sty.err.Dim(listenGapNotice))
+			// The reconnect block stays on stderr even under --quiet: a
+			// silent gap in a forwarded event log is the one thing a user
+			// tailing this must not be allowed to mistake for quiet traffic.
+			dropped := cmd.ErrOrStderr()
+
+			fmt.Fprintln(dropped, sty.err.Warning(fmt.Sprintf("stream dropped — reconnecting in %s", backoff)))
+			fmt.Fprintln(dropped, "  "+sty.err.Dim(streamDropCause(err)))
+			fmt.Fprintln(dropped, "  "+sty.err.Dim(listenGapNotice))
 
 			select {
 			case <-cmd.Context().Done():

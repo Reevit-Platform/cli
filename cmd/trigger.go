@@ -67,14 +67,18 @@ Supported events, with the magic amount each one uses:
 		}
 
 		sty := styleOf(cmd)
-		notice := cmd.ErrOrStderr()
+		notice := noticeStream(cmd)
 
 		if triggerAmountOv > 0 {
 			// An override silently discards the outcome the user asked for:
 			// the simulator branches on the amount, so 4000 is what makes
 			// `payment.succeeded` succeed. Say so before it looks broken.
+			//
+			// Straight to stderr, not through notice: --quiet trims the
+			// narration, and "the outcome you asked for will not happen" is
+			// not narration.
 			if !isMagicAmount(triggerAmountOv) {
-				fmt.Fprintln(notice, sty.err.Warning(fmt.Sprintf(
+				fmt.Fprintln(cmd.ErrOrStderr(), sty.err.Warning(fmt.Sprintf(
 					"%d is not a magic amount — this will be an ordinary sandbox payment",
 					triggerAmountOv)))
 			}

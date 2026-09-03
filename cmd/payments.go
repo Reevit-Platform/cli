@@ -62,7 +62,7 @@ created. Filter with --status and shorten the list with --limit.`,
 		}
 
 		if len(rows) == 0 {
-			fmt.Fprintf(cmd.ErrOrStderr(), "No payments in %s mode.\n", c.Mode())
+			fmt.Fprintf(noticeStream(cmd), "No payments in %s mode.\n", c.Mode())
 
 			return nil
 		}
