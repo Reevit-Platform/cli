@@ -187,7 +187,13 @@ var (
 	// once per process and another test may have resolved it first, so the
 	// rendered value is normalised rather than trusted.
 	goldenDateTimeRe = regexp.MustCompile(`\d{4}-\d{2}-\d{2} \d{2}:\d{2}`)
-	goldenTimeRe     = regexp.MustCompile(`\d{2}:\d{2}:\d{2}`)
+	// Anchored at the start of a line, because that is where the only clock
+	// value the CLI prints in this shape lives: `listen`'s delivery line
+	// opens with time.Now().Format("15:04:05"). Unanchored it also ate the
+	// time out of every RFC 3339 created_at in a --json document, which is
+	// fixed test data, not a clock — and normalising fixture data away is
+	// how a golden stops proving anything about it.
+	goldenTimeRe = regexp.MustCompile(`(?m)^\d{2}:\d{2}:\d{2}`)
 	// The forwarded-event line prints its round trip as a bare `12ms`
 	// column; it used to be parenthesised, and the pattern moved with it.
 	goldenMillisRe   = regexp.MustCompile(`\b\d+ms\b`)
@@ -538,6 +544,33 @@ func goldenCases() []goldenCase {
 			unsetEnv: []string{"REEVIT_TELEMETRY", "DO_NOT_TRACK"},
 			server:   paymentsServer(http.StatusOK, twoPayments),
 		},
+		// The primary --json case runs against the bare array /payments
+		// actually returns today.
+		{
+			name:   "payments-list-json",
+			args:   []string{"payments", "list", "--json", "--limit", "2"},
+			env:    map[string]string{"REEVIT_API_KEY": testKey, "TZ": "UTC"},
+			server: paymentsServer(http.StatusOK, twoPayments),
+		},
+		// …and the second against the envelope three other backend list
+		// endpoints already use, so the CLI does not have to be changed on
+		// the day /payments joins them.
+		{
+			name: "payments-list-json-envelope",
+			args: []string{"payments", "list", "--json", "--limit", "2"},
+			env:  map[string]string{"REEVIT_API_KEY": testKey, "TZ": "UTC"},
+			server: paymentsServer(http.StatusOK,
+				`{"data":`+twoPayments+`,"pagination":{"total":2,"limit":20,"offset":0}}`),
+		},
+		// An empty list is `"data": []`, never `null`: a consumer piping
+		// into `.data[]` should not need a null guard, and the human path's
+		// "No payments" hint has no place on a machine-readable stdout.
+		{
+			name:   "payments-list-empty-json",
+			args:   []string{"payments", "list", "--json"},
+			env:    map[string]string{"REEVIT_API_KEY": testKey},
+			server: paymentsServer(http.StatusOK, `[]`),
+		},
 		{
 			name: "payments-list-forbidden",
 			args: []string{"payments", "list"},
@@ -699,6 +732,14 @@ func TestNormaliserErasesEveryClockValue(t *testing.T) {
 			name: "a payments table timestamp",
 			in:   "pay_1  GHS 100.00  succeeded  2026-08-31 09:15",
 			want: "pay_1  GHS 100.00  succeeded  <CREATED>",
+		},
+		{
+			// The counter-example: an RFC 3339 timestamp inside a --json
+			// document is fixture data the golden exists to pin, and it
+			// must survive normalisation intact.
+			name: "an RFC 3339 timestamp in a JSON document",
+			in:   `{"id":"pmt_1","created_at":"2026-01-02T09:30:00Z"}`,
+			want: `{"id":"pmt_1","created_at":"2026-01-02T09:30:00Z"}`,
 		},
 		{
 			name: "an ephemeral listen port",
@@ -872,4 +913,75 @@ func readGolden(t *testing.T, file string) string {
 	}
 
 	return string(raw)
+}
+
+// TestJSONStdoutIsPureJSON is the whole promise of --json in one assertion:
+// a consumer runs `reevit … --json | jq` and every byte on stdout parses.
+// One stray progress line, one hint that forgot which stream it was on, and
+// the pipeline dies — and a golden that merely "looks right" to a reviewer
+// would not catch it, because a human reads past a leading blank line.
+//
+// It walks the goldens rather than taking a list, so a --json case added
+// later is covered without anyone remembering to add it here.
+func TestJSONStdoutIsPureJSON(t *testing.T) {
+	t.Parallel()
+
+	files, err := filepath.Glob(filepath.Join(goldenRoot, "*-json*.stdout"))
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+
+	// Without this the whole test passes vacuously the day someone renames
+	// the goldens.
+	if len(files) < 2 {
+		t.Fatalf("found %d *-json*.stdout goldens, want the --json cases", len(files))
+	}
+
+	for _, path := range files {
+		name := filepath.Base(path)
+
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read %s: %v", path, err)
+			}
+
+			body := strings.TrimSuffix(string(raw), "\n")
+			if body == "" {
+				t.Fatalf("%s is empty, so --json produced no document at all", name)
+			}
+
+			// One document per run. `listen` is the only NDJSON producer
+			// and it never exits, so the harness cannot run it — its lines
+			// are checked in TestListenEmitsOneJSONObjectPerDelivery
+			// instead. Parsing line by line anyway is what would catch a
+			// second document appearing here.
+			lines := strings.Split(body, "\n")
+			if len(lines) != 1 {
+				t.Fatalf("%s has %d lines, want exactly one JSON document:\n%s", name, len(lines), body)
+			}
+
+			for i, line := range lines {
+				var document struct {
+					Schema string `json:"schema"`
+				}
+
+				if err := json.Unmarshal([]byte(line), &document); err != nil {
+					t.Fatalf("%s line %d does not parse as JSON (%v):\n%q", name, i+1, err, line)
+				}
+
+				// The version string is what lets a consumer branch on the
+				// shape instead of on the CLI's own version number.
+				if document.Schema == "" {
+					t.Errorf("%s line %d carries no \"schema\":\n%q", name, i+1, line)
+				}
+
+				if !strings.HasPrefix(document.Schema, "reevit.cli.") || !strings.Contains(document.Schema, ".v") {
+					t.Errorf("%s line %d schema = %q, want reevit.cli.<command>.v<n>", name, i+1, document.Schema)
+				}
+			}
+		})
+	}
 }
