@@ -490,6 +490,12 @@ func goldenCases() []goldenCase {
 		{name: "unknown-command", args: []string{"doctro"}, wantExit: 1},
 		// A misspelled flag is a usage error, not a runtime failure: exit 2.
 		{name: "unknown-flag", args: []string{"listen", "--forwardto", "x"}, wantExit: 2},
+		// --json is a promise about what stdout contains, not a promise that
+		// there will be one. A usage error happens before any command runs,
+		// so stdout stays empty and the exit code is still 2 — a consumer
+		// that got half a document here would be worse off than one that got
+		// nothing.
+		{name: "unknown-flag-json", args: []string{"listen", "--json", "--forwardto", "x"}, wantExit: 2},
 
 		{
 			name: "login-key-rejected",
@@ -1152,12 +1158,16 @@ func TestGoldenStreamsAreSeparate(t *testing.T) {
 	})
 
 	t.Run("unknown-flag writes nothing to stdout", func(t *testing.T) {
-		if got := readGolden(t, "unknown-flag.stdout"); got != "" {
-			t.Errorf("stdout = %q, want empty", got)
-		}
+		// Both spellings: --json must not turn a usage error into a partial
+		// document, and must not move the error off stderr either.
+		for _, name := range []string{"unknown-flag", "unknown-flag-json"} {
+			if got := readGolden(t, name+".stdout"); got != "" {
+				t.Errorf("%s stdout = %q, want empty", name, got)
+			}
 
-		if got := readGolden(t, "unknown-flag.stderr"); got == "" {
-			t.Error("stderr is empty, want the flag error")
+			if got := readGolden(t, name+".stderr"); got == "" {
+				t.Errorf("%s stderr is empty, want the flag error", name)
+			}
 		}
 	})
 }
@@ -1207,6 +1217,16 @@ func TestJSONStdoutIsPureJSON(t *testing.T) {
 			}
 
 			body := strings.TrimSuffix(string(raw), "\n")
+
+			// The one legitimate empty case: a usage error is decided before
+			// any command runs, so there is no document to emit. Its two
+			// halves — empty stdout, the error on stderr — are asserted in
+			// TestGoldenStreamsAreSeparate; skipping it here keeps "empty
+			// means --json produced nothing" a real failure everywhere else.
+			if name == "unknown-flag-json.stdout" {
+				t.Skip("a usage error produces no document by design")
+			}
+
 			if body == "" {
 				t.Fatalf("%s is empty, so --json produced no document at all", name)
 			}
