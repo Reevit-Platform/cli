@@ -98,7 +98,7 @@ repository happens to contain stale lockfiles.
 | --- | --- |
 | `reevit login` | Opens the dashboard in your browser to authorize the CLI — a **test-mode** key is created for you and stored locally (0600). `--key pfk_...` pastes a key manually; `--no-browser` prints the URL instead of opening it |
 | `reevit init` | Detects the framework, router, source layout, and installer; creates project test credentials; configures the simulator/origin; installs SDKs; writes env and runnable integration files; and performs API-level payment/checkout verification. `--yes` accepts the recommendation without prompts; `--goal`/`--target` customize it |
-| `reevit doctor [--app-url url] [--webhook-url url] [--strict] [--e2e]` | Verifies the manifest, scoped project credentials, simulator, allowed origin, env, generated files, running checkout route, and signed/tampered webhook behavior |
+| `reevit doctor [--app-url url] [--webhook-url url] [--strict] [--e2e]` | Verifies the manifest, scoped project credentials, simulator, allowed origin, env, generated files, running checkout route, and signed/tampered webhook behavior. Exits **3** when it finds problems, so CI can tell a failed check from a failed command |
 | `reevit payments list [--status s] [--limit n]` | Recent payments in the current mode |
 | `reevit trigger <event>` | Fire a test event by creating a **real** sandbox payment through the simulator |
 | `reevit listen --forward-to <url>` | Stream live test-mode events to a local endpoint, signed like production |
@@ -277,6 +277,39 @@ key itself, so the CLI derives it the same way: `pfk_live_…` is live,
 `pfk_test_…` is test. Setting `REEVIT_MODE` to something the key contradicts is
 an error rather than a silent mislabel. It still applies to keys that use a
 non-standard prefix.
+
+### Colour and glyphs
+
+Output is coloured and uses `✓`/`✗`/`→` when stderr is a terminal whose
+locale is UTF-8. Everything degrades on its own, and you can override it:
+
+| Setting | Effect |
+| --- | --- |
+| `NO_COLOR=1` (any non-empty value) | no colour, anywhere |
+| `--no-color` | the same, for one run |
+| `TERM=dumb` | no colour and ASCII stand-ins (`ok`, `x`, `!`, `-`, `>`) |
+| `LC_ALL`/`LC_CTYPE`/`LANG` without `UTF-8` | ASCII stand-ins, colour unchanged |
+| `FORCE_COLOR=1` or `CLICOLOR_FORCE=1` | colour even when the output is a pipe or a file |
+
+Each stream is resolved on its own, so `reevit payments list > out.txt` keeps
+the messages on your terminal coloured while the redirected file stays plain.
+The payments table is never coloured in either case: its columns are aligned by
+byte count, and escape sequences would skew them.
+
+### Streams and exit codes
+
+stdout carries data — the payments table, `listen`'s per-event lines, the
+`--dry-run` plan, the payment id from `trigger`. Everything else (prompts,
+progress, warnings, errors, and the whole of `doctor`'s diagnosis) goes to
+stderr, so `reevit doctor > report.txt` still shows you the verdict.
+
+| Exit code | Meaning |
+| --- | --- |
+| `0` | success |
+| `1` | runtime error — the command tried and failed |
+| `2` | usage error — an unknown flag or the wrong number of arguments |
+| `3` | `reevit doctor` found problems (the command itself worked) |
+| `130` | cancelled with Ctrl-C |
 
 ## Credential handling
 

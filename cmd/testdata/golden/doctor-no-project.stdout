@@ -1,9 +1,0 @@
-
-CLI credentials
-  ✔ API key configured (test mode)
-  ✔ key authenticates against <API>
-
-Project files
-  ✖ no project detected here — run doctor from your project root
-
-1 problem(s) found — fix the ✖ items above and rerun `reevit doctor`.

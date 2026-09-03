@@ -19,6 +19,7 @@ import (
 
 	"github.com/Reevit-Platform/cli/internal/api"
 	"github.com/Reevit-Platform/cli/internal/config"
+	"github.com/Reevit-Platform/cli/internal/ui"
 )
 
 func TestListenPrefersProjectSigningSecret(t *testing.T) {
@@ -175,7 +176,7 @@ func TestForwarderSurvivesNullEventData(t *testing.T) {
 	}))
 	defer local.Close()
 
-	f := newEventForwarder(local.URL, "whsec_test", listenCmd, local.Client())
+	f := newEventForwarder(local.URL, "whsec_test", listenCmd, ui.Styler{}, local.Client())
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -329,8 +330,8 @@ func (b *lockedBuffer) String() string {
 // Two runs must not reuse delivery ids: a handler that dedupes on delivery id
 // dropped every event of the second run.
 func TestForwardersUseDistinctDeliveryIDsPerRun(t *testing.T) {
-	first := newEventForwarder("http://127.0.0.1:1", "s", listenCmd, &http.Client{})
-	second := newEventForwarder("http://127.0.0.1:1", "s", listenCmd, &http.Client{})
+	first := newEventForwarder("http://127.0.0.1:1", "s", listenCmd, ui.Styler{}, &http.Client{})
+	second := newEventForwarder("http://127.0.0.1:1", "s", listenCmd, ui.Styler{}, &http.Client{})
 
 	if first.runID == "" || first.runID == second.runID {
 		t.Fatalf("run ids %q and %q must differ", first.runID, second.runID)
@@ -377,7 +378,9 @@ func TestListenMintsEphemeralSecretOnScopeRefusal(t *testing.T) {
 	var out bytes.Buffer
 
 	command := &cobra.Command{}
-	command.SetOut(&out)
+	// The secret and the scope notice are conversation: they go to stderr.
+	command.SetOut(io.Discard)
+	command.SetErr(&out)
 	command.SetContext(context.Background())
 
 	c := api.New(config.Config{APIKey: "pfk_test_x.sec", BaseURL: server.URL, Mode: "test"})
@@ -420,5 +423,53 @@ func TestStreamParsesEventIDs(t *testing.T) {
 
 	if len(got) != 1 || got[0].ID != "42" {
 		t.Fatalf("parsed %+v, want one event with ID 42", got)
+	}
+}
+
+// The per-event line is why anyone runs `listen`: it has to say, at a glance,
+// whether the handler accepted the delivery. A 4xx that looks exactly like a
+// 200 is the failure mode this guards.
+func TestForwarderMarksTheHandlerVerdict(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		status int
+		want   string
+		reject string
+	}{
+		{name: "2xx is a success", status: http.StatusOK, want: "ok ", reject: "x "},
+		{name: "4xx is a failure", status: http.StatusBadRequest, want: "x ", reject: "ok "},
+		{name: "5xx is a failure", status: http.StatusInternalServerError, want: "x ", reject: "ok "},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(test.status)
+			}))
+			defer local.Close()
+
+			var out bytes.Buffer
+
+			command := &cobra.Command{}
+			command.SetOut(&out)
+			command.SetErr(io.Discard)
+			command.SetContext(context.Background())
+
+			f := newEventForwarder(local.URL, "whsec_test", command, ui.Styler{}, local.Client())
+			f.handle(api.SSEEvent{Type: "payment.succeeded", Data: `{"id":"pay_1"}`})
+
+			line := out.String()
+			if !strings.HasPrefix(line, test.want) {
+				t.Fatalf("line = %q, want it to start with %q", line, test.want)
+			}
+
+			if strings.HasPrefix(line, test.reject) {
+				t.Fatalf("line = %q, must not start with %q", line, test.reject)
+			}
+
+			// The arrow degrades with the rest of the vocabulary, so a
+			// non-UTF-8 terminal never sees a stray U+2192.
+			if strings.Contains(line, "→") {
+				t.Fatalf("line = %q, want the ASCII arrow from the plain styler", line)
+			}
+		})
 	}
 }

@@ -1,1 +1,9 @@
-error: doctor found 1 problem(s)
+
+CLI credentials
+  ok API key configured (test mode)
+  ok key authenticates against <API>
+
+Project files
+  x no project detected here — run doctor from your project root
+
+1 problem found — fix the x items above and rerun `reevit doctor`.

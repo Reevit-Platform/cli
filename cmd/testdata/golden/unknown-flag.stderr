@@ -1,1 +1,3 @@
 error: unknown flag: --forwardto
+
+Run 'reevit listen --help' for usage

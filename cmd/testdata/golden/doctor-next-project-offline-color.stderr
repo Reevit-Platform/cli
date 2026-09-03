@@ -1,0 +1,22 @@
+
+[1mCLI credentials[0m
+  [32m✓[0m API key configured (test mode)
+  [32m✓[0m key authenticates against <API>
+
+[1mProject files[0m
+  [32m✓[0m nextjs project
+  [31m✗[0m project manifest is missing — run `reevit init`
+  [31m✗[0m SDK not installed — run `reevit init` or add @reevit/node
+  Environment: .env.local
+  [33m![0m REEVIT_ORG_ID is not set — SDK clients need it alongside the key
+
+[1mPlatform sandbox[0m
+  [33m![0m platform bootstrap check skipped until login and init are complete
+
+[1mRunning application[0m
+  [33m![0m checkout app is not running — start it with `pnpm dev`, then rerun `reevit doctor --strict` (http://localhost:1/reevit-demo)
+
+[1mSigned webhooks[0m
+  [32m✓[0m webhook integration not selected
+
+[1m2 problems found — fix the[0m [31m✗[0m [1mitems above and rerun `reevit doctor`.[0m

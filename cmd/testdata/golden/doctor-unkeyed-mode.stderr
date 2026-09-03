@@ -1,1 +1,10 @@
-error: doctor found 1 problem(s)
+
+CLI credentials
+  ok API key configured (LIVE mode)
+  ! key prefix is not pfk_test_/pfk_live_, so "live" mode comes from REEVIT_MODE or your config, not from the key
+  ok key authenticates against <API>
+
+Project files
+  x no project detected here — run doctor from your project root
+
+1 problem found — fix the x items above and rerun `reevit doctor`.

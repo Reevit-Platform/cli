@@ -110,7 +110,7 @@ Keys are stored in your user config with owner-only permissions.`,
 			return err
 		}
 
-		fmt.Fprintf(cmd.OutOrStdout(), "Saved to %s (%s mode)\n", p, saved.Mode)
+		fmt.Fprintf(cmd.ErrOrStderr(), "Saved to %s (%s mode)\n", p, saved.Mode)
 
 		return nil
 	},

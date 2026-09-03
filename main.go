@@ -18,12 +18,12 @@ func main() {
 			os.Exit(130)
 		}
 
-		code := cmd.ExitCode(err)
-		if code == 130 {
-			fmt.Fprintln(os.Stderr, err)
-		} else {
-			fmt.Fprintln(os.Stderr, "error:", err)
+		// Some errors have already had their say on screen — a cancelled
+		// wizard, doctor's own verdict — and render as nothing.
+		if rendered := cmd.RenderError(err, cmd.StderrStyler()); rendered != "" {
+			fmt.Fprintln(os.Stderr, rendered)
 		}
-		os.Exit(code)
+
+		os.Exit(cmd.ExitCode(err))
 	}
 }

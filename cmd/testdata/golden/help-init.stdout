@@ -30,3 +30,6 @@ Flags:
       --verbose                     stream package-manager output
       --webhook-path string         custom output path for the webhook handler
   -y, --yes                         scaffold everything available without prompting
+
+Global Flags:
+      --no-color   disable colour and glyphs

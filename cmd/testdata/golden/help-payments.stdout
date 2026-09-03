@@ -9,4 +9,7 @@ Available Commands:
 Flags:
   -h, --help   help for payments
 
+Global Flags:
+      --no-color   disable colour and glyphs
+
 Use "reevit payments [command] --help" for more information about a command.

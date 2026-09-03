@@ -101,7 +101,7 @@ func runLogin(t *testing.T, stdin string, args ...string) (configPath string, st
 // treating that EOF as a failure is what `printf '%s' "$KEY" | reevit login
 // --key -` used to hit.
 func TestLoginKeyFromStdinWithoutTrailingNewline(t *testing.T) {
-	configPath, stdout, _, err := runLogin(t, "pfk_test_abc.sec", "login", "--key", "-")
+	configPath, _, stderr, err := runLogin(t, "pfk_test_abc.sec", "login", "--key", "-")
 	if err != nil {
 		t.Fatalf("login --key -: %v", err)
 	}
@@ -115,8 +115,9 @@ func TestLoginKeyFromStdinWithoutTrailingNewline(t *testing.T) {
 		t.Fatalf("config = %s, want the key read from stdin", raw)
 	}
 
-	if !strings.Contains(stdout.String(), "Saved to") {
-		t.Fatalf("stdout = %q, want a save confirmation", stdout)
+	// The confirmation is conversation, so it lands on stderr.
+	if !strings.Contains(stderr.String(), "Saved to") {
+		t.Fatalf("stderr = %q, want a save confirmation", stderr)
 	}
 }
 
@@ -158,7 +159,7 @@ func TestLoginDoesNotPersistTheEnvironmentBaseURL(t *testing.T) {
 // A live key must be recorded and reported as live: `(test mode)` on a
 // pfk_live key is how people ship test wiring against real money.
 func TestLoginRecordsLiveModeForALiveKey(t *testing.T) {
-	configPath, stdout, _, err := runLogin(t, "", "login", "--key", "pfk_live_abc.sec")
+	configPath, _, stderr, err := runLogin(t, "", "login", "--key", "pfk_live_abc.sec")
 	if err != nil {
 		t.Fatalf("login: %v", err)
 	}
@@ -172,8 +173,8 @@ func TestLoginRecordsLiveModeForALiveKey(t *testing.T) {
 		t.Fatalf("config = %s, want live mode", raw)
 	}
 
-	if !strings.Contains(stdout.String(), "(live mode)") {
-		t.Fatalf("stdout = %q, want the live label", stdout)
+	if !strings.Contains(stderr.String(), "(live mode)") {
+		t.Fatalf("stderr = %q, want the live label", stderr)
 	}
 }
 

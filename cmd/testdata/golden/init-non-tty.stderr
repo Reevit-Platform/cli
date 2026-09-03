@@ -1,1 +1,6 @@
-error: interactive setup needs a terminal — rerun with `reevit init --yes` (recommended) or an explicit --goal/--target
+
+Reevit setup
+
+Found Next.js · TypeScript · App Router · pnpm
+error: interactive setup needs a terminal — rerun with `reevit init --yes`
+       (recommended) or an explicit --goal/--target

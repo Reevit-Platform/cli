@@ -1,1 +1,4 @@
 error: Reevit API 403 (insufficient_scope): missing payments:read
+
+  > your key lacks a required scope — run `reevit login` for a fresh test-mode
+    key, or use a key with the scope from Dashboard → Developers → API keys
