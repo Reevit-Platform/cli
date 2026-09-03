@@ -515,3 +515,112 @@ func TestDoctorProbePayloadCarriesTheReplayFields(t *testing.T) {
 		t.Errorf("delivery ids repeat: %q", second)
 	}
 }
+
+// The JSON document is assembled while the run streams, so the order in the
+// struct is the order on screen. A consumer reading `.sections[2]` and a human
+// reading the third heading have to be looking at the same thing.
+func TestDoctorResultCollectsSectionsAndStatusesInOrder(t *testing.T) {
+	var out bytes.Buffer
+
+	res := &doctorResult{}
+
+	res.section(&out, "Credentials")
+	res.pass(&out, "API key configured (%s mode)", "test")
+	res.failr(&out, "reevit login", "the API rejected your key")
+
+	res.section(&out, "Environment (.env.local)")
+	res.skip("REEVIT_API_KEY not checked (this project has no server credential)")
+	res.warnr(&out, "reevit init", "REEVIT_ORG_ID is not set")
+
+	want := []doctorSection{
+		{Name: "Credentials", Checks: []doctorCheck{
+			{Status: "pass", Message: "API key configured (test mode)"},
+			{Status: "fail", Message: "the API rejected your key", Remedy: "reevit login"},
+		}},
+		{Name: "Environment (.env.local)", Checks: []doctorCheck{
+			{Status: "skip", Message: "REEVIT_API_KEY not checked (this project has no server credential)"},
+			{Status: "warn", Message: "REEVIT_ORG_ID is not set", Remedy: "reevit init"},
+		}},
+	}
+
+	if diff := fmt.Sprintf("%+v", res.sections); diff != fmt.Sprintf("%+v", want) {
+		t.Errorf("sections =\n%+v\nwant\n%+v", res.sections, want)
+	}
+
+	if res.failures != 1 || res.warnings != 1 {
+		t.Errorf("failures = %d warnings = %d, want 1 and 1", res.failures, res.warnings)
+	}
+
+	// A skip is recorded and never printed: the human path says nothing at
+	// these points and 031 owns that wording.
+	if strings.Contains(out.String(), "no server credential") {
+		t.Errorf("output = %q, want the skip recorded but not printed", out.String())
+	}
+}
+
+// `note` is a cause, not a command. Serialising it as a remedy would tell a
+// script to run "dial tcp 127.0.0.1:1: connect: connection refused".
+func TestDoctorNoteSerialisesAsADetailNotARemedy(t *testing.T) {
+	var out bytes.Buffer
+
+	res := &doctorResult{}
+	res.section(&out, "Credentials")
+	res.warn(&out, "could not reach the API to verify the key")
+	res.note(&out, "connection refused")
+
+	check := res.sections[0].Checks[0]
+
+	if check.Detail != "connection refused" {
+		t.Errorf("detail = %q, want the cause attached to the finding above it", check.Detail)
+	}
+
+	if check.Remedy != "" {
+		t.Errorf("remedy = %q, want a cause never to become a command to run", check.Remedy)
+	}
+}
+
+// A check recorded before any heading still has to be reachable, or the
+// tallies stop matching what the sections contain.
+func TestDoctorCheckWithoutASectionIsStillRecorded(t *testing.T) {
+	var out bytes.Buffer
+
+	res := &doctorResult{}
+	res.fail(&out, "no project detected here")
+
+	if len(res.sections) != 1 || len(res.sections[0].Checks) != 1 {
+		t.Fatalf("sections = %+v, want one check in an unnamed section", res.sections)
+	}
+}
+
+// --quiet thins doctor's stream to what is wrong. It is the one flag that
+// could turn a diagnostic into a silent exit code, so the split is pinned
+// here as well as in the goldens.
+func TestQuietDoctorPrintsFindingsAndNotPasses(t *testing.T) {
+	var out bytes.Buffer
+
+	res := &doctorResult{quiet: true}
+	res.section(&out, "Credentials")
+	res.pass(&out, "API key configured (test mode)")
+	res.failr(&out, "reevit login", "the API rejected your key")
+	res.warn(&out, "could not reach the API to verify the key")
+
+	got := out.String()
+
+	for _, gone := range []string{"Credentials", "API key configured"} {
+		if strings.Contains(got, gone) {
+			t.Errorf("output = %q, want %q suppressed", got, gone)
+		}
+	}
+
+	for _, kept := range []string{"the API rejected your key", "reevit login", "could not reach the API"} {
+		if !strings.Contains(got, kept) {
+			t.Errorf("output = %q, want %q kept — --quiet trims narration, not findings", got, kept)
+		}
+	}
+
+	// The JSON document is unaffected by --quiet: it is a different stream
+	// with a different reader.
+	if n := len(res.sections[0].Checks); n != 3 {
+		t.Errorf("checks = %d, want all 3 recorded regardless of what printed", n)
+	}
+}

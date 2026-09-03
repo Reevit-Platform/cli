@@ -661,6 +661,41 @@ func goldenCases() []goldenCase {
 			wantExit: 3,
 		},
 
+		// doctor is the command CI actually runs, so its JSON is pinned at
+		// both ends of the range: the earliest possible exit, where the run
+		// gives up after one finding, and a full sweep through every section.
+		// The early one exists because it returns from the middle of RunE —
+		// the path that, before finishDoctor, printed a summary and produced
+		// no document at all.
+		{
+			name:     "doctor-no-project-json",
+			args:     []string{"doctor", "--json"},
+			env:      map[string]string{"REEVIT_API_KEY": testKey},
+			dir:      func(t *testing.T) string { return t.TempDir() },
+			server:   paymentsServer(http.StatusOK, `[]`),
+			wantExit: 3,
+		},
+		{
+			name:     "doctor-next-project-offline-json",
+			args:     []string{"doctor", "--json"},
+			env:      map[string]string{"REEVIT_API_KEY": testKey},
+			dir:      nextProjectDirUnbootstrapped,
+			server:   paymentsServer(http.StatusOK, `[]`),
+			wantExit: 3,
+		},
+		// --quiet on the same run: the failures and the verdict survive, the
+		// headings and the passes do not. A flag that hid what is broken
+		// would make the exit code the only thing left to read, which is the
+		// opposite of what a quiet diagnostic is for.
+		{
+			name:     "doctor-next-project-offline-quiet",
+			args:     []string{"doctor", "--quiet"},
+			env:      map[string]string{"REEVIT_API_KEY": testKey},
+			dir:      nextProjectDirUnbootstrapped,
+			server:   paymentsServer(http.StatusOK, `[]`),
+			wantExit: 3,
+		},
+
 		// init-non-tty must stay ahead of init-dry-run: it is what proves
 		// resetFlags clears pflag's Changed("goal") between cases.
 		{name: "init-non-tty", args: []string{"init"}, dir: nextProjectDir, wantExit: 1},
@@ -914,6 +949,93 @@ func TestGoldenStreamsAreSeparate(t *testing.T) {
 			if !strings.Contains(got, `"data":[]`) {
 				t.Errorf("%s = %s, want \"data\":[] — a null breaks `jq '.data[]'`", file, got)
 			}
+		}
+	})
+
+	// doctor is the one command whose human output IS its findings, so
+	// --json has to move the whole diagnosis across streams rather than add
+	// a line to stdout. Anything left on stderr would be a second, divergent
+	// copy of the verdict.
+	t.Run("doctor --json moves the whole diagnosis to stdout", func(t *testing.T) {
+		for _, name := range []string{"doctor-no-project-json", "doctor-next-project-offline-json"} {
+			if got := readGolden(t, name+".stderr"); got != "" {
+				t.Errorf("%s stderr = %q, want the human rendering replaced, not duplicated", name, got)
+			}
+		}
+
+		var doc doctorDocument
+		if err := json.Unmarshal([]byte(readGolden(t, "doctor-next-project-offline-json.stdout")), &doc); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+
+		// The exit code is 3, so ok must be false: a script that trusts `.ok`
+		// and a script that trusts `$?` have to reach the same conclusion.
+		if doc.OK {
+			t.Errorf("ok = true on a run that exits 3")
+		}
+
+		// The plain golden of the same run is the reference. Every finding it
+		// shows has to be in the document, or --json is a lossy view of the
+		// command rather than another rendering of it.
+		human := readGolden(t, "doctor-next-project-offline.stderr")
+
+		var seen int
+
+		for _, section := range doc.Sections {
+			if !strings.Contains(human, section.Name) {
+				t.Errorf("section %q is in the JSON but not on screen", section.Name)
+			}
+
+			for _, check := range section.Checks {
+				if check.Status == "skip" {
+					continue // a skip prints nothing by design
+				}
+
+				seen++
+
+				if !strings.Contains(human, check.Message) {
+					t.Errorf("check %q is in the JSON but not on screen", check.Message)
+				}
+			}
+		}
+
+		if want := doc.Failures + doc.Warnings; seen <= want {
+			t.Errorf("%d printed checks for %d failures+warnings, want the passes too", seen, want)
+		}
+	})
+
+	// The counter-example to the case above: --quiet is not --json. It thins
+	// the same stream rather than emptying it, and what it keeps is exactly
+	// what is wrong.
+	t.Run("quiet doctor keeps every finding and drops every pass", func(t *testing.T) {
+		got := readGolden(t, "doctor-next-project-offline-quiet.stderr")
+
+		var doc doctorDocument
+		if err := json.Unmarshal([]byte(readGolden(t, "doctor-next-project-offline-json.stdout")), &doc); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+
+		for _, section := range doc.Sections {
+			if strings.Contains(got, section.Name) {
+				t.Errorf("stderr still has the %q heading:\n%s", section.Name, got)
+			}
+
+			for _, check := range section.Checks {
+				switch check.Status {
+				case "fail", "warn":
+					if !strings.Contains(got, check.Message) {
+						t.Errorf("--quiet dropped a %s: %q\n%s", check.Status, check.Message, got)
+					}
+				case "pass":
+					if strings.Contains(got, check.Message) {
+						t.Errorf("--quiet kept a pass: %q\n%s", check.Message, got)
+					}
+				}
+			}
+		}
+
+		if !strings.Contains(got, "2 problems, 3 warnings.") {
+			t.Errorf("stderr = %q, want the verdict — the exit code alone says how many", got)
 		}
 	})
 
