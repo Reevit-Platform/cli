@@ -76,14 +76,19 @@ export function mountReevitWebhook(app{{if .TS}}: Express{{end}}) {
         return;
       }
 
+      // A terminal outcome arrives as `payment.updated` with the result in
+      // `data.status`. There is no `payment.succeeded` event — see
+      // https://docs.reevit.io/webhooks#event-types.
       switch (eventType) {
-        case "payment.succeeded":
-          // TODO: fulfil the order for event.data
-          break;
-        case "payment.failed":
-          // TODO: notify the customer / retry logic
+        case "payment.updated":
+          if (event.data?.status === "succeeded") {
+            // TODO: fulfil the order for event.data
+          } else if (event.data?.status === "failed") {
+            // TODO: notify the customer / retry logic
+          }
           break;
         default:
+          // payment.created, payment.canceled, payment.expired, refund.*, ...
           break;
       }
 

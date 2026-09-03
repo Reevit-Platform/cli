@@ -89,12 +89,18 @@ Route::post('/webhooks/reevit', function (Request $request) {
     // fallback envelope and older payloads use 'type'. Read both.
     $eventType = $event['event'] ?? $event['type'] ?? '';
 
+    // A terminal outcome arrives as `payment.updated` with the result in
+    // $event['data']['status']. There is no `payment.succeeded` event — see
+    // https://docs.reevit.io/webhooks#event-types.
     switch ($eventType) {
-        case 'payment.succeeded':
-            // TODO: fulfil the order for $event['data']
-            break;
-        case 'payment.failed':
-            // TODO: notify the customer / retry logic
+        case 'payment.updated':
+            $status = $event['data']['status'] ?? '';
+
+            if ($status === 'succeeded') {
+                // TODO: fulfil the order for $event['data']
+            } elseif ($status === 'failed') {
+                // TODO: notify the customer / retry logic
+            }
             break;
     }
 

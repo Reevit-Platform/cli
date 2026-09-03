@@ -46,6 +46,50 @@ var webhookDispatchNeedles = map[string]struct {
 	"laravel-webhook.php.tmpl": {`$eventType = $event['event'] ?? $event['type'] ?? '';`, `switch ($event['type'] ?? '')`},
 }
 
+// nonexistentEvents are names the platform does not send. They read as real —
+// they are the names the docs used to carry, and `reevit trigger` still uses
+// them as *scenario* labels — which is exactly why a scaffold reaches for them.
+// A handler that branches on one of these verifies the signature, answers 200
+// and does nothing, forever, with nothing to see in any log.
+var nonexistentEvents = []string{"payment.succeeded", "payment.failed"}
+
+// TestNoWebhookTemplateNamesAnEventWeDoNotSend is the guard the last fix was
+// missing. PR #10 corrected the key every handler read — `event`, not `type` —
+// and left the value alone, so the scaffolds went on matching a name that is
+// never delivered and the bug survived its own fix. Checking the names as a
+// class, across every template, is what makes that not repeat.
+func TestNoWebhookTemplateNamesAnEventWeDoNotSend(t *testing.T) {
+	t.Parallel()
+
+	names, err := webhookTemplateNames()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(names) != 12 {
+		t.Fatalf("found %d webhook templates, want 12", len(names))
+	}
+
+	for _, name := range names {
+		source, err := render(name, templateData{})
+		if err != nil {
+			t.Fatalf("render %s: %v", name, err)
+		}
+
+		for _, event := range nonexistentEvents {
+			// Quoted, because that is what a branch looks like in all five
+			// languages. The templates name these events in prose to explain
+			// why they are absent, and backticks keep that from reading as a
+			// branch here.
+			for _, literal := range []string{`"` + event + `"`, `'` + event + `'`} {
+				if strings.Contains(source, literal) {
+					t.Errorf("%s branches on %s, which the platform never sends", name, literal)
+				}
+			}
+		}
+	}
+}
+
 // TestEveryWebhookTemplateDispatchesOnEvent covers all twelve templates in both
 // TS and JS renders. It is the only check that reaches the templates whose
 // runtimes the executable tests below do not stand up.
@@ -168,8 +212,11 @@ func deliveryBody(t *testing.T, deliveryID string, at time.Time) []byte {
 	t.Helper()
 
 	body, err := json.Marshal(map[string]any{
-		"event":               "payment.succeeded",
-		"data":                map[string]any{"id": "pay_dispatch"},
+		// The platform has no payment.succeeded. A terminal outcome is
+		// delivered as payment.updated with the result in data.status, and
+		// that is what the handlers under test have to branch on.
+		"event":               "payment.updated",
+		"data":                map[string]any{"id": "pay_dispatch", "status": "succeeded"},
 		"delivery_id":         deliveryID,
 		"attempt":             1,
 		"signature_timestamp": at.Format(time.RFC3339),
@@ -184,7 +231,7 @@ func deliveryBody(t *testing.T, deliveryID string, at time.Time) []byte {
 
 // instrument replaces a template's inert "TODO: fulfil the order" body with a
 // side effect the test can observe, so the assertion is that the handler took
-// the payment.succeeded branch — not merely that it parsed the body. The
+// the succeeded branch — not merely that it parsed the body. The
 // effect writes a literal rather than the template's variable so the
 // instrumented source still compiles against the unfixed template, and the
 // failure is the silent no-op itself rather than a build error.
@@ -224,7 +271,7 @@ func TestGoWebhookTemplateDispatchesOnEvent(t *testing.T) {
 		if openErr != nil {
 			panic(openErr)
 		}
-		if _, writeErr := sink.WriteString("payment.succeeded\n"); writeErr != nil {
+		if _, writeErr := sink.WriteString("payment.updated\n"); writeErr != nil {
 			panic(writeErr)
 		}
 		if closeErr := sink.Close(); closeErr != nil {
@@ -426,7 +473,7 @@ func TestPythonWebhookTemplateDispatchesOnEvent(t *testing.T) {
 
 	source = instrument(t, source,
 		`pass  # TODO: fulfil the order for event["data"]`,
-		`open("dispatched.txt", "a", encoding="utf-8").write("payment.succeeded\n")`)
+		`open("dispatched.txt", "a", encoding="utf-8").write("payment.updated\n")`)
 
 	root := t.TempDir()
 	write(t, root, "reevit.py", reevitPythonStub)
@@ -520,7 +567,7 @@ func TestPHPWebhookTemplateDispatchesOnEvent(t *testing.T) {
 
 	source = instrument(t, source,
 		`// TODO: fulfil the order for $event['data']`,
-		`file_put_contents(__DIR__ . '/dispatched.txt', 'payment.succeeded');`)
+		`file_put_contents(__DIR__ . '/dispatched.txt', 'payment.updated');`)
 
 	// php://input is not readable under the CLI SAPI, and the header arrives
 	// through $_SERVER rather than a real request. Rewrite only those two
@@ -557,7 +604,7 @@ func TestPHPWebhookTemplateDispatchesOnEvent(t *testing.T) {
 		t.Fatalf("PHP handler finished (%q) without dispatching on `event`: %v", output, err)
 	}
 
-	if string(got) != "payment.succeeded" {
+	if string(got) != "payment.updated" {
 		t.Fatalf("dispatched = %q", got)
 	}
 }
