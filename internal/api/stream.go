@@ -10,6 +10,11 @@ import (
 
 // SSEEvent is one parsed server-sent event.
 type SSEEvent struct {
+	// ID is the frame's `id:` field. The backend's event-stream handler
+	// discards the SSE resume header, so the client deliberately never sends
+	// one back; capturing the id here keeps resume a one-line change if the
+	// backend ever starts replaying.
+	ID   string
 	Type string
 	Data string
 }
@@ -53,6 +58,8 @@ func (c *Client) Stream(ctx context.Context, path string, handle func(SSEEvent))
 			}
 
 			event = SSEEvent{}
+		case strings.HasPrefix(line, "id:"):
+			event.ID = strings.TrimSpace(strings.TrimPrefix(line, "id:"))
 		case strings.HasPrefix(line, "event:"):
 			event.Type = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
 		case strings.HasPrefix(line, "data:"):

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -145,5 +147,100 @@ func TestBrowserLoginExpired(t *testing.T) {
 	_, err := runBrowserLoginAgainst(t, server)
 	if err == nil || !strings.Contains(err.Error(), "expired") {
 		t.Fatalf("err = %v, want expired message", err)
+	}
+}
+
+// A start response without expires_at used to leave the poll running for the
+// life of the process. It must now stop at pairingDefaultTTL.
+func TestBrowserLoginStopsWhenTheServerOmitsExpiry(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/cli/auth":
+			w.WriteHeader(http.StatusCreated)
+			// No expires_at: the hazard this test pins.
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":           "clia_1",
+				"pairing_code": "GX7M-4KP9",
+				"poll_secret":  "secret",
+				"browser_url":  "https://dashboard.example/cli/confirm",
+				"interval":     1,
+			})
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/cli/auth/"):
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "pending"})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	previous := pairingDefaultTTL
+	pairingDefaultTTL = 1 * time.Second
+
+	t.Cleanup(func() { pairingDefaultTTL = previous })
+
+	started := time.Now()
+
+	_, err := runBrowserLoginAgainst(t, server)
+	if err == nil || !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("err = %v, want the expiry message", err)
+	}
+
+	if elapsed := time.Since(started); elapsed > 10*time.Second {
+		t.Fatalf("poll ran for %s — the default TTL did not bound it", elapsed)
+	}
+}
+
+// The first poll must go out before the first sleep, so a code the user
+// already approved resolves immediately.
+func TestBrowserLoginPollsBeforeSleeping(t *testing.T) {
+	server := pairingServer(t, []string{"approved"})
+	defer server.Close()
+
+	started := time.Now()
+
+	if _, err := runBrowserLoginAgainst(t, server); err != nil {
+		t.Fatalf("browserLogin: %v", err)
+	}
+
+	// interval is 1s; an immediate first poll finishes well inside it.
+	if elapsed := time.Since(started); elapsed >= time.Second {
+		t.Fatalf("took %s, want the first poll to precede the first sleep", elapsed)
+	}
+}
+
+// Ctrl-C during the pairing wait must unwind with the conventional 130
+// instead of leaving the poll running until the request expires.
+func TestBrowserLoginPollStopsOnCancellation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"pending"}`))
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	start := pairingStartResponse{ID: "pair_1", PollSecret: "secret", Interval: 5}
+
+	done := make(chan error, 1)
+
+	go func() {
+		_, err := pollPairing(ctx, server.Client(), server.URL, start, io.Discard)
+		done <- err
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		if got := ExitCode(err); got != 130 {
+			t.Fatalf("ExitCode = %d, want 130 (err %v)", got, err)
+		}
+
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("err = %v, want it to wrap context.Canceled", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the pairing poll ignored cancellation")
 	}
 }

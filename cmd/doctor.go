@@ -15,8 +15,11 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 
 	"github.com/Reevit-Platform/cli/internal/api"
@@ -82,12 +85,24 @@ so the check proves your handler's signature verification end to end.`,
 		if cfg.APIKey == "" {
 			res.fail(out, "no API key configured — run `reevit login`")
 		} else {
-			mode := "test"
-			if strings.HasPrefix(cfg.APIKey, "pfk_live") {
-				mode = "LIVE"
+			label := cfg.Mode
+			if label == "live" {
+				label = "LIVE"
 			}
 
-			res.pass(out, "API key configured (%s mode)", mode)
+			res.pass(out, "API key configured (%s mode)", label)
+
+			// A key whose prefix config.ModeFromKey recognises fixes the mode,
+			// and Load refuses a REEVIT_MODE that contradicts it — so the only
+			// mode still worth questioning is one that came from the
+			// environment or the file because the key shape said nothing. The
+			// backend resolves the mode from the key regardless, so a label
+			// derived from anything else can be wrong.
+			if _, keyed := config.ModeFromKey(cfg.APIKey); !keyed {
+				res.warn(out,
+					"key prefix is not pfk_test_/pfk_live_, so %q mode comes from REEVIT_MODE or your config, not from the key",
+					cfg.Mode)
+			}
 
 			var probe any
 			if err := api.New(cfg).Do(cmd.Context(), api.Request{Path: "/payments"}, &probe); err != nil {
@@ -492,13 +507,10 @@ func checkWebhookE2E(cmd *cobra.Command, out io.Writer, res *doctorResult, targe
 	events := make(chan api.SSEEvent, 16)
 	streamErr := make(chan error, 1)
 
+	sink := &e2eEventSink{out: events}
+
 	go func() {
-		streamErr <- c.Stream(ctx, "/events/stream?mode=test", func(evt api.SSEEvent) {
-			select {
-			case events <- evt:
-			default:
-			}
-		})
+		streamErr <- c.Stream(ctx, "/events/stream?mode=test", sink.accept)
 	}()
 
 	// Let the stream establish before creating the payment, so the resulting
@@ -518,12 +530,16 @@ func checkWebhookE2E(cmd *cobra.Command, out io.Writer, res *doctorResult, targe
 		return
 	}
 
+	sink.arm(paymentID)
+
 	res.pass(out, "sandbox payment created through the real pipeline (%s)", paymentID)
 
 	for {
 		select {
 		case <-ctx.Done():
-			res.fail(out, "timed out waiting for the platform event (90s) — check `reevit listen` works for this account")
+			res.fail(out,
+				"timed out waiting for the platform event (90s) — check `reevit listen` works for this account (%d events seen, none for this payment)",
+				sink.unrelated.Load())
 
 			return
 		case err := <-streamErr:
@@ -531,10 +547,6 @@ func checkWebhookE2E(cmd *cobra.Command, out io.Writer, res *doctorResult, targe
 
 			return
 		case evt := <-events:
-			if !strings.Contains(evt.Data, paymentID) {
-				continue
-			}
-
 			status, err := forwardPlatformEvent(ctx, targetURL, secret, evt)
 
 			switch {
@@ -551,17 +563,87 @@ func checkWebhookE2E(cmd *cobra.Command, out io.Writer, res *doctorResult, targe
 	}
 }
 
+// e2eEventSink filters the account's event stream down to the one payment the
+// e2e check created.
+//
+// Filtering in the stream callback matters: the channel is small and a busy
+// account can emit more unrelated events than it holds while we wait, and the
+// old `select … default:` silently discarded the overflow — including, on a
+// busy account, the very event the check exists to observe.
+//
+// The payment id is only known after the simulator call returns, so events
+// that arrive before then are parked in pending and re-filtered by arm rather
+// than thrown away, which would reintroduce the same race at a smaller scale.
+type e2eEventSink struct {
+	mu      sync.Mutex
+	match   string
+	pending []api.SSEEvent
+
+	out       chan api.SSEEvent
+	unrelated atomic.Int64
+}
+
+// e2ePendingCap bounds the pre-arm buffer so a firehose cannot grow it without
+// limit during the 1.5s settle plus the intent POST.
+const e2ePendingCap = 256
+
+func (s *e2eEventSink) accept(evt api.SSEEvent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.match == "" {
+		if len(s.pending) < e2ePendingCap {
+			s.pending = append(s.pending, evt)
+		} else {
+			s.unrelated.Add(1)
+		}
+
+		return
+	}
+
+	s.deliverLocked(evt)
+}
+
+// arm fixes the payment id to match on and replays what arrived before it was
+// known. Callers hold no lock.
+func (s *e2eEventSink) arm(paymentID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.match = paymentID
+
+	for _, evt := range s.pending {
+		s.deliverLocked(evt)
+	}
+
+	s.pending = nil
+}
+
+func (s *e2eEventSink) deliverLocked(evt api.SSEEvent) {
+	if !strings.Contains(evt.Data, s.match) {
+		s.unrelated.Add(1)
+
+		return
+	}
+
+	select {
+	case s.out <- evt:
+	default:
+	}
+}
+
 // forwardPlatformEvent wraps a streamed event in the production delivery
 // envelope (delivery id, attempt, signature timestamp inside the SIGNED
 // body) and POSTs it — the same shape `reevit listen` and real deliveries use.
 func forwardPlatformEvent(ctx context.Context, targetURL, secret string, evt api.SSEEvent) (int, error) {
-	var envelope map[string]any
-	if err := json.Unmarshal([]byte(evt.Data), &envelope); err != nil {
-		envelope = map[string]any{"type": evt.Type, "data": evt.Data}
-	}
+	envelope := envelopeFor(evt)
+
+	// Unique per delivery: a handler that dedupes on delivery id — what
+	// production expects — reported as broken when doctor reused one id.
+	deliveryID := "evtd_doctor_" + uuid.NewString()
 
 	ts := time.Now().UTC().Format(time.RFC3339)
-	envelope["delivery_id"] = "evtd_doctor_e2e"
+	envelope["delivery_id"] = deliveryID
 	envelope["attempt"] = 1
 	envelope["signature_timestamp"] = ts
 
@@ -577,7 +659,7 @@ func forwardPlatformEvent(ctx context.Context, targetURL, secret string, evt api
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Reevit-Signature", SignBody(secret, body))
-	req.Header.Set("X-Reevit-Delivery-ID", "evtd_doctor_e2e")
+	req.Header.Set("X-Reevit-Delivery-ID", deliveryID)
 	req.Header.Set("X-Reevit-Delivery-Attempt", "1")
 	req.Header.Set("X-Reevit-Mode", "sandbox")
 	req.Header.Set("X-Reevit-Signature-Timestamp", ts)

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -64,12 +63,21 @@ Keys are stored in your user config with owner-only permissions.`,
 			return fmt.Errorf("an API key is required")
 		}
 
+		// The verification probe needs the env overlay — REEVIT_API_URL may
+		// point at a local or staging backend for this one invocation.
 		cfg, err := config.Load()
 		if err != nil {
 			return err
 		}
 
 		cfg.APIKey = key
+
+		// The key decides the mode, not the ambient REEVIT_MODE that Load
+		// overlaid: `login --key pfk_live_…` used to save and print "test".
+		mode, keyed := config.ModeFromKey(key)
+		if keyed {
+			cfg.Mode = mode
+		}
 
 		// Verify before saving — a cheap read that any scope can perform is
 		// not guaranteed, so tolerate 403 (valid key, narrow scopes) and only
@@ -85,12 +93,24 @@ Keys are stored in your user config with owner-only permissions.`,
 			fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not verify key (%v) — saving anyway\n", err)
 		}
 
-		p, err := config.Save(cfg)
+		// Persist from the file, never from Load: a one-off REEVIT_API_URL or
+		// REEVIT_MODE would otherwise be written to disk and outlive the shell
+		// that set it. Only the fields login actually establishes are touched;
+		// org_id, org_name and telemetry_id survive untouched.
+		saved, err := config.LoadFile()
 		if err != nil {
 			return err
 		}
 
-		fmt.Fprintf(cmd.OutOrStdout(), "Saved to %s (%s mode)\n", p, cfg.Mode)
+		saved.APIKey = cfg.APIKey
+		saved.Mode = cfg.Mode
+
+		p, err := config.Save(saved)
+		if err != nil {
+			return err
+		}
+
+		fmt.Fprintf(cmd.OutOrStdout(), "Saved to %s (%s mode)\n", p, saved.Mode)
 
 		return nil
 	},
@@ -120,9 +140,10 @@ func init() {
 	loginCmd.Flags().BoolVar(&loginManual, "manual", false, "prompt for an API key instead of using the browser")
 	loginCmd.Flags().BoolVar(&loginNoBrowser, "no-browser", false, "print the pairing link instead of opening a browser")
 
-	if v := os.Getenv("REEVIT_API_KEY"); v != "" && loginKey == "" {
-		loginKey = v
-	}
+	// No REEVIT_API_KEY fallback here: an exported key is an override for a
+	// single invocation, and reading it in init() turned `reevit login` into
+	// "write my shell's key to disk" without ever saying so. To persist a key,
+	// pass it: `reevit login --key -`.
 
 	rootCmd.AddCommand(loginCmd)
 }

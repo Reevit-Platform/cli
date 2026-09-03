@@ -534,6 +534,16 @@ func goldenCases() []goldenCase {
 			server:   paymentsServer(http.StatusOK, `[]`),
 			wantExit: 1,
 		},
+		// A legacy key shape: config.Load cannot derive the mode from it, so
+		// doctor says where the label actually came from.
+		{
+			name:     "doctor-unkeyed-mode",
+			args:     []string{"doctor"},
+			env:      map[string]string{"REEVIT_API_KEY": "rk_legacy_key", "REEVIT_MODE": "live"},
+			dir:      func(t *testing.T) string { return t.TempDir() },
+			server:   paymentsServer(http.StatusOK, `[]`),
+			wantExit: 1,
+		},
 		{
 			name:     "doctor-next-project-offline",
 			args:     []string{"doctor"},

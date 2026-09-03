@@ -3,6 +3,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 
@@ -11,6 +13,11 @@ import (
 
 func main() {
 	if err := cmd.Execute(); err != nil {
+		// Ctrl-C: the shell prints its own ^C, we add nothing.
+		if errors.Is(err, context.Canceled) {
+			os.Exit(130)
+		}
+
 		code := cmd.ExitCode(err)
 		if code == 130 {
 			fmt.Fprintln(os.Stderr, err)
