@@ -457,8 +457,37 @@ func writeGoldenFile(t *testing.T, dir, name, body string) {
 	}
 }
 
+// The credentials the golden fixtures hand to the CLI. They are declared here,
+// in the same file as the assertion that no --json document may contain them,
+// because the guard below is only as good as its knowledge of what a secret
+// looks like in this suite: a fixture that minted its own key literal would
+// leave the guard grepping for a string nothing produces any more, and it
+// would keep passing. One definition, read by both the fixture and the guard.
+const (
+	// What `login --key` is handed, and what sits in REEVIT_API_KEY for
+	// almost every other case — so any command's --json document is a
+	// candidate leak, not just login's.
+	goldenAPIKey = "pfk_test_ok.sec"
+	// What the pairing server hands back on approval (login_browser_test.go).
+	pairingAPIKey = "pfk_test_abc.sec"
+	// Every fixture key ends in this. A document that leaked only the tail of
+	// one would still be a leak, so the suffix is checked in its own right.
+	goldenKeySuffix = ".sec"
+)
+
+// credentialShapes matches the leading marker of anything Reevit treats as
+// secret material, so the guard catches a key it was never told the value of.
+//
+// The left-hand boundary is load-bearing: "sk_" is a substring of ordinary
+// field names a document legitimately carries, and "task_id" — which trigger
+// emits on every run — would otherwise fail this test forever.
+var credentialShapes = regexp.MustCompile(`(?:^|[^A-Za-z0-9_])(?:pfk_|whsec_|sk_)`)
+
+// truncatedKeyTail matches goldenKeySuffix as a whole token, so ".seconds"
+// does not read as a leaked key tail.
+var truncatedKeyTail = regexp.MustCompile(regexp.QuoteMeta(goldenKeySuffix) + `(?:[^A-Za-z]|$)`)
+
 func goldenCases() []goldenCase {
-	const testKey = "pfk_test_ok.sec"
 
 	twoPayments := `[
 	  {"id":"pmt_1","provider":"paystack","method":"card","status":"succeeded",
@@ -506,7 +535,7 @@ func goldenCases() []goldenCase {
 		},
 		{
 			name:   "login-key-saved",
-			args:   []string{"login", "--key", testKey},
+			args:   []string{"login", "--key", goldenAPIKey},
 			server: paymentsServer(http.StatusOK, `[]`),
 		},
 		{
@@ -528,13 +557,13 @@ func goldenCases() []goldenCase {
 		{
 			name:   "payments-list-empty",
 			args:   []string{"payments", "list"},
-			env:    map[string]string{"REEVIT_API_KEY": testKey},
+			env:    map[string]string{"REEVIT_API_KEY": goldenAPIKey},
 			server: paymentsServer(http.StatusOK, `[]`),
 		},
 		{
 			name:   "payments-list-rows",
 			args:   []string{"payments", "list", "--limit", "2"},
-			env:    map[string]string{"REEVIT_API_KEY": testKey, "TZ": "UTC"},
+			env:    map[string]string{"REEVIT_API_KEY": goldenAPIKey, "TZ": "UTC"},
 			server: paymentsServer(http.StatusOK, twoPayments),
 		},
 		// The one-time telemetry disclosure. It has to be the FIRST thing on
@@ -546,7 +575,7 @@ func goldenCases() []goldenCase {
 		{
 			name:     "first-run-notice",
 			args:     []string{"payments", "list", "--limit", "2"},
-			env:      map[string]string{"REEVIT_API_KEY": testKey, "TZ": "UTC"},
+			env:      map[string]string{"REEVIT_API_KEY": goldenAPIKey, "TZ": "UTC"},
 			unsetEnv: []string{"REEVIT_TELEMETRY", "DO_NOT_TRACK"},
 			server:   paymentsServer(http.StatusOK, twoPayments),
 		},
@@ -555,7 +584,7 @@ func goldenCases() []goldenCase {
 		{
 			name:   "payments-list-json",
 			args:   []string{"payments", "list", "--json", "--limit", "2"},
-			env:    map[string]string{"REEVIT_API_KEY": testKey, "TZ": "UTC"},
+			env:    map[string]string{"REEVIT_API_KEY": goldenAPIKey, "TZ": "UTC"},
 			server: paymentsServer(http.StatusOK, twoPayments),
 		},
 		// …and the second against the envelope three other backend list
@@ -564,7 +593,7 @@ func goldenCases() []goldenCase {
 		{
 			name: "payments-list-json-envelope",
 			args: []string{"payments", "list", "--json", "--limit", "2"},
-			env:  map[string]string{"REEVIT_API_KEY": testKey, "TZ": "UTC"},
+			env:  map[string]string{"REEVIT_API_KEY": goldenAPIKey, "TZ": "UTC"},
 			server: paymentsServer(http.StatusOK,
 				`{"data":`+twoPayments+`,"pagination":{"total":2,"limit":20,"offset":0}}`),
 		},
@@ -574,7 +603,7 @@ func goldenCases() []goldenCase {
 		{
 			name:   "payments-list-empty-json",
 			args:   []string{"payments", "list", "--json"},
-			env:    map[string]string{"REEVIT_API_KEY": testKey},
+			env:    map[string]string{"REEVIT_API_KEY": goldenAPIKey},
 			server: paymentsServer(http.StatusOK, `[]`),
 		},
 		// A bare `[]` decodes to a non-nil empty slice, so the case above
@@ -584,14 +613,14 @@ func goldenCases() []goldenCase {
 		{
 			name: "payments-list-null-json",
 			args: []string{"payments", "list", "--json"},
-			env:  map[string]string{"REEVIT_API_KEY": testKey},
+			env:  map[string]string{"REEVIT_API_KEY": goldenAPIKey},
 			server: paymentsServer(http.StatusOK,
 				`{"data":null,"pagination":{"total":0,"limit":20,"offset":0}}`),
 		},
 		{
 			name: "payments-list-forbidden",
 			args: []string{"payments", "list"},
-			env:  map[string]string{"REEVIT_API_KEY": testKey},
+			env:  map[string]string{"REEVIT_API_KEY": goldenAPIKey},
 			server: paymentsServer(http.StatusForbidden,
 				`{"code":"insufficient_scope","message":"missing payments:read"}`),
 			wantExit: 1,
@@ -603,12 +632,12 @@ func goldenCases() []goldenCase {
 		{
 			name:   "payments-list-empty-quiet",
 			args:   []string{"payments", "list", "--quiet"},
-			env:    map[string]string{"REEVIT_API_KEY": testKey},
+			env:    map[string]string{"REEVIT_API_KEY": goldenAPIKey},
 			server: paymentsServer(http.StatusOK, `[]`),
 		},
 		{
 			name:   "login-key-saved-quiet",
-			args:   []string{"login", "-q", "--key", testKey},
+			args:   []string{"login", "-q", "--key", goldenAPIKey},
 			server: paymentsServer(http.StatusOK, `[]`),
 		},
 
@@ -617,7 +646,7 @@ func goldenCases() []goldenCase {
 		// an org, a key name and a scope list. Neither ever carries the key.
 		{
 			name:   "login-key-saved-json",
-			args:   []string{"login", "--json", "--key", testKey},
+			args:   []string{"login", "--json", "--key", goldenAPIKey},
 			server: paymentsServer(http.StatusOK, `[]`),
 		},
 		{
@@ -634,21 +663,21 @@ func goldenCases() []goldenCase {
 		{
 			name:   "trigger-succeeded-json",
 			args:   []string{"trigger", "--json", "payment.succeeded"},
-			env:    map[string]string{"REEVIT_API_KEY": testKey},
+			env:    map[string]string{"REEVIT_API_KEY": goldenAPIKey},
 			dir:    func(t *testing.T) string { return t.TempDir() },
 			server: func(t *testing.T) *httptest.Server { return triggerStubAPI(t, nil) },
 		},
 		{
 			name:   "trigger-amount-override-json",
 			args:   []string{"trigger", "--json", "payment.succeeded", "--amount", "1234"},
-			env:    map[string]string{"REEVIT_API_KEY": testKey},
+			env:    map[string]string{"REEVIT_API_KEY": goldenAPIKey},
 			dir:    func(t *testing.T) string { return t.TempDir() },
 			server: func(t *testing.T) *httptest.Server { return triggerStubAPI(t, nil) },
 		},
 		{
 			name: "payments-list-forbidden-quiet",
 			args: []string{"payments", "list", "--quiet"},
-			env:  map[string]string{"REEVIT_API_KEY": testKey},
+			env:  map[string]string{"REEVIT_API_KEY": goldenAPIKey},
 			server: paymentsServer(http.StatusForbidden,
 				`{"code":"insufficient_scope","message":"missing payments:read"}`),
 			wantExit: 1,
@@ -661,7 +690,7 @@ func goldenCases() []goldenCase {
 		{
 			name:     "doctor-no-project",
 			args:     []string{"doctor"},
-			env:      map[string]string{"REEVIT_API_KEY": testKey},
+			env:      map[string]string{"REEVIT_API_KEY": goldenAPIKey},
 			dir:      func(t *testing.T) string { return t.TempDir() },
 			server:   paymentsServer(http.StatusOK, `[]`),
 			wantExit: 3,
@@ -675,7 +704,7 @@ func goldenCases() []goldenCase {
 			name: "doctor-api-unreachable",
 			args: []string{"doctor"},
 			env: map[string]string{
-				"REEVIT_API_KEY": testKey,
+				"REEVIT_API_KEY": goldenAPIKey,
 				// Port 1 is reserved and never listening.
 				"REEVIT_API_URL": "http://127.0.0.1:1",
 			},
@@ -695,7 +724,7 @@ func goldenCases() []goldenCase {
 		{
 			name:     "doctor-next-project-offline",
 			args:     []string{"doctor"},
-			env:      map[string]string{"REEVIT_API_KEY": testKey},
+			env:      map[string]string{"REEVIT_API_KEY": goldenAPIKey},
 			dir:      nextProjectDirUnbootstrapped,
 			server:   paymentsServer(http.StatusOK, `[]`),
 			wantExit: 3,
@@ -710,7 +739,7 @@ func goldenCases() []goldenCase {
 		{
 			name:     "doctor-no-project-json",
 			args:     []string{"doctor", "--json"},
-			env:      map[string]string{"REEVIT_API_KEY": testKey},
+			env:      map[string]string{"REEVIT_API_KEY": goldenAPIKey},
 			dir:      func(t *testing.T) string { return t.TempDir() },
 			server:   paymentsServer(http.StatusOK, `[]`),
 			wantExit: 3,
@@ -718,7 +747,7 @@ func goldenCases() []goldenCase {
 		{
 			name:     "doctor-next-project-offline-json",
 			args:     []string{"doctor", "--json"},
-			env:      map[string]string{"REEVIT_API_KEY": testKey},
+			env:      map[string]string{"REEVIT_API_KEY": goldenAPIKey},
 			dir:      nextProjectDirUnbootstrapped,
 			server:   paymentsServer(http.StatusOK, `[]`),
 			wantExit: 3,
@@ -730,7 +759,7 @@ func goldenCases() []goldenCase {
 		{
 			name:     "doctor-next-project-offline-quiet",
 			args:     []string{"doctor", "--quiet"},
-			env:      map[string]string{"REEVIT_API_KEY": testKey},
+			env:      map[string]string{"REEVIT_API_KEY": goldenAPIKey},
 			dir:      nextProjectDirUnbootstrapped,
 			server:   paymentsServer(http.StatusOK, `[]`),
 			wantExit: 3,
@@ -755,7 +784,7 @@ func goldenCases() []goldenCase {
 			name: "doctor-next-project-offline-color",
 			args: []string{"doctor"},
 			env: map[string]string{
-				"REEVIT_API_KEY": testKey, "FORCE_COLOR": "1", "LANG": "en_US.UTF-8",
+				"REEVIT_API_KEY": goldenAPIKey, "FORCE_COLOR": "1", "LANG": "en_US.UTF-8",
 			},
 			unsetEnv: []string{"NO_COLOR", "TERM", "LC_ALL", "LC_CTYPE"},
 			dir:      nextProjectDirUnbootstrapped,
@@ -769,7 +798,7 @@ func goldenCases() []goldenCase {
 			name: "payments-list-rows-color",
 			args: []string{"payments", "list", "--limit", "2"},
 			env: map[string]string{
-				"REEVIT_API_KEY": testKey, "TZ": "UTC",
+				"REEVIT_API_KEY": goldenAPIKey, "TZ": "UTC",
 				"FORCE_COLOR": "1", "LANG": "en_US.UTF-8",
 			},
 			unsetEnv: []string{"NO_COLOR", "TERM", "LC_ALL", "LC_CTYPE"},
@@ -1079,25 +1108,57 @@ func TestGoldenStreamsAreSeparate(t *testing.T) {
 		}
 	})
 
-	// The browser flow exists so a key is never copy-pasted. Printing it on
-	// stdout under --json would put it in the CI log of every pipeline that
-	// logs in, which is worse than the copy-paste it replaced.
-	t.Run("no login document carries the key", func(t *testing.T) {
+	// Printing a key on stdout under --json would put it in the CI log of
+	// every pipeline that runs the command, which for login is worse than the
+	// copy-paste the browser flow exists to replace — and login is not the
+	// only command that could do it. goldenAPIKey sits in REEVIT_API_KEY for
+	// nearly every case in this suite, so doctor, payments and trigger each
+	// hold the same credential while they build their document. This walks
+	// every --json golden rather than the two that were once thought about.
+	t.Run("no --json document carries a credential", func(t *testing.T) {
+		for _, path := range jsonStdoutGoldens(t) {
+			name := filepath.Base(path)
+
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read %s: %v", path, err)
+			}
+
+			got := string(raw)
+
+			// The exact material the fixtures hand over. Redundant with the
+			// shape scan below, and kept anyway: it names the leak precisely,
+			// and it still fires if someone ever narrows credentialShapes.
+			for _, secret := range []string{goldenAPIKey, pairingAPIKey} {
+				if strings.Contains(got, secret) {
+					t.Errorf("%s carries the fixture key %q:\n%s", name, secret, got)
+				}
+			}
+
+			// A document that leaked only the tail of a key is still a leak.
+			// Anchored so that a future ".seconds" field is not a false alarm.
+			if truncatedKeyTail.MatchString(got) {
+				t.Errorf("%s carries the secret suffix %q:\n%s", name, goldenKeySuffix, got)
+			}
+
+			// Shape, not value: this is what catches a credential the test
+			// has never been told about — a new fixture key, a provider
+			// secret echoed back, a signing secret that reached stdout.
+			if m := credentialShapes.FindString(got); m != "" {
+				t.Errorf("%s carries something shaped like a credential (%q):\n%s", name, strings.TrimSpace(m), got)
+			}
+		}
+	})
+
+	// The other half of the login contract: having withheld the key, the
+	// document still has to tell a script where the credential landed.
+	t.Run("the login document points at the credential it withheld", func(t *testing.T) {
 		for _, name := range []string{"login-key-saved-json", "login-browser-approved-json"} {
 			var doc loginDocument
 
 			got := readGolden(t, name+".stdout")
 			if err := json.Unmarshal([]byte(got), &doc); err != nil {
 				t.Fatalf("%s: %v", name, err)
-			}
-
-			// The real key each fixture hands over, plus the shared secret
-			// suffix — a document that leaked a truncated key would still
-			// be a leak.
-			for _, secret := range []string{"pfk_test_ok.sec", "pfk_test_abc.sec", ".sec"} {
-				if strings.Contains(got, secret) {
-					t.Errorf("%s stdout carries a key fragment %q:\n%s", name, secret, got)
-				}
 			}
 
 			if doc.ConfigPath == "" {
@@ -1183,16 +1244,13 @@ func readGolden(t *testing.T, file string) string {
 	return string(raw)
 }
 
-// TestJSONStdoutIsPureJSON is the whole promise of --json in one assertion:
-// a consumer runs `reevit … --json | jq` and every byte on stdout parses.
-// One stray progress line, one hint that forgot which stream it was on, and
-// the pipeline dies — and a golden that merely "looks right" to a reviewer
-// would not catch it, because a human reads past a leading blank line.
-//
-// It walks the goldens rather than taking a list, so a --json case added
-// later is covered without anyone remembering to add it here.
-func TestJSONStdoutIsPureJSON(t *testing.T) {
-	t.Parallel()
+// jsonStdoutGoldens returns every --json stdout golden. Both --json invariants
+// — that stdout parses, and that it carries no credential — are properties of
+// the whole flag, not of the two commands someone happened to think about, so
+// they discover their cases the same way. Sharing the walk is what keeps them
+// from drifting: a case added to one is a case added to both.
+func jsonStdoutGoldens(t *testing.T) []string {
+	t.Helper()
 
 	files, err := filepath.Glob(filepath.Join(goldenRoot, "*-json*.stdout"))
 	if err != nil {
@@ -1204,6 +1262,22 @@ func TestJSONStdoutIsPureJSON(t *testing.T) {
 	if len(files) < 2 {
 		t.Fatalf("found %d *-json*.stdout goldens, want the --json cases", len(files))
 	}
+
+	return files
+}
+
+// TestJSONStdoutIsPureJSON is the whole promise of --json in one assertion:
+// a consumer runs `reevit … --json | jq` and every byte on stdout parses.
+// One stray progress line, one hint that forgot which stream it was on, and
+// the pipeline dies — and a golden that merely "looks right" to a reviewer
+// would not catch it, because a human reads past a leading blank line.
+//
+// It walks the goldens rather than taking a list, so a --json case added
+// later is covered without anyone remembering to add it here.
+func TestJSONStdoutIsPureJSON(t *testing.T) {
+	t.Parallel()
+
+	files := jsonStdoutGoldens(t)
 
 	for _, path := range files {
 		name := filepath.Base(path)
