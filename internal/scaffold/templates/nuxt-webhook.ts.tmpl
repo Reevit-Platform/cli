@@ -64,7 +64,10 @@ export default defineEventHandler(async (event) => {
     return { received: true, duplicate: true };
   }
 
-  if (eventType === "payment.succeeded") {
+  // A terminal outcome arrives as `payment.updated` with the result in
+  // `data.status`. There is no `payment.succeeded` event — see
+  // https://docs.reevit.io/webhooks#event-types.
+  if (eventType === "payment.updated" && payload.data?.status === "succeeded") {
     // Fulfil the order represented by payload.data.
   }
   return { received: true };

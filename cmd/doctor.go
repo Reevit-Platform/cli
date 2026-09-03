@@ -671,13 +671,23 @@ func runningInCI() bool {
 // outbound dispatcher signs INTO the body — delivery_id, attempt and
 // signature_timestamp. Probing with a thinner payload than production sends is
 // how a handler can pass doctor and still no-op on a real delivery.
+//
+// That is not a hypothetical. This probe used to send `payment.succeeded`,
+// which the platform does not have: a terminal outcome is delivered as
+// `payment.updated` carrying the result in `data.status`. Every scaffold
+// matched the probe, so doctor went green against a handler whose switch would
+// fall through on every real delivery — the local loop agreed with itself and
+// disagreed with production. The envelope below is the one
+// internal/usecase/payments builds, field for field.
 func doctorProbePayload(sentAt time.Time) (payload []byte, deliveryID, timestamp string) {
 	deliveryID = "evtd_doctor_" + uuid.NewString()
 	timestamp = sentAt.UTC().Format(time.RFC3339)
 
 	payload = []byte(fmt.Sprintf(
-		`{"event":"payment.succeeded","type":"payment.succeeded",`+
-			`"data":{"id":"doctor_check","amount":100,"currency":"GHS"},"created_at":%q,`+
+		`{"event":"payment.updated","type":"payment.updated",`+
+			`"org_id":"org_doctor","api_version":"2026-03-05","mode":"sandbox",`+
+			`"data":{"id":"doctor_check","status":"succeeded","amount":100,`+
+			`"currency":"GHS"},"timestamp":%q,`+
 			`"delivery_id":%q,"attempt":1,"signature_timestamp":%q}`,
 		timestamp, deliveryID, timestamp,
 	))

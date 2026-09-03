@@ -142,11 +142,25 @@ func HandleReevitWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A terminal outcome arrives as payment.updated with the result in
+	// data.status. There is no payment.succeeded event — see
+	// https://docs.reevit.io/webhooks#event-types.
 	switch eventType {
-	case "payment.succeeded":
-		// TODO: fulfil the order for event.Data
-	case "payment.failed":
-		// TODO: notify the customer / retry logic
+	case "payment.updated":
+		var data struct {
+			Status string `json:"status"`
+		}
+
+		// A malformed data object is not a reason to 500 and be retried; an
+		// unknown status simply falls through both branches below.
+		_ = json.Unmarshal(event.Data, &data)
+
+		switch data.Status {
+		case "succeeded":
+			// TODO: fulfil the order for event.Data
+		case "failed":
+			// TODO: notify the customer / retry logic
+		}
 	}
 
 	w.WriteHeader(http.StatusOK)

@@ -86,9 +86,15 @@ def reevit_webhook(request: HttpRequest) -> HttpResponse:
     # Production deliveries name the event in "event"; `reevit listen`'s
     # fallback envelope and older payloads use "type". Read both.
     event_type = event.get("event") or event.get("type")
-    if event_type == "payment.succeeded":
-        pass  # TODO: fulfil the order for event["data"]
-    elif event_type == "payment.failed":
-        pass  # TODO: notify the customer / retry logic
+    # A terminal outcome arrives as `payment.updated` with the result in
+    # data["status"]. There is no `payment.succeeded` event — see
+    # https://docs.reevit.io/webhooks#event-types.
+    if event_type == "payment.updated":
+        status = (event.get("data") or {}).get("status")
+
+        if status == "succeeded":
+            pass  # TODO: fulfil the order for event["data"]
+        elif status == "failed":
+            pass  # TODO: notify the customer / retry logic
 
     return HttpResponse("ok", status=200)

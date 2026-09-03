@@ -88,7 +88,7 @@ func TestCheckWebhookEndToEndProbeNamesTheEventInEvent(t *testing.T) {
 		}
 
 		// Dispatch the way the generated handlers now do: on `event` only.
-		if seen.Event != "payment.succeeded" {
+		if seen.Event != "payment.updated" {
 			http.Error(w, "unknown event", http.StatusBadRequest)
 
 			return
@@ -107,8 +107,8 @@ func TestCheckWebhookEndToEndProbeNamesTheEventInEvent(t *testing.T) {
 		t.Fatalf("a handler that reads only `event` must pass; output:\n%s", buf.String())
 	}
 
-	if seen.Event != "payment.succeeded" {
-		t.Fatalf("probe payload event = %q, want payment.succeeded", seen.Event)
+	if seen.Event != "payment.updated" {
+		t.Fatalf("probe payload event = %q, want payment.updated", seen.Event)
 	}
 }
 
@@ -478,14 +478,25 @@ func TestDoctorProbePayloadCarriesTheReplayFields(t *testing.T) {
 		DeliveryID         string `json:"delivery_id"`
 		Attempt            int    `json:"attempt"`
 		SignatureTimestamp string `json:"signature_timestamp"`
+		Data               struct {
+			Status string `json:"status"`
+		} `json:"data"`
 	}
 
 	if err := json.Unmarshal(payload, &envelope); err != nil {
 		t.Fatalf("probe payload is not valid JSON: %v\n%s", err, payload)
 	}
 
-	if envelope.Event != "payment.succeeded" || envelope.Type != "payment.succeeded" {
-		t.Errorf("event = %q, type = %q", envelope.Event, envelope.Type)
+	// The platform has no payment.succeeded. A terminal outcome is delivered as
+	// payment.updated with the result in data.status, and the scaffolds branch
+	// on exactly that — so if the probe names anything else, doctor goes green
+	// against a handler that will fall through on every real delivery.
+	if envelope.Event != "payment.updated" || envelope.Type != "payment.updated" {
+		t.Errorf("event = %q, type = %q, want payment.updated", envelope.Event, envelope.Type)
+	}
+
+	if envelope.Data.Status != "succeeded" {
+		t.Errorf("data.status = %q, want succeeded — the scaffolds read it to pick a branch", envelope.Data.Status)
 	}
 
 	if envelope.DeliveryID != deliveryID || envelope.DeliveryID == "" {
