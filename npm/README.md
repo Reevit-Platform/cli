@@ -281,6 +281,31 @@ Telemetry never includes file contents, project paths, API keys, secrets, or
 hostnames. Run `reevit --help` or read the
 [complete CLI guide](https://github.com/Reevit-Platform/cli#readme) for details.
 
+## Scripting
+
+Every read command takes `--json` and prints one document to **stdout**;
+progress and errors stay on stderr, so a failed run still explains itself
+while `jq` gets clean input.
+
+```bash
+reevit doctor --json | jq -r '.sections[].checks[] | select(.status=="fail") | .message'
+reevit payments list --json | jq -r '.data[] | select(.status=="succeeded") | .id'
+reevit trigger payment.succeeded --json | jq -r .payment_id
+```
+
+`reevit listen --json` never ends, so it emits NDJSON: a `ready` line, then
+one line per delivery with `type`, `status`, `duration_ms` and `error`.
+
+Every document carries a versioned `schema` (`reevit.cli.doctor.v1` and
+friends). Within a `.v1` schema fields are only ever **added**, so branch on
+the schema rather than on the CLI version. No document ever contains your API
+key, the webhook signing secret, or a forwarded event's body.
+
+`--quiet` (`-q`) trims progress and confirmations on stderr and keeps
+everything that reports a problem — warnings, errors and every `doctor`
+finding still print. Neither flag suppresses the one-time telemetry notice;
+use `REEVIT_TELEMETRY=0` for that.
+
 ## Troubleshooting
 
 - **The CLI detected the wrong installer:** set the JavaScript
@@ -293,7 +318,7 @@ hostnames. Run `reevit --help` or read the
 - **The application is not running:** start it first, then pass `--app-url` or
   `--webhook-url` to `reevit doctor`.
 - **Need CI-safe verification:** run `reevit doctor --strict`; skipped runtime
-  checks become failures.
+  checks become failures. Add `--json` to read the findings from a script.
 - **Colour or symbols look wrong:** set `NO_COLOR=1` (or pass `--no-color`) to
   turn colour off; `TERM=dumb` or a non-UTF-8 locale also switches the `✓`/`✗`
   symbols to `ok`/`x`. Set `FORCE_COLOR=1` to keep colour when you pipe the

@@ -24,7 +24,9 @@ Available Commands:
 
 Flags:
   -h, --help       help for reevit
+      --json       print machine-readable JSON to stdout
       --no-color   disable colour and glyphs
+  -q, --quiet      suppress progress and hints; errors still print
   -v, --version    version for reevit
 
 Use "reevit [command] --help" for more information about a command.

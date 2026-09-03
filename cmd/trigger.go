@@ -67,14 +67,18 @@ Supported events, with the magic amount each one uses:
 		}
 
 		sty := styleOf(cmd)
-		notice := cmd.ErrOrStderr()
+		notice := noticeStream(cmd)
 
 		if triggerAmountOv > 0 {
 			// An override silently discards the outcome the user asked for:
 			// the simulator branches on the amount, so 4000 is what makes
 			// `payment.succeeded` succeed. Say so before it looks broken.
+			//
+			// Straight to stderr, not through notice: --quiet trims the
+			// narration, and "the outcome you asked for will not happen" is
+			// not narration.
 			if !isMagicAmount(triggerAmountOv) {
-				fmt.Fprintln(notice, sty.err.Warning(fmt.Sprintf(
+				fmt.Fprintln(cmd.ErrOrStderr(), sty.err.Warning(fmt.Sprintf(
 					"%d is not a magic amount — this will be an ordinary sandbox payment",
 					triggerAmountOv)))
 			}
@@ -111,12 +115,42 @@ Supported events, with the magic amount each one uses:
 		fmt.Fprintln(notice, sty.err.Command("reevit listen --forward-to "+localWebhookURL()))
 		fmt.Fprintln(notice, sty.err.Command("reevit payments list"))
 
+		if jsonOut, _ := outputMode(cmd); jsonOut {
+			return emitJSON(cmd, triggerDocument{
+				Schema:    schemaTrigger,
+				Event:     event,
+				PaymentID: paymentID,
+				Status:    status,
+				Amount:    amount,
+				Currency:  strings.ToUpper(triggerCurrency),
+			})
+		}
+
 		// stdout carries the id and nothing else, so `id=$(reevit trigger …)`
 		// is a working idiom rather than a string to parse.
 		fmt.Fprintln(cmd.OutOrStdout(), paymentID)
 
 		return nil
 	},
+}
+
+// triggerDocument is `reevit trigger --json`.
+//
+// `amount` is the amount actually sent, not the one the event maps to: with
+// --amount the two differ, and the simulator branches on what was sent. A
+// script reconciling this against the dashboard needs the number that was
+// charged, and the human path only warns about the difference in prose.
+//
+// `status` is the intent's status at creation — almost always "pending",
+// because the outcome resolves asynchronously. It is here so a consumer does
+// not read the absence of a field as "succeeded".
+type triggerDocument struct {
+	Schema    string `json:"schema"`
+	Event     string `json:"event"`
+	PaymentID string `json:"payment_id"`
+	Status    string `json:"status"`
+	Amount    int64  `json:"amount"`
+	Currency  string `json:"currency"`
 }
 
 // isMagicAmount reports whether an amount still drives a simulator outcome.

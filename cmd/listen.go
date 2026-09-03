@@ -70,7 +70,7 @@ fallback is ephemeral.`,
 		// The stream itself is this command's data; everything it says about
 		// the stream is conversation and belongs on stderr.
 		sty := styleOf(cmd)
-		notice := cmd.ErrOrStderr()
+		notice := noticeStream(cmd)
 
 		source, err := resolveListenSecret(cmd, c, root)
 		if err != nil {
@@ -95,6 +95,24 @@ fallback is ephemeral.`,
 		fmt.Fprintln(notice)
 		fmt.Fprintln(notice, sty.err.Success("Connected — waiting for test-mode events (Ctrl-C to stop)"))
 
+		// The machine-readable twin of the ready line. A consumer reading
+		// NDJSON off stdout has the same problem the human does — "connected
+		// and idle" and "hung" look identical — and it cannot see the line
+		// above, which is on stderr.
+		//
+		// It carries where events are going and where the secret came from,
+		// never the secret itself: this stream is what a script pipes into a
+		// log file.
+		if jsonOut, _ := outputMode(cmd); jsonOut {
+			if err := emitJSON(cmd, listenReadyDocument{
+				Schema:       schemaListenReady,
+				ForwardTo:    listenForwardTo,
+				SecretSource: source.kind,
+			}); err != nil {
+				return err
+			}
+		}
+
 		forwarder := newEventForwarder(
 			listenForwardTo, source.secret, cmd, sty.out, sty.err, &http.Client{Timeout: 15 * time.Second},
 		)
@@ -117,9 +135,14 @@ fallback is ephemeral.`,
 				backoff = time.Second
 			}
 
-			fmt.Fprintln(notice, sty.err.Warning(fmt.Sprintf("stream dropped — reconnecting in %s", backoff)))
-			fmt.Fprintln(notice, "  "+sty.err.Dim(streamDropCause(err)))
-			fmt.Fprintln(notice, "  "+sty.err.Dim(listenGapNotice))
+			// The reconnect block stays on stderr even under --quiet: a
+			// silent gap in a forwarded event log is the one thing a user
+			// tailing this must not be allowed to mistake for quiet traffic.
+			dropped := cmd.ErrOrStderr()
+
+			fmt.Fprintln(dropped, sty.err.Warning(fmt.Sprintf("stream dropped — reconnecting in %s", backoff)))
+			fmt.Fprintln(dropped, "  "+sty.err.Dim(streamDropCause(err)))
+			fmt.Fprintln(dropped, "  "+sty.err.Dim(listenGapNotice))
 
 			select {
 			case <-cmd.Context().Done():
@@ -140,9 +163,42 @@ fallback is ephemeral.`,
 // Returning the description instead lets the caller order the screen.
 type listenSecretSource struct {
 	secret      string
+	kind        string // flag|env|account|ephemeral|none — for --json
 	description string // fills the "Signing with" line
 	display     string // the secret itself, when the user has to copy it
 	guidance    string // what to do with it
+}
+
+// listenReadyDocument is the first line of `listen --json`: the stream is up.
+//
+// `secret_source` says where the signing key came from, because a handler
+// that rejects every event is nearly always verifying against a different
+// secret than the one signing. The secret itself is never here — NDJSON on
+// stdout is what a script redirects into a file.
+type listenReadyDocument struct {
+	Schema       string `json:"schema"`
+	ForwardTo    string `json:"forward_to"`
+	SecretSource string `json:"secret_source"`
+}
+
+// listenEventDocument is one delivery.
+//
+// `status` and `error` are pointers so both are always present and each can be
+// null: a delivery that never reached the handler has no status, and one that
+// did has no error. `omitempty` would have made a 0-status transport failure
+// indistinguishable from a missing field.
+//
+// The event body is deliberately absent. It is already POSTed to the
+// handler — the one place it is needed — and it is the only part of a
+// delivery that can contain customer data.
+type listenEventDocument struct {
+	Schema     string  `json:"schema"`
+	Time       string  `json:"time"`
+	Type       string  `json:"type"`
+	DeliveryID string  `json:"delivery_id"`
+	Status     *int    `json:"status"`
+	DurationMS int64   `json:"duration_ms"`
+	Error      *string `json:"error"`
 }
 
 // streamDropCause names why the stream ended. Stream returns a nil error when
@@ -160,6 +216,7 @@ func resolveListenSecret(cmd *cobra.Command, c *api.Client, root string) (listen
 	if listenSecret != "" {
 		return listenSecretSource{
 			secret:      listenSecret,
+			kind:        "flag",
 			description: "the --signing-secret you passed",
 		}, nil
 	}
@@ -169,6 +226,7 @@ func resolveListenSecret(cmd *cobra.Command, c *api.Client, root string) (listen
 			if secret := scaffold.ReadEnvValue(project, "REEVIT_WEBHOOK_SECRET"); secret != "" {
 				return listenSecretSource{
 					secret:      secret,
+					kind:        "env",
 					description: "REEVIT_WEBHOOK_SECRET from " + scaffold.EnvFileName(project),
 				}, nil
 			}
@@ -177,7 +235,7 @@ func resolveListenSecret(cmd *cobra.Command, c *api.Client, root string) (listen
 	if c != nil {
 		return fetchOrMintSecret(cmd, c)
 	}
-	return listenSecretSource{description: "nothing — no secret resolved"}, nil
+	return listenSecretSource{kind: "none", description: "nothing — no secret resolved"}, nil
 }
 
 // fetchOrMintSecret prefers the org's real signing secret so existing verify
@@ -203,6 +261,7 @@ func fetchOrMintSecret(cmd *cobra.Command, c *api.Client) (listenSecretSource, e
 	case err == nil && cfg.SigningSecret != "":
 		return listenSecretSource{
 			secret:      cfg.SigningSecret,
+			kind:        "account",
 			description: "your account's webhook secret",
 		}, nil
 	case err == nil:
@@ -225,6 +284,7 @@ func fetchOrMintSecret(cmd *cobra.Command, c *api.Client) (listenSecretSource, e
 
 	return listenSecretSource{
 		secret:      secret,
+		kind:        "ephemeral",
 		description: "an ephemeral secret (" + why + ")",
 		display:     secret,
 		guidance:    "Put it in REEVIT_WEBHOOK_SECRET so your handler can verify these events",
@@ -263,6 +323,10 @@ type eventForwarder struct {
 	// event of the second `reevit listen` run when the ids restarted at 1.
 	runID    string
 	delivery int
+	// jsonOut swaps the stdout line for an NDJSON object. Read once at
+	// construction: the flag cannot change while the stream is running, and
+	// re-reading it per delivery would let a half-JSON log exist.
+	jsonOut bool
 }
 
 func newEventForwarder(
@@ -272,7 +336,7 @@ func newEventForwarder(
 	errSty ui.Styler,
 	httpc *http.Client,
 ) *eventForwarder {
-	return &eventForwarder{
+	forwarder := &eventForwarder{
 		target: target,
 		secret: secret,
 		out:    out,
@@ -281,6 +345,10 @@ func newEventForwarder(
 		httpc:  httpc,
 		runID:  uuid.NewString()[:8],
 	}
+
+	forwarder.jsonOut, _ = outputMode(out)
+
+	return forwarder
 }
 
 func (f *eventForwarder) handle(evt api.SSEEvent) {
@@ -295,22 +363,10 @@ func (f *eventForwarder) handle(evt api.SSEEvent) {
 	envelope["attempt"] = 1
 	envelope["signature_timestamp"] = time.Now().UTC().Format(time.RFC3339)
 
-	body, err := json.Marshal(envelope)
-	if err != nil {
-		fmt.Fprintf(f.out.ErrOrStderr(), "encode event: %v\n", err)
-
-		return
-	}
-
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, f.target, bytes.NewReader(body))
-	if err != nil {
-		fmt.Fprintf(f.out.ErrOrStderr(), "build forward request: %v\n", err)
-
-		return
-	}
-
 	// A real delivery envelope carries `event`; only the fallback above and
-	// older payloads carry `type`.
+	// older payloads carry `type`. Resolved before the first failure exit so
+	// that every NDJSON line names its event, including the ones that never
+	// left the process.
 	eventType, _ := envelope["event"].(string)
 	if eventType == "" {
 		eventType, _ = envelope["type"].(string)
@@ -318,6 +374,22 @@ func (f *eventForwarder) handle(evt api.SSEEvent) {
 
 	if eventType == "" {
 		eventType = evt.Type
+	}
+
+	body, err := json.Marshal(envelope)
+	if err != nil {
+		fmt.Fprintf(f.out.ErrOrStderr(), "encode event: %v\n", err)
+		f.emitFailure(eventType, deliveryID, 0, err)
+
+		return
+	}
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, f.target, bytes.NewReader(body))
+	if err != nil {
+		fmt.Fprintf(f.out.ErrOrStderr(), "build forward request: %v\n", err)
+		f.emitFailure(eventType, deliveryID, 0, err)
+
+		return
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -332,27 +404,34 @@ func (f *eventForwarder) handle(evt api.SSEEvent) {
 	resp, err := f.httpc.Do(req)
 	if err != nil {
 		fmt.Fprintf(f.out.ErrOrStderr(), "%s %s forward failed: %v\n", eventType, marker(f.sty.Step("")), err)
+		f.emitFailure(eventType, deliveryID, time.Since(started), err)
 
 		return
 	}
 
 	_ = resp.Body.Close()
 
-	// %-26s so the status codes line up into a column the eye can scan; a
-	// ragged right edge is what makes a long `listen` session unreadable.
-	line := fmt.Sprintf("%s  %-26s %s %d  %dms",
-		time.Now().Format("15:04:05"), eventType, marker(f.sty.Step("")),
-		resp.StatusCode, time.Since(started).Milliseconds())
+	elapsed := time.Since(started)
 
-	// The handler's own verdict: a 2xx is the whole point of `listen`, and
-	// anything else is the failure the developer is here to see.
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		line = f.sty.Success(line)
+	if f.jsonOut {
+		f.emitEvent(eventType, deliveryID, &resp.StatusCode, elapsed, nil)
 	} else {
-		line = f.sty.Failure(line)
-	}
+		// %-26s so the status codes line up into a column the eye can scan; a
+		// ragged right edge is what makes a long `listen` session unreadable.
+		line := fmt.Sprintf("%s  %-26s %s %d  %dms",
+			time.Now().Format("15:04:05"), eventType, marker(f.sty.Step("")),
+			resp.StatusCode, elapsed.Milliseconds())
 
-	fmt.Fprintln(f.out.OutOrStdout(), line)
+		// The handler's own verdict: a 2xx is the whole point of `listen`, and
+		// anything else is the failure the developer is here to see.
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			line = f.sty.Success(line)
+		} else {
+			line = f.sty.Failure(line)
+		}
+
+		fmt.Fprintln(f.out.OutOrStdout(), line)
+	}
 
 	// A bare 404 in the status column reads as "Reevit failed". Naming the
 	// handler as the author of the status points the fix at the right file.
@@ -360,6 +439,47 @@ func (f *eventForwarder) handle(evt api.SSEEvent) {
 		fmt.Fprintln(f.out.ErrOrStderr(),
 			"  "+f.errSty.Dim(fmt.Sprintf("your handler returned %d for %s", resp.StatusCode, eventType)))
 	}
+}
+
+// emitFailure records a delivery that never got a status back.
+//
+// Under --json only: the human path already printed its own sentence, in the
+// wording plan 031 chose, and this exists so the NDJSON log has one line per
+// event rather than a silent gap where the failures were. A consumer counting
+// lines against the dashboard would otherwise conclude the events never
+// arrived.
+func (f *eventForwarder) emitFailure(eventType, deliveryID string, elapsed time.Duration, cause error) {
+	if !f.jsonOut {
+		return
+	}
+
+	f.emitEvent(eventType, deliveryID, nil, elapsed, cause)
+}
+
+func (f *eventForwarder) emitEvent(
+	eventType, deliveryID string,
+	status *int,
+	elapsed time.Duration,
+	cause error,
+) {
+	doc := listenEventDocument{
+		Schema:     schemaListenEvent,
+		Time:       time.Now().UTC().Format(time.RFC3339),
+		Type:       eventType,
+		DeliveryID: deliveryID,
+		Status:     status,
+		DurationMS: elapsed.Milliseconds(),
+	}
+
+	if cause != nil {
+		message := cause.Error()
+		doc.Error = &message
+	}
+
+	// An encoder failure here would be a broken stdout, which the next line
+	// would hit too; there is nowhere useful to report it that is not the
+	// stream we just failed to write.
+	_ = emitJSON(f.out, doc)
 }
 
 // SignBody produces the production webhook signature for a payload:

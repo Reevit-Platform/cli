@@ -87,12 +87,14 @@ func runLogin(t *testing.T, stdin string, args ...string) (configPath string, st
 
 	stdout, stderr = &bytes.Buffer{}, &bytes.Buffer{}
 
-	rootCmd.SetIn(strings.NewReader(stdin))
-	rootCmd.SetOut(stdout)
-	rootCmd.SetErr(stderr)
-	rootCmd.SetArgs(args)
-
-	err = rootCmd.ExecuteContext(context.Background())
+	// ExecuteWith, not rootCmd.ExecuteContext: cobra only fills a
+	// subcommand's context when it is still nil, so a command that has
+	// already run once in this process keeps the context of that first run.
+	// TestExecuteWithCancelledContextExits130 runs one with a cancelled
+	// context, and under -shuffle=on that can land first — after which every
+	// login here failed with "context canceled". ExecuteWith is what pushes
+	// this run's context over the whole tree.
+	err = ExecuteWith(context.Background(), args, strings.NewReader(stdin), stdout, stderr)
 
 	return configPath, stdout, stderr, err
 }
@@ -208,12 +210,12 @@ func TestLoginPreservesUnrelatedConfigFields(t *testing.T) {
 	t.Setenv("REEVIT_API_KEY", "")
 	t.Setenv("REEVIT_MODE", "")
 
-	rootCmd.SetIn(strings.NewReader(""))
-	rootCmd.SetOut(&bytes.Buffer{})
-	rootCmd.SetErr(&bytes.Buffer{})
-	rootCmd.SetArgs([]string{"login", "--key", "pfk_test_second.sec"})
-
-	if execErr := rootCmd.ExecuteContext(context.Background()); execErr != nil {
+	execErr := ExecuteWith(
+		context.Background(),
+		[]string{"login", "--key", "pfk_test_second.sec"},
+		strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{},
+	)
+	if execErr != nil {
 		t.Fatalf("second login: %v", execErr)
 	}
 
@@ -277,12 +279,12 @@ func TestLoginIgnoresAnExportedAPIKey(t *testing.T) {
 	t.Setenv("REEVIT_API_KEY", "pfk_test_env.sec")
 	t.Setenv("REEVIT_MODE", "")
 
-	rootCmd.SetIn(strings.NewReader(""))
-	rootCmd.SetOut(&bytes.Buffer{})
-	rootCmd.SetErr(&bytes.Buffer{})
-	rootCmd.SetArgs([]string{"login", "--no-browser"})
-
-	if err := rootCmd.ExecuteContext(context.Background()); err != nil {
+	err := ExecuteWith(
+		context.Background(),
+		[]string{"login", "--no-browser"},
+		strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{},
+	)
+	if err != nil {
 		t.Fatalf("login --no-browser: %v", err)
 	}
 

@@ -44,16 +44,101 @@ var (
 // problem(s)`.
 var errDoctorFailed = errors.New("")
 
-// doctorResult tallies outcomes so the command can exit non-zero on failures.
+// doctorCheck is one finding, in the shape a machine can branch on.
+//
+// `status` is pass|fail|warn|skip. `remedy` is a command line to run and is
+// present only when one clears the finding — where the fix is an explanation
+// rather than a command it stays in `message`. `detail` carries the cause
+// under a finding ("connection refused"), which is emphatically not a remedy;
+// it exists so the JSON does not lose the dim second line the human output
+// has shown since 031.
+type doctorCheck struct {
+	Status  string `json:"status"`
+	Message string `json:"message"`
+	Remedy  string `json:"remedy,omitempty"`
+	Detail  string `json:"detail,omitempty"`
+}
+
+// doctorSection groups checks under the heading they printed beneath, so a
+// consumer can say "the Webhooks section failed" without matching prose.
+type doctorSection struct {
+	Name   string        `json:"name"`
+	Checks []doctorCheck `json:"checks"`
+}
+
+// doctorDocument is `reevit doctor --json`. `ok` is the verdict the exit code
+// carries: false exactly when the command exits 3. `strict` is reported
+// because it decides whether warnings count, and it can be switched on by the
+// environment (CI=true) rather than by the caller — a script that sees
+// ok:false with failures:0 needs to be able to tell why.
+type doctorDocument struct {
+	Schema   string          `json:"schema"`
+	OK       bool            `json:"ok"`
+	Failures int             `json:"failures"`
+	Warnings int             `json:"warnings"`
+	Strict   bool            `json:"strict"`
+	Sections []doctorSection `json:"sections"`
+}
+
+// doctorResult tallies outcomes so the command can exit non-zero on failures,
+// and collects them so --json can render the same run as one document.
 // The zero value renders in plain ASCII, which is what the unit tests want.
+//
+// Collecting and printing happen together, in the same call, rather than
+// printing from the collected slice at the end: doctor makes network calls
+// that take seconds, and a human watching wants each line as it is decided.
 type doctorResult struct {
 	failures int
 	warnings int
 	sty      ui.Styler
+	sections []doctorSection
+
+	// quiet drops the lines that only confirm ("Credentials", "API key
+	// configured") and keeps the ones that report something wrong. It never
+	// silences a fail or a warn: --quiet asks for less narration, not for
+	// less truth.
+	quiet bool
+}
+
+// section starts a new group. The heading prints for a human; the group is
+// what the JSON is organised by.
+func (r *doctorResult) section(out io.Writer, name string) {
+	r.sections = append(r.sections, doctorSection{Name: name})
+
+	if !r.quiet {
+		fmt.Fprintln(out, r.sty.Heading(name))
+	}
+}
+
+// record appends a check to the section in progress.
+//
+// A check recorded before any section still has to land somewhere: dropping
+// it would make `failures` disagree with what the sections contain, and a
+// consumer counting statuses would silently miss it.
+func (r *doctorResult) record(status, remedy, message string) {
+	if len(r.sections) == 0 {
+		r.sections = append(r.sections, doctorSection{})
+	}
+
+	sec := &r.sections[len(r.sections)-1]
+	sec.Checks = append(sec.Checks, doctorCheck{Status: status, Message: message, Remedy: remedy})
+}
+
+// skip records a check that did not run. It prints nothing, because the human
+// output prints nothing at these points today and 031 owns that wording — but
+// a machine needs to see the difference between "checked and fine" and "never
+// looked", or a count of passes reads as coverage it does not have.
+func (r *doctorResult) skip(reason string) {
+	r.record("skip", "", reason)
 }
 
 func (r *doctorResult) pass(out io.Writer, format string, args ...any) {
-	fmt.Fprintln(out, "  "+r.sty.Success(fmt.Sprintf(format, args...)))
+	message := fmt.Sprintf(format, args...)
+	r.record("pass", "", message)
+
+	if !r.quiet {
+		fmt.Fprintln(out, "  "+r.sty.Success(message))
+	}
 }
 
 func (r *doctorResult) fail(out io.Writer, format string, args ...any) {
@@ -76,7 +161,10 @@ func (r *doctorResult) warn(out io.Writer, format string, args ...any) {
 func (r *doctorResult) failr(out io.Writer, remedy, format string, args ...any) {
 	r.failures++
 
-	fmt.Fprintln(out, "  "+r.sty.Failure(fmt.Sprintf(format, args...)))
+	message := fmt.Sprintf(format, args...)
+	r.record("fail", remedy, message)
+
+	fmt.Fprintln(out, "  "+r.sty.Failure(message))
 	r.printRemedy(out, remedy)
 }
 
@@ -84,7 +172,10 @@ func (r *doctorResult) failr(out io.Writer, remedy, format string, args ...any) 
 func (r *doctorResult) warnr(out io.Writer, remedy, format string, args ...any) {
 	r.warnings++
 
-	fmt.Fprintln(out, "  "+r.sty.Warning(fmt.Sprintf(format, args...)))
+	message := fmt.Sprintf(format, args...)
+	r.record("warn", remedy, message)
+
+	fmt.Fprintln(out, "  "+r.sty.Warning(message))
 	r.printRemedy(out, remedy)
 }
 
@@ -102,7 +193,25 @@ func (r *doctorResult) printRemedy(out io.Writer, remedy string) {
 // remedy. Kept separate from failr/warnr's remedy because 032 serialises
 // remedies as commands to run, and "connection refused" is not one.
 func (r *doctorResult) note(out io.Writer, text string) {
+	r.attachDetail(text)
+
 	fmt.Fprintln(out, "    "+r.sty.Dim(text))
+}
+
+// attachDetail hangs a note on the check it was printed under, which is
+// always the last one recorded — the same relationship the indentation shows
+// on screen.
+func (r *doctorResult) attachDetail(text string) {
+	if len(r.sections) == 0 {
+		return
+	}
+
+	checks := r.sections[len(r.sections)-1].Checks
+	if len(checks) == 0 {
+		return
+	}
+
+	checks[len(checks)-1].Detail = text
 }
 
 var doctorCmd = &cobra.Command{
@@ -130,10 +239,20 @@ command.`,
 		// stdout to itself.
 		sty := styleOf(cmd).err
 		out := cmd.ErrOrStderr()
-		res := &doctorResult{sty: sty}
+
+		// Under --json the findings ARE the document on stdout, so the
+		// streaming human rendering has no reader left; io.Discard rather
+		// than a flag on every print site, because there are ninety of them
+		// and one forgotten guard is a broken contract.
+		jsonOut, quiet := outputMode(cmd)
+		if jsonOut {
+			out = io.Discard
+		}
+
+		res := &doctorResult{sty: sty, quiet: quiet}
 
 		// --- 1. CLI credentials ---
-		fmt.Fprintln(out, sty.Heading("Credentials"))
+		res.section(out, "Credentials")
 
 		cfg, err := config.Load()
 		if err != nil {
@@ -182,7 +301,7 @@ command.`,
 		}
 
 		// --- 2. Project files ---
-		fmt.Fprintln(out, sty.Heading("Project"))
+		res.section(out, "Project")
 
 		root, err := os.Getwd()
 		if err != nil {
@@ -192,9 +311,8 @@ command.`,
 		project := scaffold.Detect(root)
 		if project.Stack == scaffold.StackUnknown {
 			res.fail(out, "no project detected here — run doctor from your project root")
-			printDoctorSummary(out, res)
 
-			return ExitError{Code: exitDoctor, Err: errDoctorFailed}
+			return finishDoctor(cmd, out, res)
 		}
 
 		res.pass(out, "%s project", project.Stack)
@@ -225,7 +343,7 @@ command.`,
 			}
 		}
 
-		fmt.Fprintln(out, sty.Heading("Environment ("+scaffold.EnvFileName(project)+")"))
+		res.section(out, "Environment ("+scaffold.EnvFileName(project)+")")
 
 		envKey := scaffold.ReadEnvValue(project, "REEVIT_API_KEY")
 		handlerFile, handlerPath := scaffold.WebhookHandler(project)
@@ -235,6 +353,7 @@ command.`,
 		switch {
 		case !hasServer:
 			// Checkout-only projects intentionally have no server credential.
+			res.skip("REEVIT_API_KEY not checked (this project has no server credential)")
 		case envKey == "":
 			res.failr(out, "reevit init", "REEVIT_API_KEY is not set")
 		case strings.HasPrefix(envKey, "pfk_"):
@@ -282,7 +401,7 @@ command.`,
 		}
 
 		// --- 4. Platform bootstrap ---
-		fmt.Fprintln(out, sty.Heading("Sandbox"))
+		res.section(out, "Sandbox")
 		if manifest.ProjectID != "" && cfg.APIKey != "" {
 			status, statusErr := api.New(cfg).BootstrapStatus(cmd.Context(), manifest.ProjectID, manifest.Origin)
 			if statusErr != nil {
@@ -321,7 +440,7 @@ command.`,
 		}
 
 		// --- 6. Runnable checkout ---
-		fmt.Fprintln(out, sty.Heading("App"))
+		res.section(out, "App")
 		if doctorAppURL != "" {
 			checkAppURL(cmd.Context(), out, res, doctorAppURL)
 		} else if demoPath := scaffold.DemoPath(project); demoPath != "" {
@@ -339,7 +458,7 @@ command.`,
 		}
 
 		// --- 7. Webhook handler ---
-		fmt.Fprintln(out, sty.Heading("Webhooks"))
+		res.section(out, "Webhooks")
 
 		if handlerFile != "" {
 			res.pass(out, "handler found at %s", handlerFile)
@@ -356,13 +475,14 @@ command.`,
 				"live check skipped (start your dev server first)")
 		case doctorWebhookURL == "":
 			// nothing to check against
+			res.skip("live webhook check not requested (pass --webhook-url)")
 		case webhookSecret == "":
 			res.fail(out, "cannot run the live check: REEVIT_WEBHOOK_SECRET is empty (the handler would reject every event)")
 		default:
 			checkWebhookEndToEnd(cmd.Context(), out, res, doctorWebhookURL, webhookSecret)
 
 			if doctorE2E {
-				fmt.Fprintln(out, sty.Heading("End-to-end"))
+				res.section(out, "End-to-end")
 				checkWebhookE2E(cmd, out, res, doctorWebhookURL, webhookSecret)
 			}
 		}
@@ -371,24 +491,53 @@ command.`,
 			res.fail(out, "--e2e needs --webhook-url so the platform event has somewhere to land")
 		}
 
-		printDoctorSummary(out, res)
-
-		strict := doctorStrict || runningInCI()
-		if res.failures > 0 || (strict && res.warnings > 0) {
-			if res.failures == 0 {
-				// Nothing on screen says a clean-but-warned run is a failure,
-				// so this one keeps its message.
-				return ExitError{
-					Code: exitDoctor,
-					Err:  fmt.Errorf("doctor found %s in strict mode", plural(res.warnings, "warning")),
-				}
-			}
-
-			return ExitError{Code: exitDoctor, Err: errDoctorFailed}
-		}
-
-		return nil
+		return finishDoctor(cmd, out, res)
 	},
+}
+
+// finishDoctor renders the verdict — the human summary or one JSON document —
+// and turns the tally into the exit code.
+//
+// One function, because doctor has two exits: the normal end and the early
+// "no project detected here" return. Before --json that duplication only cost
+// a repeated summary call; now a machine waiting on stdout would have got
+// nothing at all from the one run where the diagnosis is most obvious.
+func finishDoctor(cmd *cobra.Command, out io.Writer, res *doctorResult) error {
+	strict := doctorStrict || runningInCI()
+	failed := res.failures > 0 || (strict && res.warnings > 0)
+
+	if jsonOut, quiet := outputMode(cmd); jsonOut {
+		if err := emitJSON(cmd, doctorDocument{
+			Schema:   schemaDoctor,
+			OK:       !failed,
+			Failures: res.failures,
+			Warnings: res.warnings,
+			Strict:   strict,
+			Sections: res.sections,
+		}); err != nil {
+			return err
+		}
+	} else if !quiet || res.failures > 0 || res.warnings > 0 {
+		// --quiet keeps the verdict when there is something to say and drops
+		// it when there is not: "Everything checks out" is a confirmation,
+		// and confirmations are what --quiet is for.
+		printDoctorSummary(out, res)
+	}
+
+	if !failed {
+		return nil
+	}
+
+	if res.failures == 0 {
+		// Nothing on screen says a clean-but-warned run is a failure, so this
+		// one keeps its message.
+		return ExitError{
+			Code: exitDoctor,
+			Err:  fmt.Errorf("doctor found %s in strict mode", plural(res.warnings, "warning")),
+		}
+	}
+
+	return ExitError{Code: exitDoctor, Err: errDoctorFailed}
 }
 
 func pythonSDKProbeCommand(installer scaffold.Installer) []string {

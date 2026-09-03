@@ -1,0 +1,1 @@
+{"schema":"reevit.cli.trigger.v1","event":"payment.succeeded","payment_id":"pay_01JQTEST","status":"pending","amount":4000,"currency":"GHS"}

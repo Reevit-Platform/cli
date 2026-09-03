@@ -1,0 +1,1 @@
+{"schema":"reevit.cli.payments.list.v1","mode":"test","data":[{"id":"pmt_1","provider":"paystack","method":"card","status":"succeeded","amount":12500,"currency":"GHS","created_at":"2026-01-02T09:30:00Z"},{"id":"pmt_2","provider":"hubtel","method":"mobile_money","status":"failed","amount":900,"currency":"GHS","created_at":"2026-01-02T10:15:00Z"}]}

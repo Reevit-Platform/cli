@@ -1,0 +1,1 @@
+{"schema":"reevit.cli.doctor.v1","ok":false,"failures":1,"warnings":0,"strict":false,"sections":[{"name":"Credentials","checks":[{"status":"pass","message":"API key configured (test mode)"},{"status":"pass","message":"key authenticates against <API>"}]},{"name":"Project","checks":[{"status":"fail","message":"no project detected here — run doctor from your project root"}]}]}

@@ -69,7 +69,12 @@ func browserLogin(cmd *cobra.Command, openBrowser bool) error {
 	// Pairing is a conversation with the user, not this command's output: on
 	// stderr it survives `reevit login > log`.
 	sty := styleOf(cmd).err
+	// The pairing code and the confirm link are NOT suppressible. --quiet
+	// trims narration, and without these two lines browser pairing cannot be
+	// completed at all — a quiet flag that makes a command impossible to
+	// finish is a broken flag. Everything else here goes through progress.
 	out := cmd.ErrOrStderr()
+	progress := noticeStream(cmd)
 
 	fmt.Fprintln(out, sty.Heading("Reevit login"))
 	fmt.Fprintln(out)
@@ -84,18 +89,18 @@ func browserLogin(cmd *cobra.Command, openBrowser bool) error {
 			fmt.Fprintln(out, sty.Warning(fmt.Sprintf(
 				"could not open a browser (%v) — open the link above yourself", err)))
 		} else {
-			fmt.Fprintln(out, sty.Step("Opening your browser… (use --no-browser to skip)"))
+			fmt.Fprintln(progress, sty.Step("Opening your browser… (use --no-browser to skip)"))
 		}
 	}
 
-	fmt.Fprint(out, sty.Pending("Waiting for approval"))
+	fmt.Fprint(progress, sty.Pending("Waiting for approval"))
 
-	result, err := pollPairing(ctx, httpc, cfg.BaseURL, start, out)
+	result, err := pollPairing(ctx, httpc, cfg.BaseURL, start, progress)
 
 	// Close the line of progress dots however polling ended. The dots and the
 	// error now share stderr, so without this the failure reads
 	// "Waiting for approval.error: …".
-	fmt.Fprintln(out)
+	fmt.Fprintln(progress)
 
 	if err != nil {
 		return err
@@ -135,17 +140,44 @@ func browserLogin(cmd *cobra.Command, openBrowser bool) error {
 		orgName = "your organization"
 	}
 
-	fmt.Fprintln(out)
-	fmt.Fprintln(out, sty.Success(fmt.Sprintf("Logged in to %s as %s", orgName, result.APIKey.Name)))
-	fmt.Fprintln(out, "  "+sty.Note(keyDescription(saved.Mode, result.APIKey.Scopes)))
-	fmt.Fprintln(out, "  "+sty.Note("saved to "+shortenHome(p)))
+	fmt.Fprintln(progress)
+	fmt.Fprintln(progress, sty.Success(fmt.Sprintf("Logged in to %s as %s", orgName, result.APIKey.Name)))
+	fmt.Fprintln(progress, "  "+sty.Note(keyDescription(saved.Mode, result.APIKey.Scopes)))
+	fmt.Fprintln(progress, "  "+sty.Note("saved to "+shortenHome(p)))
 
 	// `reevit init` calls this same flow when it finds no credential; telling
 	// the user to go and run init in the middle of an init run would be
 	// nonsense, so only the login command itself closes with a next step.
 	if cmd.Name() == "login" {
-		fmt.Fprintln(out, sty.Heading("Next"))
-		fmt.Fprintln(out, sty.Command("cd your-project && reevit init"))
+		fmt.Fprintln(progress, sty.Heading("Next"))
+		fmt.Fprintln(progress, sty.Command("cd your-project && reevit init"))
+	}
+
+	// Guarded by the command name for the same reason the block above is:
+	// `init` calls this flow when it finds no credential, and a login
+	// document appearing in the middle of `init --json` would be a second,
+	// unannounced schema on a stream that promises one document per run.
+	// `init --json` is a follow-up, not this plan.
+	if jsonOut, _ := outputMode(cmd); jsonOut && cmd.Name() == "login" {
+		doc := loginDocument{
+			Schema:     schemaLogin,
+			Method:     "browser",
+			Mode:       saved.Mode,
+			KeyName:    result.APIKey.Name,
+			Scopes:     result.APIKey.Scopes,
+			ConfigPath: p,
+		}
+
+		// orgName above falls back to "your organization" for the sentence on
+		// screen. That is copy, not data: a script must not read it as the
+		// name of an org, so the document carries what the server sent or
+		// nothing at all.
+		if result.Org != nil {
+			doc.OrgID = result.Org.ID
+			doc.OrgName = result.Org.Name
+		}
+
+		return emitJSON(cmd, doc)
 	}
 
 	return nil

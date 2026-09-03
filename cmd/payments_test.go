@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -167,5 +168,110 @@ func TestPaymentsTableRightAlignsTheAmount(t *testing.T) {
 		if strings.TrimRight(line, " ") != line {
 			t.Errorf("line %q has trailing whitespace", line)
 		}
+	}
+}
+
+// The backend runs four list conventions at once and /payments is only one of
+// them. A CLI that decodes exactly one shape reports an empty list — not an
+// error — the day its endpoint joins the others, which is the failure mode
+// this decoder exists to make impossible.
+func TestPaymentsPageDecodesEveryBackendListShape(t *testing.T) {
+	t.Parallel()
+
+	const rows = `[{"id":"pmt_1","status":"succeeded","amount":100,"currency":"GHS"},
+	               {"id":"pmt_2","status":"failed","amount":200,"currency":"GHS"}]`
+
+	for _, test := range []struct {
+		name           string
+		body           string
+		wantPagination string
+	}{
+		{
+			name: "a bare array — what GET /payments returns today",
+			body: rows,
+		},
+		{
+			name:           "the data + pagination envelope (/api-keys)",
+			body:           `{"data":` + rows + `,"pagination":{"total":2,"limit":20,"offset":0}}`,
+			wantPagination: `{"total":2,"limit":20,"offset":0}`,
+		},
+		{
+			name:           "success + nested data (/kyc, /admin)",
+			body:           `{"success":true,"data":{"payments":` + rows + `},"pagination":{"total":2,"limit":20,"offset":0}}`,
+			wantPagination: `{"total":2,"limit":20,"offset":0}`,
+		},
+		{
+			name:           "a resource-keyed envelope (/connections)",
+			body:           `{"payments":` + rows + `,"pagination":{"total":2,"limit":20,"offset":0}}`,
+			wantPagination: `{"total":2,"limit":20,"offset":0}`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			var page paymentsPage
+			if err := json.Unmarshal([]byte(test.body), &page); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+
+			if len(page.rows) != 2 {
+				t.Fatalf("rows = %+v, want 2", page.rows)
+			}
+
+			if page.rows[0].ID != "pmt_1" || page.rows[1].Status != "failed" {
+				t.Errorf("rows = %+v, want pmt_1 then a failed pmt_2", page.rows)
+			}
+
+			if got := string(page.pagination); got != test.wantPagination {
+				t.Errorf("pagination = %q, want %q", got, test.wantPagination)
+			}
+		})
+	}
+}
+
+// A shape nobody has met before must say so. Returning an empty list would
+// make a broken deploy look like an account with no payments, which is the
+// one wrong answer a `payments list` can give.
+func TestPaymentsPageRefusesAShapeItCannotRead(t *testing.T) {
+	t.Parallel()
+
+	var page paymentsPage
+
+	err := json.Unmarshal([]byte(`{"results":[{"id":"pmt_1"}],"pagination":{"total":1}}`), &page)
+	if err == nil {
+		t.Fatalf("decode succeeded with %d rows, want an error naming the shape", len(page.rows))
+	}
+
+	// The keys it did find are the only clue a user has about what changed.
+	if !strings.Contains(err.Error(), "results") {
+		t.Errorf("error = %q, want it to name the keys the response actually carried", err)
+	}
+}
+
+// Pagination is passed through verbatim, never re-modelled and never
+// synthesised from --limit: a `total` the CLI invented is worse than an
+// absent one, and a struct would drop whatever field the backend adds next.
+func TestPaymentsPagePassesPaginationThroughUntouched(t *testing.T) {
+	t.Parallel()
+
+	var page paymentsPage
+
+	body := `{"data":[],"pagination":{"total":9,"limit":20,"offset":0,"has_more":true}}`
+	if err := json.Unmarshal([]byte(body), &page); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if got := string(page.pagination); got != `{"total":9,"limit":20,"offset":0,"has_more":true}` {
+		t.Errorf("pagination = %q, want the object verbatim including has_more", got)
+	}
+
+	// And a response without one carries none, rather than an invented zero.
+	var bare paymentsPage
+	if err := json.Unmarshal([]byte(`[]`), &bare); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if bare.pagination != nil {
+		t.Errorf("pagination = %q, want nothing when the response carried none", bare.pagination)
 	}
 }

@@ -28,4 +28,6 @@ Flags:
       --webhook-url string   your running app's webhook endpoint, e.g. http://localhost:3000/api/webhooks/reevit
 
 Global Flags:
+      --json       print machine-readable JSON to stdout
       --no-color   disable colour and glyphs
+  -q, --quiet      suppress progress and hints; errors still print

@@ -187,7 +187,13 @@ var (
 	// once per process and another test may have resolved it first, so the
 	// rendered value is normalised rather than trusted.
 	goldenDateTimeRe = regexp.MustCompile(`\d{4}-\d{2}-\d{2} \d{2}:\d{2}`)
-	goldenTimeRe     = regexp.MustCompile(`\d{2}:\d{2}:\d{2}`)
+	// Anchored at the start of a line, because that is where the only clock
+	// value the CLI prints in this shape lives: `listen`'s delivery line
+	// opens with time.Now().Format("15:04:05"). Unanchored it also ate the
+	// time out of every RFC 3339 created_at in a --json document, which is
+	// fixed test data, not a clock — and normalising fixture data away is
+	// how a golden stops proving anything about it.
+	goldenTimeRe = regexp.MustCompile(`(?m)^\d{2}:\d{2}:\d{2}`)
 	// The forwarded-event line prints its round trip as a bare `12ms`
 	// column; it used to be parenthesised, and the pattern moved with it.
 	goldenMillisRe   = regexp.MustCompile(`\b\d+ms\b`)
@@ -484,6 +490,12 @@ func goldenCases() []goldenCase {
 		{name: "unknown-command", args: []string{"doctro"}, wantExit: 1},
 		// A misspelled flag is a usage error, not a runtime failure: exit 2.
 		{name: "unknown-flag", args: []string{"listen", "--forwardto", "x"}, wantExit: 2},
+		// --json is a promise about what stdout contains, not a promise that
+		// there will be one. A usage error happens before any command runs,
+		// so stdout stays empty and the exit code is still 2 — a consumer
+		// that got half a document here would be worse off than one that got
+		// nothing.
+		{name: "unknown-flag-json", args: []string{"listen", "--json", "--forwardto", "x"}, wantExit: 2},
 
 		{
 			name: "login-key-rejected",
@@ -538,9 +550,104 @@ func goldenCases() []goldenCase {
 			unsetEnv: []string{"REEVIT_TELEMETRY", "DO_NOT_TRACK"},
 			server:   paymentsServer(http.StatusOK, twoPayments),
 		},
+		// The primary --json case runs against the bare array /payments
+		// actually returns today.
+		{
+			name:   "payments-list-json",
+			args:   []string{"payments", "list", "--json", "--limit", "2"},
+			env:    map[string]string{"REEVIT_API_KEY": testKey, "TZ": "UTC"},
+			server: paymentsServer(http.StatusOK, twoPayments),
+		},
+		// …and the second against the envelope three other backend list
+		// endpoints already use, so the CLI does not have to be changed on
+		// the day /payments joins them.
+		{
+			name: "payments-list-json-envelope",
+			args: []string{"payments", "list", "--json", "--limit", "2"},
+			env:  map[string]string{"REEVIT_API_KEY": testKey, "TZ": "UTC"},
+			server: paymentsServer(http.StatusOK,
+				`{"data":`+twoPayments+`,"pagination":{"total":2,"limit":20,"offset":0}}`),
+		},
+		// An empty list is `"data": []`, never `null`: a consumer piping
+		// into `.data[]` should not need a null guard, and the human path's
+		// "No payments" hint has no place on a machine-readable stdout.
+		{
+			name:   "payments-list-empty-json",
+			args:   []string{"payments", "list", "--json"},
+			env:    map[string]string{"REEVIT_API_KEY": testKey},
+			server: paymentsServer(http.StatusOK, `[]`),
+		},
+		// A bare `[]` decodes to a non-nil empty slice, so the case above
+		// cannot prove the null guard. This one can: Go's encoding/json
+		// renders a nil []T as `null`, which is exactly what an envelope
+		// endpoint with no rows sends.
+		{
+			name: "payments-list-null-json",
+			args: []string{"payments", "list", "--json"},
+			env:  map[string]string{"REEVIT_API_KEY": testKey},
+			server: paymentsServer(http.StatusOK,
+				`{"data":null,"pagination":{"total":0,"limit":20,"offset":0}}`),
+		},
 		{
 			name: "payments-list-forbidden",
 			args: []string{"payments", "list"},
+			env:  map[string]string{"REEVIT_API_KEY": testKey},
+			server: paymentsServer(http.StatusForbidden,
+				`{"code":"insufficient_scope","message":"missing payments:read"}`),
+			wantExit: 1,
+		},
+
+		// --quiet trims the conversation and nothing else. The three cases
+		// below pin the three halves of that: a hint disappears, a success
+		// confirmation disappears, and a failure does not.
+		{
+			name:   "payments-list-empty-quiet",
+			args:   []string{"payments", "list", "--quiet"},
+			env:    map[string]string{"REEVIT_API_KEY": testKey},
+			server: paymentsServer(http.StatusOK, `[]`),
+		},
+		{
+			name:   "login-key-saved-quiet",
+			args:   []string{"login", "-q", "--key", testKey},
+			server: paymentsServer(http.StatusOK, `[]`),
+		},
+
+		// Both login paths, because they emit different documents: --key
+		// knows the key and the mode it implies, the browser flow is handed
+		// an org, a key name and a scope list. Neither ever carries the key.
+		{
+			name:   "login-key-saved-json",
+			args:   []string{"login", "--json", "--key", testKey},
+			server: paymentsServer(http.StatusOK, `[]`),
+		},
+		{
+			name: "login-browser-approved-json",
+			args: []string{"login", "--json", "--no-browser"},
+			server: func(t *testing.T) *httptest.Server {
+				return pairingServer(t, []string{"pending", "approved"})
+			},
+		},
+
+		// trigger twice: the plain outcome, and the one where --amount
+		// overrides the magic value. The document reports the amount actually
+		// sent, which is the only number that explains what the simulator did.
+		{
+			name:   "trigger-succeeded-json",
+			args:   []string{"trigger", "--json", "payment.succeeded"},
+			env:    map[string]string{"REEVIT_API_KEY": testKey},
+			dir:    func(t *testing.T) string { return t.TempDir() },
+			server: func(t *testing.T) *httptest.Server { return triggerStubAPI(t, nil) },
+		},
+		{
+			name:   "trigger-amount-override-json",
+			args:   []string{"trigger", "--json", "payment.succeeded", "--amount", "1234"},
+			env:    map[string]string{"REEVIT_API_KEY": testKey},
+			dir:    func(t *testing.T) string { return t.TempDir() },
+			server: func(t *testing.T) *httptest.Server { return triggerStubAPI(t, nil) },
+		},
+		{
+			name: "payments-list-forbidden-quiet",
+			args: []string{"payments", "list", "--quiet"},
 			env:  map[string]string{"REEVIT_API_KEY": testKey},
 			server: paymentsServer(http.StatusForbidden,
 				`{"code":"insufficient_scope","message":"missing payments:read"}`),
@@ -588,6 +695,41 @@ func goldenCases() []goldenCase {
 		{
 			name:     "doctor-next-project-offline",
 			args:     []string{"doctor"},
+			env:      map[string]string{"REEVIT_API_KEY": testKey},
+			dir:      nextProjectDirUnbootstrapped,
+			server:   paymentsServer(http.StatusOK, `[]`),
+			wantExit: 3,
+		},
+
+		// doctor is the command CI actually runs, so its JSON is pinned at
+		// both ends of the range: the earliest possible exit, where the run
+		// gives up after one finding, and a full sweep through every section.
+		// The early one exists because it returns from the middle of RunE —
+		// the path that, before finishDoctor, printed a summary and produced
+		// no document at all.
+		{
+			name:     "doctor-no-project-json",
+			args:     []string{"doctor", "--json"},
+			env:      map[string]string{"REEVIT_API_KEY": testKey},
+			dir:      func(t *testing.T) string { return t.TempDir() },
+			server:   paymentsServer(http.StatusOK, `[]`),
+			wantExit: 3,
+		},
+		{
+			name:     "doctor-next-project-offline-json",
+			args:     []string{"doctor", "--json"},
+			env:      map[string]string{"REEVIT_API_KEY": testKey},
+			dir:      nextProjectDirUnbootstrapped,
+			server:   paymentsServer(http.StatusOK, `[]`),
+			wantExit: 3,
+		},
+		// --quiet on the same run: the failures and the verdict survive, the
+		// headings and the passes do not. A flag that hid what is broken
+		// would make the exit code the only thing left to read, which is the
+		// opposite of what a quiet diagnostic is for.
+		{
+			name:     "doctor-next-project-offline-quiet",
+			args:     []string{"doctor", "--quiet"},
 			env:      map[string]string{"REEVIT_API_KEY": testKey},
 			dir:      nextProjectDirUnbootstrapped,
 			server:   paymentsServer(http.StatusOK, `[]`),
@@ -676,6 +818,14 @@ func TestNormaliserErasesEveryClockValue(t *testing.T) {
 			name: "a payments table timestamp",
 			in:   "pay_1  GHS 100.00  succeeded  2026-08-31 09:15",
 			want: "pay_1  GHS 100.00  succeeded  <CREATED>",
+		},
+		{
+			// The counter-example: an RFC 3339 timestamp inside a --json
+			// document is fixture data the golden exists to pin, and it
+			// must survive normalisation intact.
+			name: "an RFC 3339 timestamp in a JSON document",
+			in:   `{"id":"pmt_1","created_at":"2026-01-02T09:30:00Z"}`,
+			want: `{"id":"pmt_1","created_at":"2026-01-02T09:30:00Z"}`,
 		},
 		{
 			name: "an ephemeral listen port",
@@ -808,13 +958,216 @@ func TestGoldenStreamsAreSeparate(t *testing.T) {
 		}
 	})
 
-	t.Run("unknown-flag writes nothing to stdout", func(t *testing.T) {
-		if got := readGolden(t, "unknown-flag.stdout"); got != "" {
-			t.Errorf("stdout = %q, want empty", got)
+	// --quiet is a promise about the conversation, not about the outcome. A
+	// quiet flag that also swallows the reason a command failed turns a CI
+	// log into an exit code with no explanation.
+	t.Run("quiet drops the hints and the confirmations, never the failure", func(t *testing.T) {
+		if got := readGolden(t, "payments-list-empty-quiet.stderr"); got != "" {
+			t.Errorf("stderr = %q, want the \"No payments\" hint suppressed", got)
 		}
 
-		if got := readGolden(t, "unknown-flag.stderr"); got == "" {
-			t.Error("stderr is empty, want the flag error")
+		if loud := readGolden(t, "payments-list-empty.stderr"); !strings.Contains(loud, "No payments") {
+			t.Errorf("stderr = %q, want the hint without --quiet — otherwise the case above proves nothing", loud)
+		}
+
+		if got := readGolden(t, "login-key-saved-quiet.stderr"); got != "" {
+			t.Errorf("stderr = %q, want the saved-to confirmation suppressed", got)
+		}
+
+		if got := readGolden(t, "payments-list-forbidden-quiet.stderr"); !strings.Contains(got, "insufficient_scope") {
+			t.Errorf("stderr = %q, want --quiet to leave the failure intact", got)
+		}
+	})
+
+	// `jq '.data[]'` on a null is an error, not an empty result. A consumer
+	// should not have to write `.data // [] | .[]` because the CLI passed a
+	// nil slice straight through Go's encoder.
+	t.Run("an empty --json list is [] and never null", func(t *testing.T) {
+		for _, file := range []string{"payments-list-empty-json.stdout", "payments-list-null-json.stdout"} {
+			got := readGolden(t, file)
+
+			if !strings.Contains(got, `"data":[]`) {
+				t.Errorf("%s = %s, want \"data\":[] — a null breaks `jq '.data[]'`", file, got)
+			}
+		}
+	})
+
+	// doctor is the one command whose human output IS its findings, so
+	// --json has to move the whole diagnosis across streams rather than add
+	// a line to stdout. Anything left on stderr would be a second, divergent
+	// copy of the verdict.
+	t.Run("doctor --json moves the whole diagnosis to stdout", func(t *testing.T) {
+		for _, name := range []string{"doctor-no-project-json", "doctor-next-project-offline-json"} {
+			if got := readGolden(t, name+".stderr"); got != "" {
+				t.Errorf("%s stderr = %q, want the human rendering replaced, not duplicated", name, got)
+			}
+		}
+
+		var doc doctorDocument
+		if err := json.Unmarshal([]byte(readGolden(t, "doctor-next-project-offline-json.stdout")), &doc); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+
+		// The exit code is 3, so ok must be false: a script that trusts `.ok`
+		// and a script that trusts `$?` have to reach the same conclusion.
+		if doc.OK {
+			t.Errorf("ok = true on a run that exits 3")
+		}
+
+		// The plain golden of the same run is the reference. Every finding it
+		// shows has to be in the document, or --json is a lossy view of the
+		// command rather than another rendering of it.
+		human := readGolden(t, "doctor-next-project-offline.stderr")
+
+		var seen int
+
+		for _, section := range doc.Sections {
+			if !strings.Contains(human, section.Name) {
+				t.Errorf("section %q is in the JSON but not on screen", section.Name)
+			}
+
+			for _, check := range section.Checks {
+				if check.Status == "skip" {
+					continue // a skip prints nothing by design
+				}
+
+				seen++
+
+				if !strings.Contains(human, check.Message) {
+					t.Errorf("check %q is in the JSON but not on screen", check.Message)
+				}
+			}
+		}
+
+		if want := doc.Failures + doc.Warnings; seen <= want {
+			t.Errorf("%d printed checks for %d failures+warnings, want the passes too", seen, want)
+		}
+	})
+
+	// The counter-example to the case above: --quiet is not --json. It thins
+	// the same stream rather than emptying it, and what it keeps is exactly
+	// what is wrong.
+	t.Run("quiet doctor keeps every finding and drops every pass", func(t *testing.T) {
+		got := readGolden(t, "doctor-next-project-offline-quiet.stderr")
+
+		var doc doctorDocument
+		if err := json.Unmarshal([]byte(readGolden(t, "doctor-next-project-offline-json.stdout")), &doc); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+
+		for _, section := range doc.Sections {
+			if strings.Contains(got, section.Name) {
+				t.Errorf("stderr still has the %q heading:\n%s", section.Name, got)
+			}
+
+			for _, check := range section.Checks {
+				switch check.Status {
+				case "fail", "warn":
+					if !strings.Contains(got, check.Message) {
+						t.Errorf("--quiet dropped a %s: %q\n%s", check.Status, check.Message, got)
+					}
+				case "pass":
+					if strings.Contains(got, check.Message) {
+						t.Errorf("--quiet kept a pass: %q\n%s", check.Message, got)
+					}
+				}
+			}
+		}
+
+		if !strings.Contains(got, "2 problems, 3 warnings.") {
+			t.Errorf("stderr = %q, want the verdict — the exit code alone says how many", got)
+		}
+	})
+
+	// The browser flow exists so a key is never copy-pasted. Printing it on
+	// stdout under --json would put it in the CI log of every pipeline that
+	// logs in, which is worse than the copy-paste it replaced.
+	t.Run("no login document carries the key", func(t *testing.T) {
+		for _, name := range []string{"login-key-saved-json", "login-browser-approved-json"} {
+			var doc loginDocument
+
+			got := readGolden(t, name+".stdout")
+			if err := json.Unmarshal([]byte(got), &doc); err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+
+			// The real key each fixture hands over, plus the shared secret
+			// suffix — a document that leaked a truncated key would still
+			// be a leak.
+			for _, secret := range []string{"pfk_test_ok.sec", "pfk_test_abc.sec", ".sec"} {
+				if strings.Contains(got, secret) {
+					t.Errorf("%s stdout carries a key fragment %q:\n%s", name, secret, got)
+				}
+			}
+
+			if doc.ConfigPath == "" {
+				t.Errorf("%s config_path is empty — a script has no way to find the credential", name)
+			}
+		}
+
+		// The --key path knows no org, so it omits the field rather than
+		// sending "" — `.org_id // "unknown"` must not resolve to "".
+		if strings.Contains(readGolden(t, "login-key-saved-json.stdout"), "org_id") {
+			t.Error("the --key document invents an org_id it never learned")
+		}
+
+		if !strings.Contains(readGolden(t, "login-browser-approved-json.stdout"), `"org_id":"org_1"`) {
+			t.Error("the browser document dropped the org the pairing returned")
+		}
+
+		// --no-browser under --json still has to show the code and the URL.
+		// Pairing cannot complete without a human reading them, and stdout is
+		// blocked until it does — a flag that made the instructions invisible
+		// would turn the flow into a hang.
+		browser := readGolden(t, "login-browser-approved-json.stderr")
+
+		for _, want := range []string{"Pairing code   GX7M-4KP9", "Confirm it at  https://"} {
+			if !strings.Contains(browser, want) {
+				t.Errorf("stderr is missing %q under --json:\n%s", want, browser)
+			}
+		}
+	})
+
+	// --amount discards the outcome the caller asked for, because the
+	// simulator branches on the number. The human path warns in prose; the
+	// document has to carry the number that was actually sent or a script
+	// reconciling against the dashboard will not find the payment it expects.
+	t.Run("trigger reports the amount it sent, not the one the event maps to", func(t *testing.T) {
+		for name, want := range map[string]int64{
+			"trigger-succeeded-json":       4000,
+			"trigger-amount-override-json": 1234,
+		} {
+			var doc triggerDocument
+			if err := json.Unmarshal([]byte(readGolden(t, name+".stdout")), &doc); err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+
+			if doc.Amount != want {
+				t.Errorf("%s amount = %d, want %d", name, doc.Amount, want)
+			}
+
+			if doc.PaymentID == "" || doc.Status == "" {
+				t.Errorf("%s = %+v, want the id and the creation status", name, doc)
+			}
+		}
+
+		// The warning is not narration and stays on stderr even here.
+		if got := readGolden(t, "trigger-amount-override-json.stderr"); !strings.Contains(got, "not a magic amount") {
+			t.Errorf("stderr = %q, want --json to leave the warning intact", got)
+		}
+	})
+
+	t.Run("unknown-flag writes nothing to stdout", func(t *testing.T) {
+		// Both spellings: --json must not turn a usage error into a partial
+		// document, and must not move the error off stderr either.
+		for _, name := range []string{"unknown-flag", "unknown-flag-json"} {
+			if got := readGolden(t, name+".stdout"); got != "" {
+				t.Errorf("%s stdout = %q, want empty", name, got)
+			}
+
+			if got := readGolden(t, name+".stderr"); got == "" {
+				t.Errorf("%s stderr is empty, want the flag error", name)
+			}
 		}
 	})
 }
@@ -828,4 +1181,85 @@ func readGolden(t *testing.T, file string) string {
 	}
 
 	return string(raw)
+}
+
+// TestJSONStdoutIsPureJSON is the whole promise of --json in one assertion:
+// a consumer runs `reevit … --json | jq` and every byte on stdout parses.
+// One stray progress line, one hint that forgot which stream it was on, and
+// the pipeline dies — and a golden that merely "looks right" to a reviewer
+// would not catch it, because a human reads past a leading blank line.
+//
+// It walks the goldens rather than taking a list, so a --json case added
+// later is covered without anyone remembering to add it here.
+func TestJSONStdoutIsPureJSON(t *testing.T) {
+	t.Parallel()
+
+	files, err := filepath.Glob(filepath.Join(goldenRoot, "*-json*.stdout"))
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+
+	// Without this the whole test passes vacuously the day someone renames
+	// the goldens.
+	if len(files) < 2 {
+		t.Fatalf("found %d *-json*.stdout goldens, want the --json cases", len(files))
+	}
+
+	for _, path := range files {
+		name := filepath.Base(path)
+
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read %s: %v", path, err)
+			}
+
+			body := strings.TrimSuffix(string(raw), "\n")
+
+			// The one legitimate empty case: a usage error is decided before
+			// any command runs, so there is no document to emit. Its two
+			// halves — empty stdout, the error on stderr — are asserted in
+			// TestGoldenStreamsAreSeparate; skipping it here keeps "empty
+			// means --json produced nothing" a real failure everywhere else.
+			if name == "unknown-flag-json.stdout" {
+				t.Skip("a usage error produces no document by design")
+			}
+
+			if body == "" {
+				t.Fatalf("%s is empty, so --json produced no document at all", name)
+			}
+
+			// One document per run. `listen` is the only NDJSON producer
+			// and it never exits, so the harness cannot run it — its lines
+			// are checked in TestListenEmitsOneJSONObjectPerDelivery
+			// instead. Parsing line by line anyway is what would catch a
+			// second document appearing here.
+			lines := strings.Split(body, "\n")
+			if len(lines) != 1 {
+				t.Fatalf("%s has %d lines, want exactly one JSON document:\n%s", name, len(lines), body)
+			}
+
+			for i, line := range lines {
+				var document struct {
+					Schema string `json:"schema"`
+				}
+
+				if err := json.Unmarshal([]byte(line), &document); err != nil {
+					t.Fatalf("%s line %d does not parse as JSON (%v):\n%q", name, i+1, err, line)
+				}
+
+				// The version string is what lets a consumer branch on the
+				// shape instead of on the CLI's own version number.
+				if document.Schema == "" {
+					t.Errorf("%s line %d carries no \"schema\":\n%q", name, i+1, line)
+				}
+
+				if !strings.HasPrefix(document.Schema, "reevit.cli.") || !strings.Contains(document.Schema, ".v") {
+					t.Errorf("%s line %d schema = %q, want reevit.cli.<command>.v<n>", name, i+1, document.Schema)
+				}
+			}
+		})
+	}
 }

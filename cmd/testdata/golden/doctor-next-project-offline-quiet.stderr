@@ -1,0 +1,12 @@
+  x project manifest is missing
+    > reevit init
+  x SDK not installed (@reevit/node)
+    > reevit init
+  ! REEVIT_ORG_ID is not set (SDK clients need it alongside the key)
+    > reevit init
+  ! platform bootstrap check skipped until login and init are complete
+  ! checkout app is not running (http://localhost:1/reevit-demo)
+    > pnpm dev
+
+2 problems, 3 warnings.
+Fix the x items above and run `reevit doctor` again.

@@ -1,9 +1,12 @@
 package cmd
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -23,6 +26,90 @@ type paymentRow struct {
 	Amount    int64     `json:"amount"`
 	Currency  string    `json:"currency"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+// paymentsListDocument is the `payments list --json` contract. `data` is
+// always an array, empty rather than null, so a consumer can pipe it into
+// `.data[]` without a null guard.
+type paymentsListDocument struct {
+	Schema string       `json:"schema"`
+	Mode   string       `json:"mode"`
+	Data   []paymentRow `json:"data"`
+	// Pagination is passed through verbatim, and only when the response
+	// carried one. Re-modelling it would drop any field the backend adds,
+	// and synthesising it from --limit would invent a `total` that is worse
+	// than an absent one.
+	Pagination json.RawMessage `json:"pagination,omitempty"`
+}
+
+// paymentsPage decodes a list response without caring which of the backend's
+// list conventions it met. Four coexist today:
+//
+//	[…]                                        /payments — what this command hits
+//	{"data":[…],"pagination":{…}}              /api-keys
+//	{"success":true,"data":{…},"pagination":…} /kyc, /admin
+//	{"connections":[…],"pagination":{…}}       /connections
+//
+// The order below mirrors sdks/go/helpers.go: bare array, then the legacy flat
+// key, then `data` as an array, then `data.<key>`. The legacy key is tried
+// before `data` so today's responses resolve early and this stays a provable
+// no-op against the server as it is.
+type paymentsPage struct {
+	rows       []paymentRow
+	pagination json.RawMessage
+}
+
+func (p *paymentsPage) UnmarshalJSON(raw []byte) error {
+	if bare := bytes.TrimLeft(raw, " \t\r\n"); len(bare) > 0 && bare[0] == '[' {
+		return json.Unmarshal(raw, &p.rows)
+	}
+
+	var wrapped map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &wrapped); err != nil {
+		return err
+	}
+
+	p.pagination = wrapped["pagination"]
+
+	if legacy, ok := wrapped["payments"]; ok {
+		if err := json.Unmarshal(legacy, &p.rows); err == nil {
+			return nil
+		}
+	}
+
+	data, ok := wrapped["data"]
+	if !ok {
+		return fmt.Errorf("no payments array in the response (keys: %s)", strings.Join(sortedKeys(wrapped), ", "))
+	}
+
+	if err := json.Unmarshal(data, &p.rows); err == nil {
+		return nil
+	}
+
+	var nested map[string]json.RawMessage
+	if err := json.Unmarshal(data, &nested); err != nil {
+		return fmt.Errorf("no payments array in the response (\"data\" is neither an array nor an object)")
+	}
+
+	inner, ok := nested["payments"]
+	if !ok {
+		return fmt.Errorf("no payments array in the response (data keys: %s)", strings.Join(sortedKeys(nested), ", "))
+	}
+
+	return json.Unmarshal(inner, &p.rows)
+}
+
+// sortedKeys names what the response DID contain, so a shape this decoder has
+// never met reports itself instead of surfacing as an empty list.
+func sortedKeys(m map[string]json.RawMessage) []string {
+	names := make([]string, 0, len(m))
+	for name := range m {
+		names = append(names, name)
+	}
+
+	slices.Sort(names)
+
+	return names
 }
 
 var (
@@ -56,18 +143,32 @@ created. Filter with --status and shorten the list with --limit.`,
 			query.Set("status", paymentsStatus)
 		}
 
-		var rows []paymentRow
-		if err := c.Do(cmd.Context(), api.Request{Path: "/payments", Query: query}, &rows); err != nil {
+		var page paymentsPage
+		if err := c.Do(cmd.Context(), api.Request{Path: "/payments", Query: query}, &page); err != nil {
 			return err
 		}
 
-		if len(rows) == 0 {
-			fmt.Fprintf(cmd.ErrOrStderr(), "No payments in %s mode.\n", c.Mode())
+		if jsonOut, _ := outputMode(cmd); jsonOut {
+			rows := page.rows
+			if rows == nil {
+				rows = []paymentRow{}
+			}
+
+			return emitJSON(cmd, paymentsListDocument{
+				Schema:     schemaPaymentsList,
+				Mode:       c.Mode(),
+				Data:       rows,
+				Pagination: page.pagination,
+			})
+		}
+
+		if len(page.rows) == 0 {
+			fmt.Fprintf(noticeStream(cmd), "No payments in %s mode.\n", c.Mode())
 
 			return nil
 		}
 
-		writePaymentsTable(cmd.OutOrStdout(), styleOf(cmd).out, rows, time.Now())
+		writePaymentsTable(cmd.OutOrStdout(), styleOf(cmd).out, page.rows, time.Now())
 
 		return nil
 	},

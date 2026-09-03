@@ -26,4 +26,6 @@ Flags:
       --no-browser   print the pairing link instead of opening a browser
 
 Global Flags:
+      --json       print machine-readable JSON to stdout
       --no-color   disable colour and glyphs
+  -q, --quiet      suppress progress and hints; errors still print

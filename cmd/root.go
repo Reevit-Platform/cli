@@ -360,6 +360,15 @@ func client() (*api.Client, error) {
 
 func init() {
 	rootCmd.PersistentFlags().Bool("no-color", false, "disable colour and glyphs")
+	// Both are persistent so `reevit payments list --json` and
+	// `reevit --json payments list` mean the same thing, and so a command
+	// added later cannot forget to offer them.
+	//
+	// Not mutually exclusive: --json says what stdout carries, --quiet says
+	// whether stderr says anything alongside it, and `--json --quiet` (pure
+	// data, no commentary) is the combination CI actually wants.
+	rootCmd.PersistentFlags().Bool("json", false, "print machine-readable JSON to stdout")
+	rootCmd.PersistentFlags().BoolP("quiet", "q", false, "suppress progress and hints; errors still print")
 
 	// Inherited by every subcommand: a mistyped flag is a usage error, and it
 	// should say where to look. CommandPath is used whole — for the root it is
