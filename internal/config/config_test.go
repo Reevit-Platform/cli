@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -201,5 +202,158 @@ func TestLoadKeepsLegacyModeForUnrecognisedKeys(t *testing.T) {
 	cfg, err := Load()
 	if err != nil || cfg.Mode != "live" {
 		t.Fatalf("Load = %+v, %v; want live mode from the environment", cfg, err)
+	}
+}
+
+// TestAPIURLIsAcceptedAsBaseURL reproduces the failure that sent two Round 3
+// test runs to the live API. The config file says api_url — the spelling the
+// environment override (REEVIT_API_URL) and the client's own connection error
+// both teach — and encoding/json used to drop it, leaving BaseURL empty for
+// Load to fill with the production default.
+func TestAPIURLIsAcceptedAsBaseURL(t *testing.T) {
+	const stub = "http://127.0.0.1:9"
+
+	// Vacuity guard: if the default ever stopped being the production API,
+	// this test would pass while proving nothing.
+	if DefaultBaseURL == stub || !strings.HasPrefix(DefaultBaseURL, "https://") {
+		t.Fatalf("DefaultBaseURL = %q — this test assumes it is the remote production URL", DefaultBaseURL)
+	}
+
+	dir := t.TempDir()
+	t.Setenv("REEVIT_CONFIG", filepath.Join(dir, "config.json"))
+	t.Setenv("REEVIT_API_KEY", "")
+	t.Setenv("REEVIT_API_URL", "")
+	t.Setenv("REEVIT_MODE", "")
+
+	write(t, dir, `{"api_key":"pfk_test_x.sec","api_url":"`+stub+`"}`)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	if cfg.BaseURL == DefaultBaseURL {
+		t.Fatalf("a config file asking for %s resolved to the production API %s — "+
+			"an ignored key is indistinguishable from an absent one, so the typo "+
+			"silently sends real traffic upstream", stub, DefaultBaseURL)
+	}
+
+	if cfg.BaseURL != stub {
+		t.Fatalf("BaseURL = %q, want %q", cfg.BaseURL, stub)
+	}
+
+	// The alias is a spelling of a real setting, not an unknown key.
+	for _, k := range cfg.UnknownKeys {
+		if k == "api_url" {
+			t.Fatalf("api_url was accepted and then also reported as unrecognised: %v", cfg.UnknownKeys)
+		}
+	}
+}
+
+func TestExplicitBaseURLWinsOverTheAlias(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("REEVIT_CONFIG", filepath.Join(dir, "config.json"))
+	t.Setenv("REEVIT_API_KEY", "")
+	t.Setenv("REEVIT_API_URL", "")
+	t.Setenv("REEVIT_MODE", "")
+
+	write(t, dir, `{"base_url":"http://real","api_url":"http://alias"}`)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	if cfg.BaseURL != "http://real" {
+		t.Fatalf("BaseURL = %q — the canonical key must win over the alias, "+
+			"otherwise a stale api_url silently overrides the value the user meant", cfg.BaseURL)
+	}
+}
+
+func TestEnvStillWinsOverTheAlias(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("REEVIT_CONFIG", filepath.Join(dir, "config.json"))
+	t.Setenv("REEVIT_API_KEY", "")
+	t.Setenv("REEVIT_MODE", "")
+	t.Setenv("REEVIT_API_URL", "http://from-env")
+
+	write(t, dir, `{"api_url":"http://from-file"}`)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	if cfg.BaseURL != "http://from-env" {
+		t.Fatalf("BaseURL = %q, want the env override — accepting the alias must not "+
+			"promote a file value above REEVIT_API_URL", cfg.BaseURL)
+	}
+}
+
+func TestUnknownConfigKeysAreReportedAndSorted(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("REEVIT_CONFIG", filepath.Join(dir, "config.json"))
+	t.Setenv("REEVIT_API_KEY", "")
+	t.Setenv("REEVIT_API_URL", "")
+	t.Setenv("REEVIT_MODE", "")
+
+	write(t, dir, `{"api_key":"pfk_test_x.sec","zeta":1,"apikey":"x","base_url":"http://s"}`)
+
+	cfg, err := LoadFile()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	got := strings.Join(cfg.UnknownKeys, ",")
+	if got != "apikey,zeta" {
+		t.Fatalf("UnknownKeys = %q, want %q — every key that is not a setting must be "+
+			"reported, in a stable order (map iteration is random and this reaches a terminal)", got, "apikey,zeta")
+	}
+}
+
+func TestAGoodConfigReportsNoUnknownKeys(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("REEVIT_CONFIG", filepath.Join(dir, "config.json"))
+
+	write(t, dir, `{"api_key":"pfk_test_x.sec","base_url":"http://s","mode":"test",`+
+		`"org_id":"o","org_name":"n","telemetry_id":"t"}`)
+
+	cfg, err := LoadFile()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	if len(cfg.UnknownKeys) != 0 {
+		t.Fatalf("a config using only real settings reported %v as unrecognised — "+
+			"false warnings train users to ignore the real one", cfg.UnknownKeys)
+	}
+}
+
+// TestKnownKeysCoversEveryConfigField stops knownKeys drifting from the struct.
+// Adding a field to Config without listing it here would make every config
+// written by the new CLI warn about its own key.
+func TestKnownKeysCoversEveryConfigField(t *testing.T) {
+	typ := reflect.TypeOf(Config{})
+
+	for i := range typ.NumField() {
+		tag := typ.Field(i).Tag.Get("json")
+		name, _, _ := strings.Cut(tag, ",")
+
+		if name == "" || name == "-" {
+			continue
+		}
+
+		if !knownKeys[name] {
+			t.Errorf("Config field %s has json tag %q but knownKeys does not list it — "+
+				"the CLI would warn about a key it wrote itself", typ.Field(i).Name, name)
+		}
+	}
+}
+
+func write(t *testing.T, dir, body string) {
+	t.Helper()
+
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(body), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
 	}
 }

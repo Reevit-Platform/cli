@@ -100,6 +100,11 @@ Start here: reevit login → reevit init → reevit doctor.`,
 	// No subcommand defines PreRun or PersistentPreRun, so nothing shadows
 	// this. cobra only runs the closest PersistentPreRunE it finds.
 	PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
+		// Before anything else, and deliberately not behind the telemetry
+		// guard below: a misspelled config key is worth saying on every
+		// command, not only on the tracked ones.
+		warnUnknownConfigKeys(cmd)
+
 		if !telemetry.Tracked(topLevelName(cmd)) {
 			return nil
 		}
@@ -271,6 +276,35 @@ func networkHint(err error) string {
 	}
 
 	return "could not reach" + target + " — check your connection or REEVIT_API_URL"
+}
+
+// warnUnknownConfigKeys tells the user about config-file keys the CLI ignored.
+//
+// An ignored key is indistinguishable from an absent one, which is how a
+// mistyped base_url ends up silently pointing test traffic at the production
+// API. This is a warning rather than an error on purpose: encoding/json's
+// DisallowUnknownFields would turn a config written by a newer CLI into a hard
+// failure for an older one, trading a silent misroute for a forward
+// compatibility break. It survives --quiet for the same reason doctor's
+// failures do — that flag trims narration, not findings.
+//
+// Errors are swallowed: if the file is unreadable or malformed the command's
+// own RunE will say so properly, and a second, vaguer complaint here would
+// only get in the way.
+func warnUnknownConfigKeys(cmd *cobra.Command) {
+	cfg, err := config.LoadFile()
+	if err != nil || len(cfg.UnknownKeys) == 0 {
+		return
+	}
+
+	sty := styleOf(cmd).err
+	out := cmd.ErrOrStderr()
+
+	fmt.Fprintln(out, sty.Warning(fmt.Sprintf(
+		"ignoring %s in the config file: %s",
+		plural(len(cfg.UnknownKeys), "unrecognised key"),
+		strings.Join(cfg.UnknownKeys, ", "))))
+	fmt.Fprintln(out, sty.Dim("  these are not settings — check the spelling, or remove them"))
 }
 
 // styles carries one Styler per stream. Their TTY-ness genuinely differs:

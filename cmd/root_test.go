@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -264,5 +265,103 @@ func TestUsageErrorsExitTwo(t *testing.T) {
 	// pass if someone changed the constant.
 	if got := ExitCode(err); got != 2 {
 		t.Fatalf("ExitCode = %d, want 2 (err %v)", got, err)
+	}
+}
+
+// TestUnrecognisedConfigKeysAreReportedOnStderr pins the user-visible half of
+// the api_url fix: a key the CLI silently dropped is now named, on stderr, on
+// any command, and it is not swallowed by --quiet.
+func TestUnrecognisedConfigKeysAreReportedOnStderr(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[]`)
+	}))
+	defer server.Close()
+
+	configPath := filepath.Join(t.TempDir(), "config.json")
+
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"plain", []string{"payments", "list"}},
+		{"quiet", []string{"payments", "list", "--quiet"}},
+		{"json", []string{"payments", "list", "--json"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// cobra keeps persistent flag values on the package-level rootCmd,
+			// so --quiet from the previous case is still set when this one
+			// runs. A real user gets one command per process; an in-process
+			// test suite does not, and under -shuffle=on that becomes an
+			// order-dependent flake — the same class of leaked state as the
+			// cancelled context plan 032 had to fix. Verified: without this,
+			// mutating the warning to honour --quiet makes the *--json* case
+			// fail, because it inherits quiet from the case before it.
+			resetFlags()
+
+			// Written fresh per subtest: --json runs read the file too, and a
+			// shared path would let one case's telemetry write disturb another.
+			if err := os.WriteFile(configPath,
+				[]byte(`{"api_key":"pfk_test_x.sec","base_url":"`+server.URL+`","notAKey":1}`),
+				0o600); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+
+			t.Setenv("REEVIT_CONFIG", configPath)
+			t.Setenv("REEVIT_API_KEY", "")
+			t.Setenv("REEVIT_API_URL", "")
+			t.Setenv("REEVIT_MODE", "")
+			t.Setenv("REEVIT_TELEMETRY", "0")
+			t.Setenv("NO_COLOR", "1")
+
+			var stdout, stderr bytes.Buffer
+			if err := ExecuteWith(context.Background(), tc.args,
+				strings.NewReader(""), &stdout, &stderr); err != nil {
+				t.Fatalf("run: %v (stderr: %s)", err, stderr.String())
+			}
+
+			if !strings.Contains(stderr.String(), "notAKey") {
+				t.Fatalf("the ignored config key was never named on stderr — a dropped key "+
+					"is indistinguishable from an absent one, which is how a mistyped "+
+					"base_url reaches the production API.\nstderr: %s", stderr.String())
+			}
+
+			if strings.Contains(stdout.String(), "notAKey") {
+				t.Fatalf("the warning leaked into stdout, which is data:\n%s", stdout.String())
+			}
+		})
+	}
+}
+
+func TestAValidConfigWarnsAboutNothing(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[]`)
+	}))
+	defer server.Close()
+
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(configPath,
+		[]byte(`{"api_key":"pfk_test_x.sec","api_url":"`+server.URL+`"}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	t.Setenv("REEVIT_CONFIG", configPath)
+	t.Setenv("REEVIT_API_KEY", "")
+	t.Setenv("REEVIT_API_URL", "")
+	t.Setenv("REEVIT_MODE", "")
+	t.Setenv("REEVIT_TELEMETRY", "0")
+	t.Setenv("NO_COLOR", "1")
+
+	var stdout, stderr bytes.Buffer
+	if err := ExecuteWith(context.Background(), []string{"payments", "list"},
+		strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("run: %v (stderr: %s)", err, stderr.String())
+	}
+
+	if strings.Contains(stderr.String(), "unrecognised") {
+		t.Fatalf("api_url is an accepted spelling, not an unknown key, but it was "+
+			"reported as one — false warnings train users past the real ones.\nstderr: %s",
+			stderr.String())
 	}
 }

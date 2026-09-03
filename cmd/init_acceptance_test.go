@@ -38,6 +38,11 @@ func TestInitFreshNextProjectAndIdempotentRerun(t *testing.T) {
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("REEVIT_CONFIG", filepath.Join(root, "cli-config.json"))
 	t.Setenv("REEVIT_TELEMETRY", "0")
+	// Neutralise an ambient REEVIT_API_URL. These tests point the CLI at a
+	// stub via the config file, but the env var overrides the file, so a
+	// developer who exported it to isolate a manual run would otherwise see
+	// this suite fail for reasons that have nothing to do with their change.
+	t.Setenv("REEVIT_API_URL", "")
 
 	var bootstraps []map[string]any
 	serverID, serverRaw := "pfk_test_server", "pfk_test_server.secret"

@@ -240,6 +240,9 @@ func runInitMatrixCase(
 	t.Setenv("REEVIT_TEST_COMMAND_LOG", commandLog)
 	t.Setenv("REEVIT_CONFIG", filepath.Join(root, "cli-config.json"))
 	t.Setenv("REEVIT_TELEMETRY", "0")
+	// See init_acceptance_test.go: the env var beats the config file, so an
+	// ambient REEVIT_API_URL would send these runs somewhere else entirely.
+	t.Setenv("REEVIT_API_URL", "")
 
 	var bootstraps int
 	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
