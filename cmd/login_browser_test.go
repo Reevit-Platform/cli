@@ -54,8 +54,8 @@ func pairingServer(t *testing.T, pollSequence []string) *httptest.Server {
 				_ = json.NewEncoder(w).Encode(map[string]any{
 					"status": "approved",
 					"api_key": map[string]any{
-						"id":     "pfk_test_abc",
-						"raw":    "pfk_test_abc.sec",
+						"id":     strings.TrimSuffix(pairingAPIKey, goldenKeySuffix),
+						"raw":    pairingAPIKey,
 						"name":   "CLI (host)",
 						"scopes": []string{"payments:read", "payments:write", "webhooks:read", "webhooks:write"},
 						"mode":   "test",
@@ -114,7 +114,7 @@ func TestBrowserLoginSavesTestModeKey(t *testing.T) {
 		t.Fatalf("parse config: %v", err)
 	}
 
-	if saved.APIKey != "pfk_test_abc.sec" {
+	if saved.APIKey != pairingAPIKey {
 		t.Errorf("saved key = %q", saved.APIKey)
 	}
 
