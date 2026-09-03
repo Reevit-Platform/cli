@@ -176,7 +176,10 @@ func envelopeFor(evt api.SSEEvent) map[string]any {
 	var envelope map[string]any
 
 	if err := json.Unmarshal([]byte(evt.Data), &envelope); err != nil || envelope == nil {
-		return map[string]any{"type": evt.Type, "data": evt.Data}
+		// Production names the event in `event`. `type` is kept alongside it
+		// for one release so handlers built against the old fallback envelope
+		// keep working.
+		return map[string]any{"event": evt.Type, "type": evt.Type, "data": evt.Data}
 	}
 
 	return envelope
@@ -230,7 +233,13 @@ func (f *eventForwarder) handle(evt api.SSEEvent) {
 		return
 	}
 
-	eventType, _ := envelope["type"].(string)
+	// A real delivery envelope carries `event`; only the fallback above and
+	// older payloads carry `type`.
+	eventType, _ := envelope["event"].(string)
+	if eventType == "" {
+		eventType, _ = envelope["type"].(string)
+	}
+
 	if eventType == "" {
 		eventType = evt.Type
 	}

@@ -1,6 +1,39 @@
 import { readRawBody, getHeader, setResponseStatus } from "h3";
 import { verifyWebhookSignature } from "@reevit/node";
 
+// Reevit signs delivery_id, attempt and signature_timestamp into the BODY —
+// the same bytes the signature covers — so a handler can refuse a replayed
+// capture and acknowledge a retry without doing the work twice. They also
+// arrive as X-Reevit-Delivery-ID and X-Reevit-Signature-Timestamp headers.
+const REEVIT_WEBHOOK_TOLERANCE_SECONDS = 300;
+const REEVIT_DEDUPE_LIMIT = 1000;
+
+// Replace with a persistent store (database unique index on delivery_id) before production.
+const reevitSeenDeliveries = new Set<string>();
+
+function reevitSignatureIsStale(timestamp: string | undefined): boolean {
+  const at = Date.parse(timestamp ?? "");
+
+  return (
+    Number.isNaN(at) ||
+    Math.abs(Date.now() - at) > REEVIT_WEBHOOK_TOLERANCE_SECONDS * 1000
+  );
+}
+
+function reevitIsDuplicate(deliveryId: string | undefined): boolean {
+  if (!deliveryId) return false;
+  if (reevitSeenDeliveries.has(deliveryId)) return true;
+
+  reevitSeenDeliveries.add(deliveryId);
+
+  if (reevitSeenDeliveries.size > REEVIT_DEDUPE_LIMIT) {
+    const oldest = reevitSeenDeliveries.values().next().value;
+    if (oldest !== undefined) reevitSeenDeliveries.delete(oldest);
+  }
+
+  return false;
+}
+
 export default defineEventHandler(async (event) => {
   const rawBody = (await readRawBody(event, false)) ?? "";
   const signature = getHeader(event, "x-reevit-signature");
@@ -10,7 +43,28 @@ export default defineEventHandler(async (event) => {
   }
   const rawText = typeof rawBody === "string" ? rawBody : rawBody.toString("utf8");
   const payload = JSON.parse(rawText);
-  if (payload.type === "payment.succeeded") {
+  // Production deliveries name the event in `event`; `reevit listen`'s
+  // fallback envelope and older payloads use `type`. Read both.
+  const eventType = payload.event ?? payload.type;
+
+  const signatureTimestamp =
+    payload.signature_timestamp ?? getHeader(event, "x-reevit-signature-timestamp");
+
+  if (reevitSignatureIsStale(signatureTimestamp)) {
+    setResponseStatus(event, 400);
+
+    return { error: "stale signature timestamp" };
+  }
+
+  const deliveryId = payload.delivery_id ?? getHeader(event, "x-reevit-delivery-id");
+
+  if (reevitIsDuplicate(deliveryId)) {
+    // Already handled. Reevit retries until it sees a 2xx, so ack rather than
+    // re-dispatch.
+    return { received: true, duplicate: true };
+  }
+
+  if (eventType === "payment.succeeded") {
     // Fulfil the order represented by payload.data.
   }
   return { received: true };
