@@ -1,0 +1,24 @@
+
+Dry run — would do the following:
+  > pnpm add @reevit/node @reevit/react
+    install the SDK selected for this project
+  > create or reuse scoped project test credentials
+    keep the account login credential out of application code
+  > ensure the sandbox simulator is ready
+    make the generated integration testable immediately
+  > allow checkout origin http://localhost:3000
+    permit the local browser demo to initialize checkout
+  > .env.local and .env.example
+    wire separate server, browser, organization, and webhook values
+  > app/api/webhooks/reevit/route.ts
+    Webhook handler (app/api/webhooks/reevit)
+  > app/reevit-demo/page.tsx
+    Checkout button component (@reevit/react)
+  > components/reevit-checkout-button.tsx
+    Checkout button component (@reevit/react)
+  > app/api/reevit/checkout/route.ts
+    Server-side client (lib/reevit) for creating payments
+  > lib/reevit.ts
+    Server-side client (lib/reevit) for creating payments
+  > verify the generated project credentials against the sandbox
+    do not report success until the platform accepts the new credentials

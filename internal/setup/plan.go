@@ -115,7 +115,8 @@ func Resolve(input ResolveInput) (Plan, error) {
 		Reason: "wire separate server, browser, organization, and webhook values",
 	})
 	for _, target := range input.Targets {
-		for _, path := range target.Files {
+		for _, file := range target.SortedFiles() {
+			path := file.Path
 			plan.Operations = append(plan.Operations, Operation{
 				Kind: WriteFile, Detail: filepath.ToSlash(path),
 				Reason: target.Label,

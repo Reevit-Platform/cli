@@ -19,10 +19,10 @@ is the review artefact. Never regenerate to make a red test green.
 
 New cases: no `t.Parallel` (cases `os.Chdir`), route every network call at the
 case's `httptest` server, and extend `normaliser.apply` for anything else that
-varies. `reevit init --dry-run` lists a target's files by ranging over
-`scaffold.Target.Files`, a map (`internal/setup/plan.go:117`), so a goal with
-more than one file per target prints them in random order — `init-dry-run`
-uses `--goal webhook` for that reason.
+varies. `scaffold.Target.Files` is a map, so anything whose order the user can
+see must iterate `Target.SortedFiles()` rather than range the map — the
+`init-dry-run-full` golden is the lock on that, and it flaps if anyone ranges
+the map directly again.
 
 ## Output rules
 
