@@ -1,10 +1,11 @@
 
 Credentials
   ok API key configured (test mode)
-  ok key authenticates against <API>
+  ! could not reach the API to verify the key
+    dial tcp <DIAL>
 
 Project
   x no project detected here — run doctor from your project root
 
-1 problem.
+1 problem, 1 warning.
 Fix the x items above and run `reevit doctor` again.

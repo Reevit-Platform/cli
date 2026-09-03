@@ -1,4 +1,4 @@
-Inspect payments
+Reads payments in the current mode. Live keys read live payments.
 
 Usage:
   reevit payments [command]

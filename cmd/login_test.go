@@ -115,9 +115,15 @@ func TestLoginKeyFromStdinWithoutTrailingNewline(t *testing.T) {
 		t.Fatalf("config = %s, want the key read from stdin", raw)
 	}
 
-	// The confirmation is conversation, so it lands on stderr.
-	if !strings.Contains(stderr.String(), "Saved to") {
-		t.Fatalf("stderr = %q, want a save confirmation", stderr)
+	// The confirmation is conversation, so it lands on stderr. It has to say
+	// both that the key was accepted and which mode it turned out to be:
+	// "saved" alone leaves the user guessing whether they pasted a live key.
+	if !strings.Contains(stderr.String(), "Key accepted (test mode)") {
+		t.Fatalf("stderr = %q, want the mode-carrying acceptance line", stderr)
+	}
+
+	if !strings.Contains(stderr.String(), "saved to ") {
+		t.Fatalf("stderr = %q, want the config path", stderr)
 	}
 }
 
@@ -285,5 +291,35 @@ func TestLoginIgnoresAnExportedAPIKey(t *testing.T) {
 
 	if !started {
 		t.Fatal("login did not start the browser pairing flow — it took REEVIT_API_KEY instead")
+	}
+}
+
+// The config path is the longest thing either login flow prints
+// ("/Users/x/Library/Application Support/reevit/config.json" on macOS), and
+// it is the one part of the line the user does not need to read in full. It
+// must shorten to "~" only on a real path-component boundary: a sibling
+// directory such as /home/alice-backup shares the "/home/alice" prefix and
+// must survive intact.
+func TestShortenHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"under home", filepath.Join(home, "reevit", "config.json"), "~/reevit/config.json"},
+		{"home itself", home, "~"},
+		{"outside home", "/etc/reevit/config.json", "/etc/reevit/config.json"},
+		{"sibling sharing the prefix", home + "-backup/config.json", home + "-backup/config.json"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shortenHome(tc.in); got != tc.want {
+				t.Fatalf("shortenHome(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
 	}
 }

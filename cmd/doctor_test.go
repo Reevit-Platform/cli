@@ -234,7 +234,10 @@ func TestOptionalAppCheckPrintsExactDevCommand(t *testing.T) {
 		context.Background(), &out, res,
 		"http://127.0.0.1:1/reevit-demo", []string{"pnpm", "dev"},
 	)
-	if res.warnings != 1 || !strings.Contains(out.String(), "`pnpm dev`") {
+	// The dev command is the remedy, so it is rendered on its own line as
+	// something to type — not quoted inside the sentence, where it has to be
+	// picked out of the prose before it can be copied.
+	if res.warnings != 1 || !strings.Contains(out.String(), "\n    > pnpm dev\n") {
 		t.Fatalf("output = %q warnings=%d", out.String(), res.warnings)
 	}
 }
@@ -450,9 +453,14 @@ func TestCheckWebhookEndToEndWarnsOnMissingTimestampCheck(t *testing.T) {
 		t.Fatalf("warnings = %d, want exactly 1; output:\n%s", res.warnings, out)
 	}
 
-	want := "handler accepted a 20-minute-old signature — add a timestamp check (rerun reevit init --overwrite to regenerate)"
-	if !strings.Contains(out, want) {
-		t.Errorf("output is missing %q:\n%s", want, out)
+	for _, want := range []string{
+		"handler accepted a 20-minute-old signature; it has no replay window",
+		// The regeneration command is the remedy, on its own line.
+		"\n    > reevit init --overwrite\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output is missing %q:\n%s", want, out)
+		}
 	}
 }
 

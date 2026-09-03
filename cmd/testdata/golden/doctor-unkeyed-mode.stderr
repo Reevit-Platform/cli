@@ -1,10 +1,11 @@
 
-CLI credentials
+Credentials
   ok API key configured (LIVE mode)
   ! key prefix is not pfk_test_/pfk_live_, so "live" mode comes from REEVIT_MODE or your config, not from the key
   ok key authenticates against <API>
 
-Project files
+Project
   x no project detected here — run doctor from your project root
 
-1 problem found — fix the x items above and rerun `reevit doctor`.
+1 problem, 1 warning.
+Fix the x items above and run `reevit doctor` again.

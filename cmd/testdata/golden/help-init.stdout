@@ -10,6 +10,11 @@ be inserted into an existing page using an idempotent marked block.
 Usage:
   reevit init [flags]
 
+Examples:
+  reevit init
+  reevit init --goal checkout      # scaffold the checkout page, not just the client
+  reevit init --overwrite          # replace generated files, keeping backups
+
 Flags:
       --accessible                  use screen-reader-friendly prompts
       --checkout-fields strings     fields to collect: amount (or price), name, email, phone, reference

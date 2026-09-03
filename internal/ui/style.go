@@ -196,6 +196,19 @@ func (s Styler) Pending(text string) string {
 	return s.glyph(glyphPending, asciiPending, sgrDim) + " " + text
 }
 
+// SuccessText, FailureText and WarningText carry the glyph vocabulary's
+// colours without the glyph. Tabular data has no room for a marker in every
+// cell, but a `failed` that is not red is a `failed` the eye skips.
+
+// SuccessText colours text as a success without prefixing a glyph.
+func (s Styler) SuccessText(text string) string { return s.paint(sgrGreen, text) }
+
+// FailureText colours text as a failure without prefixing a glyph.
+func (s Styler) FailureText(text string) string { return s.paint(sgrRed, text) }
+
+// WarningText colours text as a warning without prefixing a glyph.
+func (s Styler) WarningText(text string) string { return s.paint(sgrYellow, text) }
+
 // Bold is the weight for headings and the final verdict.
 func (s Styler) Bold(text string) string { return s.paint(sgrBold, text) }
 

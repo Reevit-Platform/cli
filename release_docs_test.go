@@ -70,3 +70,92 @@ func TestNPMPackageShipsCompleteGettingStartedDocumentation(t *testing.T) {
 
 	t.Error("npm package files must include README.md")
 }
+
+// readmes are the two files a user reads before running anything. They
+// described the same paired key with two different scope lists, which is how
+// the stale one survived: nothing compared them.
+func readmes(t *testing.T) map[string]string {
+	t.Helper()
+
+	out := map[string]string{}
+
+	for _, path := range []string{"README.md", "npm/README.md"} {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+
+		out[path] = string(raw)
+	}
+
+	return out
+}
+
+// The backend deliberately withholds api_keys:* from a paired key, so a
+// paired key cannot mint another key. Documenting otherwise would invite
+// someone to build on an escalation that does not exist.
+func TestNoReadmePromisesKeyMintingScopes(t *testing.T) {
+	t.Parallel()
+
+	for path, body := range readmes(t) {
+		for _, line := range strings.Split(body, "\n") {
+			if !strings.Contains(line, "api_keys:") {
+				continue
+			}
+
+			if !strings.Contains(line, "never") && !strings.Contains(line, "not ") {
+				t.Errorf("%s claims a key has api_keys scope:\n  %s", path, line)
+			}
+		}
+	}
+}
+
+// Both files list the scopes a paired login key receives. They have to list
+// the same ones.
+func TestBothReadmesListTheSamePairedKeyScopes(t *testing.T) {
+	t.Parallel()
+
+	want := []string{"payments:read", "payments:write", "webhooks:read", "webhooks:write"}
+
+	for path, body := range readmes(t) {
+		for _, scope := range want {
+			if !strings.Contains(body, scope) {
+				t.Errorf("%s never names the %s scope a paired key receives", path, scope)
+			}
+		}
+	}
+}
+
+// The exit codes are the CLI's contract with CI. A code the binary can return
+// and the README does not explain is a code nobody can act on.
+func TestReadmeDocumentsEveryExitCode(t *testing.T) {
+	t.Parallel()
+
+	body := readmes(t)["README.md"]
+
+	for _, code := range []struct{ code, meaning string }{
+		{"`0`", "success"},
+		{"`1`", "runtime error"},
+		{"`2`", "usage error"},
+		{"`3`", "found problems"},
+		{"`130`", "cancelled"},
+	} {
+		row := ""
+
+		for _, line := range strings.Split(body, "\n") {
+			if strings.HasPrefix(line, "| "+code.code+" |") {
+				row = line
+				break
+			}
+		}
+
+		if row == "" {
+			t.Errorf("README has no exit-code row for %s", code.code)
+			continue
+		}
+
+		if !strings.Contains(row, code.meaning) {
+			t.Errorf("README's %s row does not say %q:\n  %s", code.code, code.meaning, row)
+		}
+	}
+}

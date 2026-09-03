@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/spf13/cobra"
 )
 
 // pairingServer scripts the backend: a fixed start response, then a sequence
@@ -55,7 +57,7 @@ func pairingServer(t *testing.T, pollSequence []string) *httptest.Server {
 						"id":     "pfk_test_abc",
 						"raw":    "pfk_test_abc.sec",
 						"name":   "CLI (host)",
-						"scopes": []string{"payments:read"},
+						"scopes": []string{"payments:read", "payments:write", "webhooks:read", "webhooks:write"},
 						"mode":   "test",
 					},
 					"org": map[string]any{"id": "org_1", "name": "Acme"},
@@ -243,4 +245,78 @@ func TestBrowserLoginPollStopsOnCancellation(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("the pairing poll ignored cancellation")
 	}
+}
+
+// The poll response has always decoded `scopes` and never shown them, which
+// left "what can this key actually do?" unanswerable without opening the
+// dashboard. The paired key is minted by the backend, not chosen by the user,
+// so the CLI is the only place that answer can come from.
+func TestBrowserLoginPrintsTheKeyScopes(t *testing.T) {
+	out, err := runBrowserLoginCapturing(t, pairingServer(t, []string{"approved"}))
+	if err != nil {
+		t.Fatalf("browserLogin: %v", err)
+	}
+
+	if !strings.Contains(out, "scopes: payments:read, payments:write, webhooks:read, webhooks:write") {
+		t.Fatalf("output = %q, want the joined scope list from the poll response", out)
+	}
+
+	if !strings.Contains(out, "test-mode key") {
+		t.Fatalf("output = %q, want the key's mode named", out)
+	}
+}
+
+// `reevit init` runs this same flow when it finds no credential. Closing with
+// "cd your-project && reevit init" in the middle of an init run would send the
+// user in a circle, so the next step belongs to the login command alone.
+func TestBrowserLoginOmitsTheNextStepWhenInitDrivesIt(t *testing.T) {
+	server := pairingServer(t, []string{"approved"})
+
+	loginOut, err := runBrowserLoginCapturing(t, server)
+	if err != nil {
+		t.Fatalf("browserLogin: %v", err)
+	}
+
+	if !strings.Contains(loginOut, "reevit init") {
+		t.Fatalf("login output = %q, want the next step", loginOut)
+	}
+
+	initOut, err := runBrowserLoginCapturingAs(t, server, initCmd)
+	if err != nil {
+		t.Fatalf("browserLogin via init: %v", err)
+	}
+
+	if strings.Contains(initOut, "reevit init") {
+		t.Fatalf("init output = %q, want no self-referential next step", initOut)
+	}
+}
+
+func runBrowserLoginCapturing(t *testing.T, server *httptest.Server) (string, error) {
+	t.Helper()
+
+	return runBrowserLoginCapturingAs(t, server, loginCmd)
+}
+
+func runBrowserLoginCapturingAs(t *testing.T, server *httptest.Server, cmd *cobra.Command) (string, error) {
+	t.Helper()
+
+	t.Setenv("REEVIT_CONFIG", filepath.Join(t.TempDir(), "config.json"))
+	t.Setenv("REEVIT_API_URL", server.URL)
+	t.Setenv("REEVIT_API_KEY", "")
+	t.Setenv("REEVIT_MODE", "")
+
+	var out bytes.Buffer
+
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetContext(context.Background())
+
+	t.Cleanup(func() {
+		cmd.SetOut(nil)
+		cmd.SetErr(nil)
+	})
+
+	err := browserLogin(cmd, false)
+
+	return out.String(), err
 }

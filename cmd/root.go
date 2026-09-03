@@ -80,11 +80,46 @@ func exactArgs(n int) cobra.PositionalArgs {
 }
 
 var rootCmd = &cobra.Command{
-	Use:           "reevit",
-	Short:         "Reevit CLI — set up Reevit in your project, test payments, drive the sandbox simulator",
+	Use:   "reevit",
+	Short: "Reevit CLI — set up Reevit in your project, test payments, drive the sandbox simulator",
+	Long: `Sets Reevit up in your project and gives you a real sandbox to test it
+against — signed webhooks, simulated payment outcomes, and a check that says
+whether any of it actually works.
+
+Start here: reevit login → reevit init → reevit doctor.`,
+	Example: `  reevit init                      # set up Reevit in the current project
+  reevit listen --forward-to http://localhost:3000/api/webhooks/reevit
+  reevit trigger payment.succeeded`,
 	Version:       Version,
 	SilenceUsage:  true,
 	SilenceErrors: true,
+	// The first-run telemetry notice belongs before the run it is disclosing,
+	// not after it: Report fires once the command has finished, so the
+	// disclosure used to appear below the output of the very run it covered.
+	//
+	// No subcommand defines PreRun or PersistentPreRun, so nothing shadows
+	// this. cobra only runs the closest PersistentPreRunE it finds.
+	PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
+		if !telemetry.Tracked(topLevelName(cmd)) {
+			return nil
+		}
+
+		// Do NOT gate this on --json (032). It looks tempting and it is a
+		// silent-tracking hole: telemetry.Report mints and persists the
+		// machine id on its own, so skipping the notice skips the
+		// disclosure without skipping the collection. Worse, the notice is
+		// keyed on the id being empty, so a user whose first-ever run
+		// carried --json would be tracked from that run onwards and never
+		// be told, on any later run either.
+		//
+		// There is also nothing to fix: --json is a promise about stdout,
+		// and this writes to stderr. A --json consumer parses stdout and
+		// never sees these four lines.
+		sty := styleOf(cmd).err
+		telemetry.EnsureNotice(cmd.ErrOrStderr(), sty.Note, sty.Dim)
+
+		return nil
+	},
 }
 
 // Execute runs the CLI and reports one anonymous usage event per tracked
@@ -104,7 +139,7 @@ func Execute() error {
 		ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr,
 	)
 
-	telemetry.Report(topLevelName(executed), Version, err == nil, time.Since(start), os.Stderr)
+	telemetry.Report(topLevelName(executed), Version, err == nil, time.Since(start))
 
 	return err
 }

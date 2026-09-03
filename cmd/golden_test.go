@@ -188,8 +188,18 @@ var (
 	// rendered value is normalised rather than trusted.
 	goldenDateTimeRe = regexp.MustCompile(`\d{4}-\d{2}-\d{2} \d{2}:\d{2}`)
 	goldenTimeRe     = regexp.MustCompile(`\d{2}:\d{2}:\d{2}`)
-	goldenMillisRe   = regexp.MustCompile(`\(\d+ms\)`)
+	// The forwarded-event line prints its round trip as a bare `12ms`
+	// column; it used to be parenthesised, and the pattern moved with it.
+	goldenMillisRe   = regexp.MustCompile(`\b\d+ms\b`)
 	goldenLoopbackRe = regexp.MustCompile(`127\.0\.0\.1:\d+`)
+	// Everything after "dial tcp" is the operating system's wording, not
+	// ours. The property doctor-api-unreachable exists to pin is that the
+	// `request GET /payments: Get "…":` prefix was stripped off the front,
+	// so the platform-specific tail is normalised away.
+	goldenDialRe = regexp.MustCompile(`dial tcp \S+.*`)
+	// SGR sequences, for asserting that colour changed the bytes of a table
+	// without changing where its columns fall.
+	goldenSGRRe = regexp.MustCompile("\x1b\\[[0-9;]*m")
 )
 
 func (n normaliser) apply(s string) string {
@@ -211,8 +221,9 @@ func (n normaliser) apply(s string) string {
 
 	s = goldenDateTimeRe.ReplaceAllString(s, "<CREATED>")
 	s = goldenTimeRe.ReplaceAllString(s, "<TIME>")
-	s = goldenMillisRe.ReplaceAllString(s, "(<MS>ms)")
+	s = goldenMillisRe.ReplaceAllString(s, "<MS>ms")
 	s = goldenLoopbackRe.ReplaceAllString(s, "<ADDR>")
+	s = goldenDialRe.ReplaceAllString(s, "dial tcp <DIAL>")
 
 	return s
 }
@@ -514,6 +525,19 @@ func goldenCases() []goldenCase {
 			env:    map[string]string{"REEVIT_API_KEY": testKey, "TZ": "UTC"},
 			server: paymentsServer(http.StatusOK, twoPayments),
 		},
+		// The one-time telemetry disclosure. It has to be the FIRST thing on
+		// stderr: it used to be printed by telemetry.Report, which runs after
+		// the command, so the notice landed underneath the output of the very
+		// run it was disclosing. REEVIT_TELEMETRY is unset (the baseline
+		// turns telemetry off for every other case) and REEVIT_CONFIG points
+		// at a file that does not exist yet, so this is a genuine first run.
+		{
+			name:     "first-run-notice",
+			args:     []string{"payments", "list", "--limit", "2"},
+			env:      map[string]string{"REEVIT_API_KEY": testKey, "TZ": "UTC"},
+			unsetEnv: []string{"REEVIT_TELEMETRY", "DO_NOT_TRACK"},
+			server:   paymentsServer(http.StatusOK, twoPayments),
+		},
 		{
 			name: "payments-list-forbidden",
 			args: []string{"payments", "list"},
@@ -533,6 +557,22 @@ func goldenCases() []goldenCase {
 			env:      map[string]string{"REEVIT_API_KEY": testKey},
 			dir:      func(t *testing.T) string { return t.TempDir() },
 			server:   paymentsServer(http.StatusOK, `[]`),
+			wantExit: 3,
+		},
+		// The API is not there at all. The finding and the transport cause get
+		// a line each: the wrapped error names a request the user never typed
+		// and repeats a URL doctor printed a line earlier, and dragging all of
+		// that onto the warning line pushed the real cause off an 80-column
+		// terminal.
+		{
+			name: "doctor-api-unreachable",
+			args: []string{"doctor"},
+			env: map[string]string{
+				"REEVIT_API_KEY": testKey,
+				// Port 1 is reserved and never listening.
+				"REEVIT_API_URL": "http://127.0.0.1:1",
+			},
+			dir:      func(t *testing.T) string { return t.TempDir() },
 			wantExit: 3,
 		},
 		// A legacy key shape: config.Load cannot derive the mode from it, so
@@ -593,6 +633,19 @@ func goldenCases() []goldenCase {
 			unsetEnv: []string{"NO_COLOR", "TERM", "LC_ALL", "LC_CTYPE"},
 			server:   paymentsServer(http.StatusOK, twoPayments),
 		},
+		// The pairing code is the one string the user has to read off the
+		// screen and match in a browser, so it is the one string that earns
+		// both weight and colour. Nothing else in the plain golden can prove
+		// that, because the plain golden has no escapes at all.
+		{
+			name:     "login-browser-approved-color",
+			args:     []string{"login", "--no-browser"},
+			env:      map[string]string{"FORCE_COLOR": "1", "LANG": "en_US.UTF-8"},
+			unsetEnv: []string{"NO_COLOR", "TERM", "LC_ALL", "LC_CTYPE"},
+			server: func(t *testing.T) *httptest.Server {
+				return pairingServer(t, []string{"pending", "approved"})
+			},
+		},
 	}
 }
 
@@ -602,13 +655,51 @@ func goldenCases() []goldenCase {
 // Plan 030 moved `login`'s confirmation to stderr — `reevit login > key.log`
 // is not a thing anyone wants, and the command produces no data — so the
 // expectation is inverted here rather than dropped.
+// The normaliser is what makes a golden independent of the wall clock, so it
+// is tested directly: `listen`'s delivery lines never reach a golden case
+// (the command does not exit, and the harness has no cancellable context),
+// which would otherwise leave the clock-dependent patterns unexercised.
+func TestNormaliserErasesEveryClockValue(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "a forwarded delivery line",
+			in:   "12:04:07  payment.succeeded          > 200  12ms",
+			want: "<TIME>  payment.succeeded          > 200  <MS>ms",
+		},
+		{
+			name: "a payments table timestamp",
+			in:   "pay_1  GHS 100.00  succeeded  2026-08-31 09:15",
+			want: "pay_1  GHS 100.00  succeeded  <CREATED>",
+		},
+		{
+			name: "an ephemeral listen port",
+			in:   `dial tcp 127.0.0.1:54321: connect: connection refused`,
+			want: "dial tcp <DIAL>",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := (normaliser{}).apply(test.in); got != test.want {
+				t.Errorf("apply(%q) = %q, want %q", test.in, got, test.want)
+			}
+		})
+	}
+}
+
 func TestGoldenStreamsAreSeparate(t *testing.T) {
 	t.Run("login-key-saved writes nothing to stdout", func(t *testing.T) {
 		if got := readGolden(t, "login-key-saved.stdout"); got != "" {
 			t.Errorf("stdout = %q, want empty", got)
 		}
 
-		if got := readGolden(t, "login-key-saved.stderr"); !strings.Contains(got, "Saved to <CONFIG>") {
+		if got := readGolden(t, "login-key-saved.stderr"); !strings.Contains(got, "saved to <CONFIG>") {
 			t.Errorf("stderr = %q, want the saved-to confirmation", got)
 		}
 	})
@@ -623,11 +714,55 @@ func TestGoldenStreamsAreSeparate(t *testing.T) {
 		}
 	})
 
-	t.Run("colour never reaches the payments table", func(t *testing.T) {
+	// Colour reaches the table now — a `failed` that is not red is a `failed`
+	// the eye skips — but it must not move a single column. tabwriter measures
+	// cells in bytes, so this is the property that forced the hand-rolled
+	// layout, and stripping the escapes back out is how it is checked.
+	t.Run("colour changes the payments table's bytes, never its layout", func(t *testing.T) {
 		plain := readGolden(t, "payments-list-rows.stdout")
+		forced := readGolden(t, "payments-list-rows-color.stdout")
 
-		if forced := readGolden(t, "payments-list-rows-color.stdout"); forced != plain {
-			t.Errorf("FORCE_COLOR changed the table:\n%s", lineDiff(plain, forced))
+		if strings.Contains(plain, "\x1b") {
+			t.Errorf("NO_COLOR table carries escapes:\n%q", plain)
+		}
+
+		for _, want := range []string{
+			"\x1b[32msucceeded\x1b[0m", // green
+			"\x1b[31mfailed\x1b[0m",    // red
+			"\x1b[2mStatus\x1b[0m",     // dim header
+		} {
+			if !strings.Contains(forced, want) {
+				t.Errorf("coloured table is missing %q:\n%q", want, forced)
+			}
+		}
+
+		if stripped := goldenSGRRe.ReplaceAllString(forced, ""); stripped != plain {
+			t.Errorf("FORCE_COLOR moved a column:\n%s", lineDiff(plain, stripped))
+		}
+	})
+
+	// Money is read by comparing digit positions. 9.00 under 125.00 with the
+	// decimal points out of line is a column that has to be re-read.
+	t.Run("the amount column is right-aligned", func(t *testing.T) {
+		lines := strings.Split(strings.TrimRight(readGolden(t, "payments-list-rows.stdout"), "\n"), "\n")
+		if len(lines) != 3 {
+			t.Fatalf("lines = %q, want a header and two rows", lines)
+		}
+
+		columns := make([]int, 0, 2)
+
+		for _, line := range lines[1:] {
+			at := strings.Index(line, ".00")
+			if at < 0 {
+				t.Fatalf("line = %q, want a decimal amount", line)
+			}
+
+			columns = append(columns, at)
+		}
+
+		if columns[0] != columns[1] {
+			t.Errorf("decimal points at %d and %d:\n%s", columns[0], columns[1],
+				strings.Join(lines, "\n"))
 		}
 	})
 
@@ -638,6 +773,38 @@ func TestGoldenStreamsAreSeparate(t *testing.T) {
 
 		if got := readGolden(t, "doctor-next-project-offline.stderr"); strings.Contains(got, "\x1b") {
 			t.Errorf("stderr = %q, want no escape sequences with NO_COLOR=1", got)
+		}
+	})
+
+	t.Run("colour and weight reach the pairing code", func(t *testing.T) {
+		got := readGolden(t, "login-browser-approved-color.stderr")
+
+		// Bold (1) then cyan (36), from Bold(Accent(code)) — the code is the
+		// only thing on the screen the user has to transcribe.
+		if !strings.Contains(got, "\x1b[1m\x1b[36mGX7M-4KP9") {
+			t.Errorf("stderr = %q, want the pairing code in bold cyan", got)
+		}
+
+		// The confirm link is a URL, so it gets the underline the styler
+		// reserves for links rather than plain accent.
+		if !strings.Contains(got, "\x1b[36;4mhttps://") {
+			t.Errorf("stderr = %q, want the confirm URL underlined", got)
+		}
+
+		if plain := readGolden(t, "login-browser-approved.stderr"); strings.Contains(plain, "\x1b") {
+			t.Errorf("stderr = %q, want no escape sequences with NO_COLOR=1", plain)
+		}
+	})
+
+	t.Run("doctor names the cause, not the request that wrapped it", func(t *testing.T) {
+		got := readGolden(t, "doctor-api-unreachable.stderr")
+
+		if strings.Contains(got, "request GET /payments") {
+			t.Errorf("stderr = %q, want the api.Client wrapper stripped from the cause", got)
+		}
+
+		if !strings.Contains(got, "! could not reach the API to verify the key\n    dial tcp") {
+			t.Errorf("stderr = %q, want the cause on its own dim line under the warning", got)
 		}
 	})
 

@@ -40,6 +40,15 @@ var tracked = map[string]struct{}{
 	"payments": {},
 }
 
+// Tracked reports whether a top-level command sends an event. The first-run
+// notice is gated on it too: disclosing collection before `reevit --help`,
+// which is never reported, is a warning about nothing.
+func Tracked(command string) bool {
+	_, ok := tracked[command]
+
+	return ok
+}
+
 var (
 	mu      sync.Mutex
 	stack   string
@@ -74,12 +83,12 @@ func Enabled() bool {
 // Report sends one event for a finished command run. Fire-and-forget with a
 // short deadline: telemetry may never slow a command down noticeably or
 // surface an error. Call after the command completes.
-func Report(command, version string, success bool, duration time.Duration, notice io.Writer) {
+func Report(command, version string, success bool, duration time.Duration) {
 	if !Enabled() {
 		return
 	}
 
-	if _, ok := tracked[command]; !ok {
+	if !Tracked(command) {
 		return
 	}
 
@@ -88,7 +97,7 @@ func Report(command, version string, success bool, duration time.Duration, notic
 		return
 	}
 
-	machineID := ensureMachineID(&cfg, notice)
+	machineID := ensureMachineID(&cfg)
 	if machineID == "" {
 		return
 	}
@@ -131,26 +140,20 @@ func Report(command, version string, success bool, duration time.Duration, notic
 	_ = resp.Body.Close()
 }
 
-// ensureMachineID returns the anonymous per-install id, minting it (and
-// printing the one-time notice) on first use. Returns "" if the config can't
-// be persisted — no notice means no tracking.
-func ensureMachineID(cfg *config.Config, notice io.Writer) string {
+// ensureMachineID returns the anonymous per-install id, minting it on first
+// use. Returns "" if the config can't be persisted, which means no tracking:
+// an id that only exists in memory would produce a new "install" every run.
+func ensureMachineID(cfg *config.Config) string {
 	if cfg.TelemetryID != "" {
 		return cfg.TelemetryID
 	}
 
 	id := uuid.NewString()
 
-	if notice != nil {
-		fmt.Fprintln(notice, "\nreevit collects anonymous usage data (command, version, OS — never file")
-		fmt.Fprintln(notice, "contents, paths, or keys) to improve the CLI. Opt out any time with")
-		fmt.Fprintln(notice, "REEVIT_TELEMETRY=0 or DO_NOT_TRACK=1. Docs: https://docs.reevit.io/cli")
-	}
-
 	// Persist only the id. cfg came from config.Load, which folds
 	// REEVIT_API_KEY into what it returns — writing the whole struct back
 	// would leak an env-only credential to disk, contradicting the notice
-	// printed directly above.
+	// the user was just shown.
 	if _, err := config.SaveTelemetryID(id); err != nil {
 		return ""
 	}
@@ -158,4 +161,52 @@ func ensureMachineID(cfg *config.Config, notice io.Writer) string {
 	cfg.TelemetryID = id
 
 	return cfg.TelemetryID
+}
+
+// NoticeLines is the one-time first-run disclosure, unstyled. It lives here
+// because this package decides what is collected; how it looks on a terminal
+// is the caller's business.
+var NoticeLines = [2]string{
+	"reevit sends anonymous usage data (command, version, OS — never files, paths or keys).",
+	"Opt out: REEVIT_TELEMETRY=0 or DO_NOT_TRACK=1 · docs.reevit.io/cli",
+}
+
+// EnsureNotice mints the anonymous per-install id and prints the one-time
+// notice, before the command runs rather than after it. Report used to do
+// this, which meant the disclosure landed underneath the output of the very
+// run it was disclosing.
+//
+// It prints only when it actually mints an id, and only when that id reaches
+// disk: an unpersisted id would show the notice again on the next run, and a
+// notice shown to a user who opted out is noise about data nobody collected.
+//
+// note and dim decorate the two lines (glyph, colour) — internal/ui owns that
+// vocabulary and this package must not import it, since ui is the lower
+// layer. Either may be nil, which prints the line as-is.
+func EnsureNotice(w io.Writer, note, dim func(string) string) {
+	if w == nil || !Enabled() {
+		return
+	}
+
+	cfg, err := config.Load()
+	if err != nil || cfg.TelemetryID != "" {
+		return
+	}
+
+	if ensureMachineID(&cfg) == "" {
+		return
+	}
+
+	if note == nil {
+		note = func(text string) string { return "- " + text }
+	}
+
+	if dim == nil {
+		dim = func(text string) string { return text }
+	}
+
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, note(dim(NoticeLines[0])))
+	fmt.Fprintln(w, "  "+dim(NoticeLines[1]))
+	fmt.Fprintln(w)
 }

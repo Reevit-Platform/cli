@@ -51,6 +51,9 @@ component, or a server-side client, depending on the project.
 Existing files are preserved by default. Interactive setup can replace
 generated integration files after creating a backup. Checkout can optionally
 be inserted into an existing page using an idempotent marked block.`,
+	Example: `  reevit init
+  reevit init --goal checkout      # scaffold the checkout page, not just the client
+  reevit init --overwrite          # replace generated files, keeping backups`,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		// Setup narrates on stderr; only the --dry-run plan is data.
 		sty := styleOf(cmd)
@@ -256,7 +259,7 @@ be inserted into an existing page using an idempotent marked block.`,
 			Secrets:  setup.CryptoSecretGenerator{},
 			Verifier: setup.SandboxVerifier{},
 			Emit: func(event setup.Event) {
-				printSetupEvent(out, event)
+				printSetupEvent(out, sty.err, event)
 			},
 		})
 		if err != nil {
@@ -264,7 +267,10 @@ be inserted into an existing page using an idempotent marked block.`,
 		}
 
 		// --- 7. Summary + next steps ---
-		fmt.Fprintln(out)
+		// The file list is the answer to "what did that just do to my repo?",
+		// so it gets a heading of its own rather than trailing the progress
+		// lines as an unlabelled block.
+		fmt.Fprintln(out, sty.err.Heading("Files"))
 
 		if hasTarget(targets, scaffold.TargetClient) {
 			if result.Env.KeyAlreadySet {
@@ -293,16 +299,12 @@ be inserted into an existing page using an idempotent marked block.`,
 		for _, f := range result.Files {
 			if f.Removed {
 				fmt.Fprintln(out, sty.err.Note(f.Path+" — removed stale generated file"))
-				if f.BackupPath != "" {
-					fmt.Fprintf(out, "  Backup: %s\n", f.BackupPath)
-				}
+				printBackup(out, sty.err, f.BackupPath)
 			} else if f.Skipped {
 				fmt.Fprintln(out, sty.err.Note(f.Path+" exists — skipped"))
 			} else {
 				fmt.Fprintln(out, sty.err.Success(f.Path))
-				if f.BackupPath != "" {
-					fmt.Fprintf(out, "  Backup: %s\n", f.BackupPath)
-				}
+				printBackup(out, sty.err, f.BackupPath)
 			}
 		}
 
@@ -318,17 +320,56 @@ be inserted into an existing page using an idempotent marked block.`,
 	},
 }
 
-func printSetupEvent(out io.Writer, event setup.Event) {
+// printBackup notes where the previous contents of an overwritten file went.
+// It is reassurance, not news — dim and indented under the file it belongs to,
+// so scanning the list for what changed is not interrupted by paths.
+func printBackup(out io.Writer, sty ui.Styler, path string) {
+	if path == "" {
+		return
+	}
+
+	fmt.Fprintln(out, "  "+sty.Dim("backup: "+path))
+}
+
+// printSetupEvent narrates setup.Apply. Every "running" line it prints is
+// answered by a "complete" line: an install of a large dependency tree can sit
+// for a minute, and a `→ Installing dependencies (pnpm)…` with nothing after it
+// is indistinguishable from a hang. There is no spinner and no cursor
+// rewriting — a scrollback that reads correctly in a CI log is worth more than
+// an animation, and stderr here is frequently redirected.
+func printSetupEvent(out io.Writer, sty ui.Styler, event setup.Event) {
 	switch {
 	case event.Stage == "bootstrap" && event.Status == "running":
-		fmt.Fprintln(out, "\nConfiguring Reevit test mode…")
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, sty.Step("Configuring Reevit test mode…"))
+	case event.Stage == "bootstrap" && event.Status == "complete":
+		fmt.Fprintln(out, sty.Success("Reevit test mode configured"))
 	case event.Stage == "install" && event.Status == "running":
-		fmt.Fprintf(out, "  Installing dependencies (%s)…\n", event.Detail)
-	case event.Stage == "install" && event.Status == "complete" && event.LogPath != "":
-		fmt.Fprintf(out, "    Log retained at %s\n", event.LogPath)
+		fmt.Fprintf(out, "%s\n", sty.Step(fmt.Sprintf(
+			"Installing dependencies (%s)…", installerName(event.Detail))))
+	case event.Stage == "install" && event.Status == "complete":
+		fmt.Fprintln(out, sty.Success(fmt.Sprintf(
+			"Dependencies installed (%s)", installerName(event.Detail))))
+
+		if event.LogPath != "" {
+			fmt.Fprintln(out, "  "+sty.Note("log retained at "+event.LogPath))
+		}
 	case event.Stage == "verify" && event.Status == "running":
-		fmt.Fprintln(out, "  Verifying project credentials against the sandbox…")
+		fmt.Fprintln(out, sty.Step("Verifying project credentials against the sandbox…"))
+	case event.Stage == "verify" && event.Status == "complete":
+		fmt.Fprintln(out, sty.Success("Project credentials verified against the sandbox"))
 	}
+}
+
+// installerName reduces an install command to the tool that runs it. The event
+// Detail is the whole argv ("pnpm add @reevit/node"), which is more than the
+// progress line needs and long enough to wrap on a narrow terminal.
+func installerName(detail string) string {
+	if fields := strings.Fields(detail); len(fields) > 0 {
+		return fields[0]
+	}
+
+	return detail
 }
 
 // pickTargets resolves --target flags or prompts interactively.
@@ -781,7 +822,7 @@ func printNextSteps(
 	project scaffold.Project,
 	targets []scaffold.Target,
 ) {
-	fmt.Fprintln(out, sty.Heading("Next steps:"))
+	fmt.Fprintln(out, sty.Heading("Next"))
 
 	if command := scaffold.DevCommand(project); len(command) > 0 {
 		fmt.Fprintf(out, "  1. Start your app:\n%s\n", sty.Command(strings.Join(command, " ")))
@@ -832,8 +873,12 @@ func printNextSteps(
 		fmt.Fprintln(out, "  "+sty.Step("Run `reevit doctor` any time to check the setup."))
 	}
 
-	fmt.Fprintln(out, "\nYou're on a TEST-MODE key. When you're ready for live traffic, create a live")
-	fmt.Fprintln(out, "key in Dashboard → Developers → API keys and run:  reevit login --key <live_key>")
+	// The live-key instructions used to close init as a three-line paragraph,
+	// which put reference material where the next command belongs. They now
+	// live in `reevit login --help`; what stays here is the one fact the user
+	// needs at this moment — that nothing they do next will move real money.
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, sty.Note("You are in test mode. Live keys: reevit login --help"))
 }
 
 func hasTarget(targets []scaffold.Target, key scaffold.TargetKey) bool {

@@ -1,10 +1,16 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/Reevit-Platform/cli/internal/api"
@@ -142,5 +148,279 @@ func TestClientSurfacesAPIErrors(t *testing.T) {
 	apiErr, ok := err.(*api.APIError)
 	if !ok || apiErr.Status != 403 || apiErr.Code != "insufficient_scope" {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// triggerStubAPI stands in for the platform: bootstrap reports a ready
+// simulator, and the intent comes back as a pending payment.
+func triggerStubAPI(t *testing.T, amounts *[]int64) *httptest.Server {
+	t.Helper()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/cli/bootstrap":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"simulator": map[string]any{"connection_id": "conn_sim_1", "ready": true},
+			})
+		case "/v1/payments/intents":
+			var body struct {
+				Amount int64 `json:"amount"`
+			}
+
+			_ = json.NewDecoder(r.Body).Decode(&body)
+
+			if amounts != nil {
+				*amounts = append(*amounts, body.Amount)
+			}
+
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "pay_01JQTEST", "status": "pending"})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+
+	t.Cleanup(server.Close)
+
+	return server
+}
+
+func runTrigger(t *testing.T, server *httptest.Server, args ...string) (stdout, stderr string) {
+	t.Helper()
+
+	resetFlags()
+	t.Cleanup(resetFlags)
+
+	t.Setenv("REEVIT_CONFIG", filepath.Join(t.TempDir(), "config.json"))
+	t.Setenv("REEVIT_API_KEY", "pfk_test_trigger.sec")
+	t.Setenv("REEVIT_API_URL", server.URL)
+	t.Setenv("REEVIT_MODE", "")
+	t.Setenv("REEVIT_TELEMETRY", "0")
+	t.Setenv("NO_COLOR", "1")
+	t.Setenv("TERM", "dumb")
+
+	var out, errOut bytes.Buffer
+
+	if err := ExecuteWith(context.Background(), args, strings.NewReader(""), &out, &errOut); err != nil {
+		t.Fatalf("trigger: %v\nstderr:\n%s", err, errOut.String())
+	}
+
+	return out.String(), errOut.String()
+}
+
+// `id=$(reevit trigger payment.succeeded)` has to yield an id, not a sentence.
+// Everything the command says about what it did is conversation and belongs on
+// stderr, where a redirect leaves it alone.
+func TestTriggerPutsOnlyThePaymentIDOnStdout(t *testing.T) {
+	server := triggerStubAPI(t, nil)
+
+	stdout, stderr := runTrigger(t, server, "trigger", "payment.succeeded")
+
+	if stdout != "pay_01JQTEST\n" {
+		t.Fatalf("stdout = %q, want exactly the payment id and a newline", stdout)
+	}
+
+	for _, want := range []string{
+		"> Using the sandbox simulator\n",
+		"ok Triggered payment.succeeded\n",
+		"- payment pay_01JQTEST created through the sandbox simulator (status: pending)\n",
+		"- the outcome resolves asynchronously; watch it land with:\n",
+		"reevit listen --forward-to http://localhost:3000/api/webhooks/reevit\n",
+		"reevit payments list\n",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("stderr is missing %q:\n%s", want, stderr)
+		}
+	}
+
+	// "Triggered payment.succeeded" on stdout would end up inside the id.
+	if strings.Contains(stdout, "Triggered") {
+		t.Errorf("stdout = %q, want no commentary", stdout)
+	}
+}
+
+// The simulator branches on the amount, so an override silently discards the
+// outcome the user asked for. 4000 is what makes payment.succeeded succeed.
+func TestTriggerWarnsWhenAnOverrideStopsBeingMagic(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		amount   string
+		wantWarn bool
+	}{
+		{name: "a non-magic override is called out", amount: "1234", wantWarn: true},
+		{name: "another outcome's magic amount is not", amount: "4003", wantWarn: false},
+		{name: "the event's own magic amount is not", amount: "4000", wantWarn: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var amounts []int64
+
+			server := triggerStubAPI(t, &amounts)
+
+			_, stderr := runTrigger(t, server, "trigger", "payment.succeeded", "--amount", test.amount)
+
+			warned := strings.Contains(stderr, "is not a magic amount — this will be an ordinary sandbox payment")
+			if warned != test.wantWarn {
+				t.Fatalf("warned = %v, want %v; stderr:\n%s", warned, test.wantWarn, stderr)
+			}
+
+			if test.wantWarn && !strings.Contains(stderr, "! "+test.amount+" is not a magic amount") {
+				t.Errorf("the warning does not quote the amount:\n%s", stderr)
+			}
+
+			// The override still has to reach the API — the warning explains
+			// the consequence, it does not veto the request.
+			if len(amounts) != 1 || strconv.FormatInt(amounts[0], 10) != test.amount {
+				t.Errorf("amounts = %v, want the override to be sent", amounts)
+			}
+		})
+	}
+}
+
+// A generic placeholder makes the suggestion un-pasteable. Whenever init has
+// scaffolded a handler here, its real route and the framework's dev port are
+// both already known — and neither is 3000/api/webhooks/reevit in general.
+func TestLocalWebhookURLPrefersTheScaffoldedHandler(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		files map[string]string
+		want  string
+	}{
+		{
+			name: "laravel routes the handler somewhere else, on another port",
+			files: map[string]string{
+				"composer.json":     `{"require":{"laravel/framework":"^11"}}`,
+				"routes/reevit.php": "<?php",
+			},
+			want: "http://localhost:8000/webhooks/reevit",
+		},
+		{
+			name: "sveltekit keeps the route but moves the port",
+			files: map[string]string{
+				"package.json": `{"devDependencies":{"@sveltejs/kit":"2"}}`,
+				"src/routes/api/webhooks/reevit/+server.ts": "export const POST = () => {}",
+			},
+			want: "http://localhost:5173/api/webhooks/reevit",
+		},
+		{
+			name:  "an empty directory still yields something pasteable",
+			files: map[string]string{},
+			want:  "http://localhost:3000/api/webhooks/reevit",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+
+			for rel, body := range test.files {
+				if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, rel)), 0o755); err != nil {
+					t.Fatal(err)
+				}
+
+				if err := os.WriteFile(filepath.Join(dir, rel), []byte(body), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			previous, err := os.Getwd()
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if err := os.Chdir(dir); err != nil {
+				t.Fatal(err)
+			}
+
+			t.Cleanup(func() { _ = os.Chdir(previous) })
+
+			if got := localWebhookURL(); got != test.want {
+				t.Errorf("localWebhookURL() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestIsMagicAmountCoversEveryDocumentedOutcome(t *testing.T) {
+	t.Parallel()
+
+	for event, amount := range triggerAmounts {
+		if !isMagicAmount(amount) {
+			t.Errorf("%s's amount %d is not recognised as magic", event, amount)
+		}
+	}
+
+	for _, amount := range []int64{0, 1, 3999, 4005, 100000} {
+		if isMagicAmount(amount) {
+			t.Errorf("%d is not a documented magic amount", amount)
+		}
+	}
+}
+
+// The listed order is the order a person meets these outcomes, not the order
+// Go's map iteration or sort.Strings would produce. Alphabetical would open
+// with `payment.failed`, which reads like the CLI expects you to fail.
+func TestTriggerEventsAreListedInReadingOrderNotAlphabetically(t *testing.T) {
+	t.Parallel()
+
+	want := []string{
+		"payment.succeeded",
+		"payment.failed",
+		"payment.insufficient_funds",
+		"payment.timeout",
+		"payment.provider_downtime",
+	}
+
+	got := triggerEventNames()
+	if len(got) != len(want) {
+		t.Fatalf("triggerEventNames() = %v, want %d entries", got, len(want))
+	}
+
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("triggerEventNames()[%d] = %q, want %q (full order: %v)", i, got[i], want[i], got)
+		}
+	}
+
+	if sorted := append([]string(nil), got...); sort.StringsAreSorted(sorted) {
+		t.Fatalf("triggerEventNames() came back alphabetically sorted: %v", got)
+	}
+}
+
+// Every event the CLI accepts must be offered, and every event it offers must
+// be accepted. A name in one list and not the other is a dead menu entry.
+func TestTriggerEventOrderCoversTheWholeAmountTable(t *testing.T) {
+	t.Parallel()
+
+	if len(triggerEventOrder) != len(triggerAmounts) {
+		t.Fatalf("order lists %d events, the amount table has %d", len(triggerEventOrder), len(triggerAmounts))
+	}
+
+	for _, name := range triggerEventOrder {
+		if _, ok := triggerAmounts[name]; !ok {
+			t.Errorf("%q is offered but has no magic amount", name)
+		}
+	}
+}
+
+// The help text exists so nobody has to guess what --amount would override.
+func TestTriggerSupportedListPairsEveryEventWithItsAmount(t *testing.T) {
+	t.Parallel()
+
+	lines := strings.Split(triggerSupportedList(), "\n")
+	if len(lines) != len(triggerEventOrder) {
+		t.Fatalf("supported list has %d lines, want %d:\n%s", len(lines), len(triggerEventOrder), triggerSupportedList())
+	}
+
+	for i, name := range triggerEventOrder {
+		fields := strings.Fields(lines[i])
+		if len(fields) != 2 || fields[0] != name {
+			t.Fatalf("line %d = %q, want %q and its amount", i, lines[i], name)
+		}
+
+		amount, err := strconv.ParseInt(fields[1], 10, 64)
+		if err != nil {
+			t.Fatalf("line %d = %q: amount is not a number: %v", i, lines[i], err)
+		}
+
+		if amount != triggerAmounts[name] {
+			t.Errorf("%s is documented as %d, the CLI sends %d", name, amount, triggerAmounts[name])
+		}
 	}
 }

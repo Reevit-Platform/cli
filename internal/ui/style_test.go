@@ -442,3 +442,61 @@ func TestNoBareReset(t *testing.T) {
 		t.Errorf("Bold(\"\") = %q, want empty", got)
 	}
 }
+
+// Tabular data has no room for a glyph in every cell, so the colour-only
+// methods exist — but they must be the same colours as the glyphs, or a
+// `failed` row and a ✗ line would disagree about what red means.
+func TestTextColoursMatchTheGlyphVocabulary(t *testing.T) {
+	t.Parallel()
+
+	sty := New(Options{Env: []string{"FORCE_COLOR=1", "LANG=en_US.UTF-8"}})
+
+	for _, test := range []struct {
+		name  string
+		text  func(string) string
+		glyph func(string) string
+	}{
+		{name: "success", text: sty.SuccessText, glyph: sty.Success},
+		{name: "failure", text: sty.FailureText, glyph: sty.Failure},
+		{name: "warning", text: sty.WarningText, glyph: sty.Warning},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			painted := test.text("done")
+
+			codes, _, ok := strings.Cut(strings.TrimPrefix(painted, "\x1b["), "m")
+			if !ok {
+				t.Fatalf("%q carries no SGR sequence", painted)
+			}
+
+			if !strings.HasPrefix(test.glyph(""), "\x1b["+codes+"m") {
+				t.Errorf("text colour %q does not match the glyph's %q", codes, test.glyph(""))
+			}
+
+			// No glyph, and no space where a glyph used to be: the cell is
+			// the value, padded by the caller.
+			if painted != "\x1b["+codes+"m"+"done"+"\x1b[0m" {
+				t.Errorf("painted = %q, want the value and nothing else", painted)
+			}
+		})
+	}
+}
+
+// NO_COLOR has to reach the table too, or a piped `payments list` grows
+// escapes that every downstream grep has to strip.
+func TestTextColoursRespectNoColor(t *testing.T) {
+	t.Parallel()
+
+	sty := New(Options{Env: []string{"NO_COLOR=1"}, IsTerminal: true})
+
+	for name, got := range map[string]string{
+		"SuccessText": sty.SuccessText("succeeded"),
+		"FailureText": sty.FailureText("failed"),
+		"WarningText": sty.WarningText("pending"),
+	} {
+		if strings.Contains(got, "\x1b") {
+			t.Errorf("%s = %q, want no escapes under NO_COLOR", name, got)
+		}
+	}
+}
