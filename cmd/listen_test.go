@@ -725,3 +725,227 @@ func TestListenOpensWithAHeaderThenTheReadyLine(t *testing.T) {
 		t.Errorf("stdout = %q, want only forwarded-event lines", stdout.String())
 	}
 }
+
+// jsonForwarderCommand is a forwarder host with --json already set. The real
+// flag is persistent on the root; a bare cobra.Command has no flags at all,
+// which is how every other forwarder test gets the human rendering.
+func jsonForwarderCommand(stdout, stderr io.Writer) *cobra.Command {
+	command := &cobra.Command{}
+	command.Flags().Bool("json", true, "")
+	command.SetOut(stdout)
+	command.SetErr(stderr)
+	command.SetContext(context.Background())
+
+	return command
+}
+
+// NDJSON means one object per line and nothing else on the stream. A consumer
+// reads this with `while read -r line; do ... done`, so a wrapped line, a
+// blank line or a stray human line breaks the loop rather than the parse.
+func TestListenEmitsOneJSONObjectPerDelivery(t *testing.T) {
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer local.Close()
+
+	var stdout, stderr bytes.Buffer
+
+	f := newEventForwarder(local.URL, "whsec_test",
+		jsonForwarderCommand(&stdout, &stderr), ui.Styler{}, ui.Styler{}, local.Client())
+
+	for _, event := range []string{"payment.succeeded", "payment.failed", "refund.created"} {
+		f.handle(api.SSEEvent{Type: event, Data: `{"event":"` + event + `","data":{"id":"pay_1"}}`})
+	}
+
+	lines := strings.Split(strings.TrimSuffix(stdout.String(), "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("stdout has %d lines, want one per delivery:\n%s", len(lines), stdout.String())
+	}
+
+	seen := map[string]bool{}
+
+	for i, line := range lines {
+		var doc listenEventDocument
+		if err := json.Unmarshal([]byte(line), &doc); err != nil {
+			t.Fatalf("line %d is not JSON (%v): %s", i, err, line)
+		}
+
+		if doc.Schema != schemaListenEvent {
+			t.Errorf("line %d schema = %q, want %q", i, doc.Schema, schemaListenEvent)
+		}
+
+		if doc.Status == nil || *doc.Status != http.StatusOK {
+			t.Errorf("line %d status = %v, want 200", i, doc.Status)
+		}
+
+		// null, not omitted: a consumer that branches on `.error` must not
+		// have to tell "absent" from "no error".
+		if doc.Error != nil {
+			t.Errorf("line %d error = %q, want null on a 2xx", i, *doc.Error)
+		}
+
+		if _, err := time.Parse(time.RFC3339, doc.Time); err != nil {
+			t.Errorf("line %d time = %q, want RFC 3339: %v", i, doc.Time, err)
+		}
+
+		// The delivery id is what a handler dedupes on, so two events in one
+		// run sharing one would make the second look like a replay.
+		if doc.DeliveryID == "" || seen[doc.DeliveryID] {
+			t.Errorf("line %d delivery_id = %q, want a fresh one", i, doc.DeliveryID)
+		}
+
+		seen[doc.DeliveryID] = true
+	}
+
+	// The human column layout would corrupt the same stream it shares.
+	if strings.Contains(stdout.String(), "ms\n") && !strings.Contains(stdout.String(), `"duration_ms"`) {
+		t.Errorf("stdout still carries the human line:\n%s", stdout.String())
+	}
+}
+
+// A handler that is not running is the single most common thing `listen`
+// reports. Dropping those deliveries from the JSON would make the log agree
+// with a successful run.
+func TestListenJSONReportsAFailedForwardWithANullStatus(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	// Port 1 is reserved and never listening.
+	f := newEventForwarder("http://127.0.0.1:1", "whsec_test",
+		jsonForwarderCommand(&stdout, &stderr), ui.Styler{}, ui.Styler{}, &http.Client{Timeout: 2 * time.Second})
+
+	f.handle(api.SSEEvent{Type: "payment.succeeded", Data: `{"event":"payment.succeeded"}`})
+
+	var doc listenEventDocument
+	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout.String())), &doc); err != nil {
+		t.Fatalf("stdout is not one JSON object (%v): %q", err, stdout.String())
+	}
+
+	if doc.Status != nil {
+		t.Errorf("status = %d, want null — nothing answered", *doc.Status)
+	}
+
+	if doc.Error == nil || *doc.Error == "" {
+		t.Fatalf("error = %v, want the transport failure", doc.Error)
+	}
+
+	if doc.Type != "payment.succeeded" {
+		t.Errorf("type = %q, want the event named even when it never left", doc.Type)
+	}
+
+	// The human sentence keeps its own wording on stderr; --json adds a line
+	// to stdout rather than moving the explanation.
+	if !strings.Contains(stderr.String(), "forward failed") {
+		t.Errorf("stderr = %q, want the human failure line untouched", stderr.String())
+	}
+}
+
+// stdout is what a script redirects into a file. The event body is the only
+// part of a delivery that can hold customer data, and the signing secret is
+// the one string that must never be written down by accident.
+func TestListenJSONCarriesNeitherTheBodyNorTheSecret(t *testing.T) {
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer local.Close()
+
+	var stdout, stderr bytes.Buffer
+
+	const secret = "whsec_local_do_not_log_me"
+
+	f := newEventForwarder(local.URL, secret,
+		jsonForwarderCommand(&stdout, &stderr), ui.Styler{}, ui.Styler{}, local.Client())
+
+	f.handle(api.SSEEvent{
+		Type: "payment.succeeded",
+		Data: `{"event":"payment.succeeded","data":{"customer_email":"ama@example.com","amount":4500}}`,
+	})
+
+	for _, leak := range []string{secret, "ama@example.com", "customer_email"} {
+		if strings.Contains(stdout.String(), leak) {
+			t.Errorf("stdout leaks %q:\n%s", leak, stdout.String())
+		}
+	}
+}
+
+// The ready line is the machine twin of "Connected — waiting for test-mode
+// events": without it, a consumer cannot tell an idle stream from a hung one.
+// It names where the secret came from, because a handler rejecting every
+// event is nearly always verifying against a different one — and it must do
+// that without printing the secret onto the stream being logged.
+func TestListenReadyLineNamesTheSecretSourceNotTheSecret(t *testing.T) {
+	stream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/webhooks/config") {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"code":"insufficient_scope","message":"missing webhooks:read"}`))
+
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer stream.Close()
+
+	resetFlags()
+	t.Cleanup(resetFlags)
+
+	t.Setenv("REEVIT_CONFIG", filepath.Join(t.TempDir(), "config.json"))
+	t.Setenv("REEVIT_API_KEY", "pfk_test_ready.sec")
+	t.Setenv("REEVIT_API_URL", stream.URL)
+	t.Setenv("REEVIT_MODE", "")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var stdout, stderr lockedBuffer
+
+	done := make(chan error, 1)
+
+	go func() {
+		done <- ExecuteWith(ctx,
+			[]string{"listen", "--json", "--forward-to", "http://127.0.0.1:1"},
+			strings.NewReader(""), &stdout, &stderr)
+	}()
+
+	deadline := time.After(10 * time.Second)
+
+	for stdout.String() == "" {
+		select {
+		case err := <-done:
+			t.Fatalf("listen returned early: %v", err)
+		case <-deadline:
+			t.Fatalf("no ready line; stdout:\n%s\nstderr:\n%s", stdout.String(), stderr.String())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	cancel()
+	<-done
+
+	var ready listenReadyDocument
+	if err := json.Unmarshal([]byte(strings.SplitN(stdout.String(), "\n", 2)[0]), &ready); err != nil {
+		t.Fatalf("first stdout line is not the ready object (%v):\n%s", err, stdout.String())
+	}
+
+	if ready.Schema != schemaListenReady {
+		t.Errorf("schema = %q, want %q", ready.Schema, schemaListenReady)
+	}
+
+	if ready.ForwardTo != "http://127.0.0.1:1" {
+		t.Errorf("forward_to = %q, want the target", ready.ForwardTo)
+	}
+
+	if ready.SecretSource != "ephemeral" {
+		t.Errorf("secret_source = %q, want ephemeral on a scope refusal", ready.SecretSource)
+	}
+
+	// The ephemeral secret is on stderr, where the user needs to copy it —
+	// and nowhere near the stream a script is piping to a file.
+	if strings.Contains(stdout.String(), "whsec_local_") {
+		t.Errorf("stdout carries the ephemeral secret:\n%s", stdout.String())
+	}
+
+	if !strings.Contains(stderr.String(), "whsec_local_") {
+		t.Errorf("stderr = %q, want the ephemeral secret still shown to the human", stderr.String())
+	}
+}
