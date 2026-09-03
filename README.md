@@ -322,7 +322,8 @@ Mono, SF Mono, Menlo, Cascadia Code, or Fira Code.
 stdout carries data — the payments table, `listen`'s per-event lines, the
 `--dry-run` plan, the payment id from `trigger`. Everything else (prompts,
 progress, warnings, errors, and the whole of `doctor`'s diagnosis) goes to
-stderr, so `reevit doctor > report.txt` still shows you the verdict.
+stderr, so `reevit doctor > report.txt` still shows you the verdict. For
+machine-readable stdout, see [Scripting](#scripting---json-and---quiet).
 
 | Exit code | Meaning |
 | --- | --- |
@@ -331,6 +332,68 @@ stderr, so `reevit doctor > report.txt` still shows you the verdict.
 | `2` | usage error — an unknown flag or the wrong number of arguments |
 | `3` | `reevit doctor` found problems (the command itself worked) |
 | `130` | cancelled with Ctrl-C |
+
+### Scripting: `--json` and `--quiet`
+
+Every read command takes `--json`. The document goes to **stdout**, one per
+run, and nothing else shares that stream — progress, warnings and errors stay
+on stderr, so a failed run still explains itself while `jq` gets clean input.
+
+```bash
+# every failing check, as a list of sentences
+reevit doctor --json | jq -r '.sections[].checks[] | select(.status=="fail") | .message'
+
+# the commands that would fix them
+reevit doctor --json | jq -r '.sections[].checks[] | select(.remedy) | .remedy'
+
+# the ids of every succeeded payment
+reevit payments list --json | jq -r '.data[] | select(.status=="succeeded") | .id'
+
+# the payment a trigger created
+reevit trigger payment.succeeded --json | jq -r .payment_id
+
+# where login put the credential
+reevit login --key - --json | jq -r .config_path
+```
+
+`listen` is the exception: it never ends, so it emits **NDJSON** — one object
+per line, starting with a `ready` line and then one line per delivery.
+
+```bash
+reevit listen --json --forward-to http://localhost:3000/api/webhooks/reevit \
+  | jq -r 'select(.schema | endswith("event.v1")) | select(.status != 200) | .type'
+```
+
+| Schema | Emitted by |
+| --- | --- |
+| `reevit.cli.payments.list.v1` | `payments list --json` |
+| `reevit.cli.doctor.v1` | `doctor --json` (exit code is still `3` on problems) |
+| `reevit.cli.listen.ready.v1` | `listen --json`, first line |
+| `reevit.cli.listen.event.v1` | `listen --json`, one per delivery |
+| `reevit.cli.trigger.v1` | `trigger --json` |
+| `reevit.cli.login.v1` | `login --json` |
+
+**The versioning promise.** Within a `.v1` schema, fields are only ever
+**added**. Renaming or removing one means a `.v2` string, so `select(.schema
+== "reevit.cli.doctor.v1")` is a safe guard rather than a brittle one. Branch
+on the schema, not on the CLI's version number — that moves for unrelated
+reasons.
+
+What the documents never contain: your API key, the webhook signing secret, or
+a forwarded event's body. `listen --json` reports `secret_source`
+(`flag`/`env`/`account`/`ephemeral`) rather than the secret, and `login --json`
+reports `config_path` rather than the key it just saved. stdout is what gets
+redirected into a CI log.
+
+`--quiet` (`-q`) is the other half: it trims the conversation on stderr —
+progress, hints, "saved to …" confirmations — and keeps everything that
+reports a problem. Warnings, errors and every `doctor` finding still print;
+`--quiet` asks for less narration, not for less truth. The two flags are
+independent and can be combined.
+
+One thing neither flag suppresses: the first-run telemetry notice. It is a
+one-time disclosure, not chatter, and it is printed to stderr where it cannot
+corrupt a JSON document. Opt out with `REEVIT_TELEMETRY=0` or `DO_NOT_TRACK=1`.
 
 ## Credential handling
 
