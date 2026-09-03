@@ -645,6 +645,22 @@ func TestListenOpensWithAHeaderThenTheReadyLine(t *testing.T) {
 	t.Setenv("REEVIT_API_URL", stream.URL)
 	t.Setenv("REEVIT_MODE", "")
 
+	// This test runs the real ExecuteWith, so the glyph vocabulary is resolved
+	// from the process locale (internal/ui.utf8Locale). Asserting on a glyph
+	// without pinning the locale asserts on the developer's environment: this
+	// test was written on a machine with LC_ALL, LC_CTYPE and LANG all empty,
+	// so it snapshotted the ASCII stand-in and then failed on every CI runner,
+	// which sets LANG=C.UTF-8. Pin it to UTF-8, as golden_test.go does, so the
+	// assertion names the glyph a user actually sees.
+	//
+	// Empty is equivalent to unset for both checks — utf8Locale skips empty
+	// values, and TERM="" is not "dumb" — so t.Setenv suffices and the cleanup
+	// is automatic.
+	t.Setenv("LC_ALL", "")
+	t.Setenv("LC_CTYPE", "")
+	t.Setenv("LANG", "en_US.UTF-8")
+	t.Setenv("TERM", "")
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -679,7 +695,7 @@ func TestListenOpensWithAHeaderThenTheReadyLine(t *testing.T) {
 		"\nReevit listen\n",
 		"  Forwarding to   http://127.0.0.1:1\n",
 		"  Signing with    the --signing-secret you passed\n",
-		"ok Connected — waiting for test-mode events (Ctrl-C to stop)\n",
+		"✓ Connected — waiting for test-mode events (Ctrl-C to stop)\n",
 	} {
 		if !strings.Contains(transcript, want) {
 			t.Errorf("stderr is missing %q:\n%s", want, transcript)
