@@ -104,14 +104,17 @@ Start here: reevit login → reevit init → reevit doctor.`,
 			return nil
 		}
 
-		// TODO(032): --json makes stderr part of a machine-readable
-		// contract for some commands; skip the notice when it is set. The
-		// flag does not exist yet, so this looks it up rather than reading
-		// a variable that would have to be declared here first.
-		if json := cmd.Flags().Lookup("json"); json != nil && json.Value.String() == "true" {
-			return nil
-		}
-
+		// Do NOT gate this on --json (032). It looks tempting and it is a
+		// silent-tracking hole: telemetry.Report mints and persists the
+		// machine id on its own, so skipping the notice skips the
+		// disclosure without skipping the collection. Worse, the notice is
+		// keyed on the id being empty, so a user whose first-ever run
+		// carried --json would be tracked from that run onwards and never
+		// be told, on any later run either.
+		//
+		// There is also nothing to fix: --json is a promise about stdout,
+		// and this writes to stderr. A --json consumer parses stdout and
+		// never sees these four lines.
 		sty := styleOf(cmd).err
 		telemetry.EnsureNotice(cmd.ErrOrStderr(), sty.Note, sty.Dim)
 
