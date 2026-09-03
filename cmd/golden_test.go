@@ -571,6 +571,17 @@ func goldenCases() []goldenCase {
 			env:    map[string]string{"REEVIT_API_KEY": testKey},
 			server: paymentsServer(http.StatusOK, `[]`),
 		},
+		// A bare `[]` decodes to a non-nil empty slice, so the case above
+		// cannot prove the null guard. This one can: Go's encoding/json
+		// renders a nil []T as `null`, which is exactly what an envelope
+		// endpoint with no rows sends.
+		{
+			name: "payments-list-null-json",
+			args: []string{"payments", "list", "--json"},
+			env:  map[string]string{"REEVIT_API_KEY": testKey},
+			server: paymentsServer(http.StatusOK,
+				`{"data":null,"pagination":{"total":0,"limit":20,"offset":0}}`),
+		},
 		{
 			name: "payments-list-forbidden",
 			args: []string{"payments", "list"},
@@ -890,6 +901,19 @@ func TestGoldenStreamsAreSeparate(t *testing.T) {
 
 		if got := readGolden(t, "payments-list-forbidden-quiet.stderr"); !strings.Contains(got, "insufficient_scope") {
 			t.Errorf("stderr = %q, want --quiet to leave the failure intact", got)
+		}
+	})
+
+	// `jq '.data[]'` on a null is an error, not an empty result. A consumer
+	// should not have to write `.data // [] | .[]` because the CLI passed a
+	// nil slice straight through Go's encoder.
+	t.Run("an empty --json list is [] and never null", func(t *testing.T) {
+		for _, file := range []string{"payments-list-empty-json.stdout", "payments-list-null-json.stdout"} {
+			got := readGolden(t, file)
+
+			if !strings.Contains(got, `"data":[]`) {
+				t.Errorf("%s = %s, want \"data\":[] — a null breaks `jq '.data[]'`", file, got)
+			}
 		}
 	})
 
