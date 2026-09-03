@@ -1,0 +1,17 @@
+Subscribes to your account's live test-mode event stream and forwards each
+event to your local endpoint, signed exactly like production webhooks
+(X-Reevit-Signature: sha256=<hex HMAC-SHA256 of the raw body>), so your
+verification code runs unchanged.
+
+The signing secret comes from --signing-secret, then the current project's
+REEVIT_WEBHOOK_SECRET, then your webhook configuration. Only the final
+fallback is ephemeral.
+
+Usage:
+  reevit listen --forward-to <url> [flags]
+
+Flags:
+      --forward-to string       local endpoint to POST events to (required)
+  -h, --help                    help for listen
+      --secret string           override the signing secret
+      --signing-secret string   override the signing secret

@@ -1,0 +1,9 @@
+List recent payments (current mode)
+
+Usage:
+  reevit payments list [flags]
+
+Flags:
+  -h, --help            help for list
+      --limit int       max rows (default 20)
+      --status string   filter by status (succeeded, failed, pending, ...)

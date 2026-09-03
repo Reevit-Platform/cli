@@ -2,8 +2,10 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -55,11 +57,55 @@ var rootCmd = &cobra.Command{
 func Execute() error {
 	start := time.Now()
 
-	executed, err := rootCmd.ExecuteC()
+	executed, err := executeWith(
+		context.Background(), os.Args[1:], os.Stdin, os.Stdout, os.Stderr,
+	)
 
 	telemetry.Report(topLevelName(executed), Version, err == nil, time.Since(start), os.Stderr)
 
 	return err
+}
+
+// ExecuteWith runs the CLI against explicit stdio. Tests use it to capture
+// stdout and stderr separately; Execute wires it to the real process.
+//
+// cobra resolves every print site's writer through OutOrStdout/ErrOrStderr,
+// which falls back to the parent command, so setting the streams on the root
+// is enough for the whole tree — provided no subcommand has a writer of its
+// own left over from an earlier test (see resetFlags in golden_test.go).
+func ExecuteWith(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer) error {
+	_, err := executeWith(ctx, args, in, out, errOut)
+
+	return err
+}
+
+// executeWith also returns the command that actually ran, which Execute needs
+// for its telemetry event.
+func executeWith(
+	ctx context.Context, args []string, in io.Reader, out, errOut io.Writer,
+) (*cobra.Command, error) {
+	rootCmd.SetArgs(args)
+	rootCmd.SetIn(in)
+	rootCmd.SetOut(out)
+	rootCmd.SetErr(errOut)
+
+	return rootCmd.ExecuteContextC(ctx)
+}
+
+// renderError formats the error of a failed run the way the process itself
+// prints it (main.go), including the trailing newline. It is a package-level
+// variable so the golden tests capture exactly what a user sees on stderr and
+// a later restyle can replace the presentation in one place.
+var renderError = func(err error) string {
+	if err == nil {
+		return ""
+	}
+
+	if ExitCode(err) == 130 {
+		return err.Error() + "\n"
+	}
+
+	return "error: " + err.Error() + "\n"
 }
 
 // topLevelName resolves the first-level subcommand a run belongs to, so

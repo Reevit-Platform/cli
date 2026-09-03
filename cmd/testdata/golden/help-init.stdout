@@ -1,0 +1,32 @@
+Detects your stack, logs you in if needed (browser pairing, test-mode
+key), installs the matching Reevit SDK, wires REEVIT_* environment variables,
+and writes integration starter files — a webhook handler, a checkout
+component, or a server-side client, depending on the project.
+
+Existing files are preserved by default. Interactive setup can replace
+generated integration files after creating a backup. Checkout can optionally
+be inserted into an existing page using an idempotent marked block.
+
+Usage:
+  reevit init [flags]
+
+Flags:
+      --accessible                  use screen-reader-friendly prompts
+      --checkout-fields strings     fields to collect: amount (or price), name, email, phone, reference
+      --checkout-metadata strings   custom metadata fields to collect for payments and workflows
+      --checkout-page string        existing page where checkout should be added; use - for standalone
+      --checkout-path string        custom output path for the checkout component
+      --client-path string          custom output path for the server client
+      --dry-run                     print what would happen without writing anything
+      --fresh                       replace generated integration files and rotate project test credentials
+      --goal string                 setup goal: auto, full, checkout, webhook, or server (default "auto")
+  -h, --help                        help for init
+      --keep-logs                   keep successful setup logs
+      --origin string               local checkout origin (defaults to the detected framework port)
+      --overwrite                   replace generated integration files after backing them up
+      --register-webhook string     register this production webhook endpoint in your dashboard
+      --rotate-test-keys            replace project test credentials after local secrets were lost
+      --target strings              what to scaffold (webhook, checkout, client) — skips the prompt
+      --verbose                     stream package-manager output
+      --webhook-path string         custom output path for the webhook handler
+  -y, --yes                         scaffold everything available without prompting

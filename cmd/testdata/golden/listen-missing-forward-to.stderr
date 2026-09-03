@@ -1,0 +1,1 @@
+error: --forward-to is required, e.g. --forward-to http://localhost:3000/webhooks

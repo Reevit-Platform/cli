@@ -1,0 +1,18 @@
+
+Reevit setup
+
+Found Next.js · TypeScript · App Router · pnpm
+
+Dry run — would do the following:
+  • pnpm add @reevit/node
+    install the SDK selected for this project
+  • create or reuse scoped project test credentials
+    keep the account login credential out of application code
+  • ensure the sandbox simulator is ready
+    make the generated integration testable immediately
+  + .env.local and .env.example
+    wire separate server, browser, organization, and webhook values
+  + app/api/webhooks/reevit/route.ts
+    Webhook handler (app/api/webhooks/reevit)
+  • verify the generated project credentials against the sandbox
+    do not report success until the platform accepts the new credentials

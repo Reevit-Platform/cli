@@ -1,0 +1,20 @@
+Verifies the whole local setup: your CLI credentials against the API, the
+project's env wiring, the installed SDK, and — when your dev server is
+running — that your webhook handler accepts a correctly signed event AND
+rejects a tampered one.
+
+Webhook check:
+  reevit doctor --webhook-url http://localhost:3000/api/webhooks/reevit
+
+It signs a synthetic event with the REEVIT_WEBHOOK_SECRET from your env file,
+so the check proves your handler's signature verification end to end.
+
+Usage:
+  reevit doctor [flags]
+
+Flags:
+      --app-url string       your running checkout demo URL, e.g. http://localhost:3000/reevit-demo
+      --e2e                  also fire a REAL sandbox payment through the simulator and deliver the resulting platform event to --webhook-url
+  -h, --help                 help for doctor
+      --strict               treat warnings as failures (useful in CI)
+      --webhook-url string   your running app's webhook endpoint, e.g. http://localhost:3000/api/webhooks/reevit
