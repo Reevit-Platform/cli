@@ -126,8 +126,44 @@ history. Keys are stored in your user config with owner-only permissions.`,
 		fmt.Fprintln(out, sty.Success(fmt.Sprintf("Key accepted (%s mode)", saved.Mode)))
 		fmt.Fprintln(out, "  "+sty.Note("saved to "+shortenHome(p)))
 
+		if jsonOut, _ := outputMode(cmd); jsonOut {
+			// The reduced form: this path knows the key and the mode derived
+			// from it, and nothing else. org_id, org_name, key_name and
+			// scopes are omitted rather than emitted as null or "" — a
+			// consumer must be able to tell "the CLI does not know" from "the
+			// org has no name".
+			return emitJSON(cmd, loginDocument{
+				Schema:     schemaLogin,
+				Method:     "key",
+				Mode:       saved.Mode,
+				ConfigPath: p,
+			})
+		}
+
 		return nil
 	},
+}
+
+// loginDocument is `reevit login --json`, for both paths.
+//
+// The API key is not in it and never will be: the whole point of the browser
+// flow is that the key is never copy-pasted, and putting it on stdout would
+// walk it straight into a CI log. `config_path` is the answer to the only
+// question a script has afterwards — where to find the credential it just
+// created.
+//
+// The omitempty fields are the ones only the browser path learns. The `--key`
+// path omits them rather than sending nulls, so `.org_id // "unknown"` in jq
+// does what it looks like it does.
+type loginDocument struct {
+	Schema     string   `json:"schema"`
+	Method     string   `json:"method"`
+	Mode       string   `json:"mode"`
+	OrgID      string   `json:"org_id,omitempty"`
+	OrgName    string   `json:"org_name,omitempty"`
+	KeyName    string   `json:"key_name,omitempty"`
+	Scopes     []string `json:"scopes,omitempty"`
+	ConfigPath string   `json:"config_path"`
 }
 
 // readKeyFromStdin reads one line (the API key) from the command's stdin.

@@ -153,6 +153,33 @@ func browserLogin(cmd *cobra.Command, openBrowser bool) error {
 		fmt.Fprintln(progress, sty.Command("cd your-project && reevit init"))
 	}
 
+	// Guarded by the command name for the same reason the block above is:
+	// `init` calls this flow when it finds no credential, and a login
+	// document appearing in the middle of `init --json` would be a second,
+	// unannounced schema on a stream that promises one document per run.
+	// `init --json` is a follow-up, not this plan.
+	if jsonOut, _ := outputMode(cmd); jsonOut && cmd.Name() == "login" {
+		doc := loginDocument{
+			Schema:     schemaLogin,
+			Method:     "browser",
+			Mode:       saved.Mode,
+			KeyName:    result.APIKey.Name,
+			Scopes:     result.APIKey.Scopes,
+			ConfigPath: p,
+		}
+
+		// orgName above falls back to "your organization" for the sentence on
+		// screen. That is copy, not data: a script must not read it as the
+		// name of an org, so the document carries what the server sent or
+		// nothing at all.
+		if result.Org != nil {
+			doc.OrgID = result.Org.ID
+			doc.OrgName = result.Org.Name
+		}
+
+		return emitJSON(cmd, doc)
+	}
+
 	return nil
 }
 

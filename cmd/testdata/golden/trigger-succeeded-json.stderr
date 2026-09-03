@@ -1,0 +1,6 @@
+> Using the sandbox simulator
+ok Triggered payment.succeeded
+  - payment pay_01JQTEST created through the sandbox simulator (status: pending)
+  - the outcome resolves asynchronously; watch it land with:
+    reevit listen --forward-to http://localhost:3000/api/webhooks/reevit
+    reevit payments list

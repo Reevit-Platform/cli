@@ -115,12 +115,42 @@ Supported events, with the magic amount each one uses:
 		fmt.Fprintln(notice, sty.err.Command("reevit listen --forward-to "+localWebhookURL()))
 		fmt.Fprintln(notice, sty.err.Command("reevit payments list"))
 
+		if jsonOut, _ := outputMode(cmd); jsonOut {
+			return emitJSON(cmd, triggerDocument{
+				Schema:    schemaTrigger,
+				Event:     event,
+				PaymentID: paymentID,
+				Status:    status,
+				Amount:    amount,
+				Currency:  strings.ToUpper(triggerCurrency),
+			})
+		}
+
 		// stdout carries the id and nothing else, so `id=$(reevit trigger …)`
 		// is a working idiom rather than a string to parse.
 		fmt.Fprintln(cmd.OutOrStdout(), paymentID)
 
 		return nil
 	},
+}
+
+// triggerDocument is `reevit trigger --json`.
+//
+// `amount` is the amount actually sent, not the one the event maps to: with
+// --amount the two differ, and the simulator branches on what was sent. A
+// script reconciling this against the dashboard needs the number that was
+// charged, and the human path only warns about the difference in prose.
+//
+// `status` is the intent's status at creation — almost always "pending",
+// because the outcome resolves asynchronously. It is here so a consumer does
+// not read the absence of a field as "succeeded".
+type triggerDocument struct {
+	Schema    string `json:"schema"`
+	Event     string `json:"event"`
+	PaymentID string `json:"payment_id"`
+	Status    string `json:"status"`
+	Amount    int64  `json:"amount"`
+	Currency  string `json:"currency"`
 }
 
 // isMagicAmount reports whether an amount still drives a simulator outcome.

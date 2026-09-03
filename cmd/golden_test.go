@@ -605,6 +605,40 @@ func goldenCases() []goldenCase {
 			args:   []string{"login", "-q", "--key", testKey},
 			server: paymentsServer(http.StatusOK, `[]`),
 		},
+
+		// Both login paths, because they emit different documents: --key
+		// knows the key and the mode it implies, the browser flow is handed
+		// an org, a key name and a scope list. Neither ever carries the key.
+		{
+			name:   "login-key-saved-json",
+			args:   []string{"login", "--json", "--key", testKey},
+			server: paymentsServer(http.StatusOK, `[]`),
+		},
+		{
+			name: "login-browser-approved-json",
+			args: []string{"login", "--json", "--no-browser"},
+			server: func(t *testing.T) *httptest.Server {
+				return pairingServer(t, []string{"pending", "approved"})
+			},
+		},
+
+		// trigger twice: the plain outcome, and the one where --amount
+		// overrides the magic value. The document reports the amount actually
+		// sent, which is the only number that explains what the simulator did.
+		{
+			name:   "trigger-succeeded-json",
+			args:   []string{"trigger", "--json", "payment.succeeded"},
+			env:    map[string]string{"REEVIT_API_KEY": testKey},
+			dir:    func(t *testing.T) string { return t.TempDir() },
+			server: func(t *testing.T) *httptest.Server { return triggerStubAPI(t, nil) },
+		},
+		{
+			name:   "trigger-amount-override-json",
+			args:   []string{"trigger", "--json", "payment.succeeded", "--amount", "1234"},
+			env:    map[string]string{"REEVIT_API_KEY": testKey},
+			dir:    func(t *testing.T) string { return t.TempDir() },
+			server: func(t *testing.T) *httptest.Server { return triggerStubAPI(t, nil) },
+		},
 		{
 			name: "payments-list-forbidden-quiet",
 			args: []string{"payments", "list", "--quiet"},
@@ -1036,6 +1070,84 @@ func TestGoldenStreamsAreSeparate(t *testing.T) {
 
 		if !strings.Contains(got, "2 problems, 3 warnings.") {
 			t.Errorf("stderr = %q, want the verdict — the exit code alone says how many", got)
+		}
+	})
+
+	// The browser flow exists so a key is never copy-pasted. Printing it on
+	// stdout under --json would put it in the CI log of every pipeline that
+	// logs in, which is worse than the copy-paste it replaced.
+	t.Run("no login document carries the key", func(t *testing.T) {
+		for _, name := range []string{"login-key-saved-json", "login-browser-approved-json"} {
+			var doc loginDocument
+
+			got := readGolden(t, name+".stdout")
+			if err := json.Unmarshal([]byte(got), &doc); err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+
+			// The real key each fixture hands over, plus the shared secret
+			// suffix — a document that leaked a truncated key would still
+			// be a leak.
+			for _, secret := range []string{"pfk_test_ok.sec", "pfk_test_abc.sec", ".sec"} {
+				if strings.Contains(got, secret) {
+					t.Errorf("%s stdout carries a key fragment %q:\n%s", name, secret, got)
+				}
+			}
+
+			if doc.ConfigPath == "" {
+				t.Errorf("%s config_path is empty — a script has no way to find the credential", name)
+			}
+		}
+
+		// The --key path knows no org, so it omits the field rather than
+		// sending "" — `.org_id // "unknown"` must not resolve to "".
+		if strings.Contains(readGolden(t, "login-key-saved-json.stdout"), "org_id") {
+			t.Error("the --key document invents an org_id it never learned")
+		}
+
+		if !strings.Contains(readGolden(t, "login-browser-approved-json.stdout"), `"org_id":"org_1"`) {
+			t.Error("the browser document dropped the org the pairing returned")
+		}
+
+		// --no-browser under --json still has to show the code and the URL.
+		// Pairing cannot complete without a human reading them, and stdout is
+		// blocked until it does — a flag that made the instructions invisible
+		// would turn the flow into a hang.
+		browser := readGolden(t, "login-browser-approved-json.stderr")
+
+		for _, want := range []string{"Pairing code   GX7M-4KP9", "Confirm it at  https://"} {
+			if !strings.Contains(browser, want) {
+				t.Errorf("stderr is missing %q under --json:\n%s", want, browser)
+			}
+		}
+	})
+
+	// --amount discards the outcome the caller asked for, because the
+	// simulator branches on the number. The human path warns in prose; the
+	// document has to carry the number that was actually sent or a script
+	// reconciling against the dashboard will not find the payment it expects.
+	t.Run("trigger reports the amount it sent, not the one the event maps to", func(t *testing.T) {
+		for name, want := range map[string]int64{
+			"trigger-succeeded-json":       4000,
+			"trigger-amount-override-json": 1234,
+		} {
+			var doc triggerDocument
+			if err := json.Unmarshal([]byte(readGolden(t, name+".stdout")), &doc); err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+
+			if doc.Amount != want {
+				t.Errorf("%s amount = %d, want %d", name, doc.Amount, want)
+			}
+
+			if doc.PaymentID == "" || doc.Status == "" {
+				t.Errorf("%s = %+v, want the id and the creation status", name, doc)
+			}
+		}
+
+		// The warning is not narration and stays on stderr even here.
+		if got := readGolden(t, "trigger-amount-override-json.stderr"); !strings.Contains(got, "not a magic amount") {
+			t.Errorf("stderr = %q, want --json to leave the warning intact", got)
 		}
 	})
 
