@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -24,7 +25,42 @@ type Config struct {
 	// minted on first use alongside the one-time notice, never derived from
 	// hardware or user identifiers. See internal/telemetry.
 	TelemetryID string `json:"telemetry_id,omitempty"`
+
+	// UnknownKeys lists keys found in the config file that the CLI does not
+	// recognise. It is diagnostic output, not a setting: `json:"-"` keeps it
+	// out of both directions of serialisation, and it rides on the struct so
+	// the twelve call sites of Load/LoadFile do not each need a new return
+	// value. cmd.PersistentPreRunE reports it once per run.
+	UnknownKeys []string `json:"-"`
 }
+
+// knownKeys is every key LoadFile accepts: the json tags on Config, plus the
+// aliases below. Kept as a literal rather than derived by reflection so that
+// adding a field to Config is a deliberate decision here too — and
+// TestKnownKeysCoversEveryConfigField fails loudly if the two drift apart.
+var knownKeys = map[string]bool{
+	"api_key":      true,
+	"base_url":     true,
+	"mode":         true,
+	"org_id":       true,
+	"org_name":     true,
+	"telemetry_id": true,
+	"api_url":      true, // alias, see aliasBaseURL
+}
+
+// aliasBaseURL is the key we accept as a second spelling of base_url.
+//
+// The CLI names this one setting three ways: the file field is base_url, the
+// environment override is REEVIT_API_URL, and the client's own connection
+// error tells the user to "check your connection or REEVIT_API_URL". Someone
+// following that message writes api_url into the file. encoding/json ignores
+// unknown keys, so BaseURL stayed empty and Load substituted the PRODUCTION
+// default — silently sending traffic meant for a local stub to
+// api.reevit.io. That happened twice during the Round 3 CLI work.
+//
+// Failing open toward the live API is the worst available reading of a typo,
+// so accept the spelling the tool itself teaches.
+const aliasBaseURL = "api_url"
 
 const (
 	DefaultBaseURL = "https://api.reevit.io"
@@ -67,6 +103,35 @@ func LoadFile() (Config, error) {
 	if err := json.Unmarshal(raw, &cfg); err != nil {
 		return cfg, fmt.Errorf("parse %s: %w", p, err)
 	}
+
+	// Re-read the same bytes as a flat object to see what was actually
+	// written, which the struct decode cannot tell us: encoding/json drops
+	// keys it does not know without a word.
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		// A non-object document. The struct decode above would already have
+		// failed, so this is unreachable in practice; return what we have
+		// rather than inventing a second error for the same file.
+		return cfg, nil
+	}
+
+	if cfg.BaseURL == "" {
+		if v, ok := probe[aliasBaseURL]; ok {
+			var s string
+			if json.Unmarshal(v, &s) == nil {
+				cfg.BaseURL = strings.TrimSpace(s)
+			}
+		}
+	}
+
+	for key := range probe {
+		if !knownKeys[key] {
+			cfg.UnknownKeys = append(cfg.UnknownKeys, key)
+		}
+	}
+
+	// Map iteration is random and this string reaches the user's terminal.
+	sort.Strings(cfg.UnknownKeys)
 
 	return cfg, nil
 }
