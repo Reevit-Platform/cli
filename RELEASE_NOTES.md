@@ -37,6 +37,28 @@ To retain generated sources and dependency locks for independent review, set
 external checks. Without that variable, the fixtures use temporary directories
 that Go removes after the test run.
 
+The release now includes Windows ARM64, matching the platforms already declared
+by the npm wrapper. Verify all six platform archives and the actual packed npm
+installer before tagging:
+
+```sh
+goreleaser check
+node scripts/prepare-release.cjs /absolute/path/to/a-new-artifact-directory
+```
+
+This uses a local GoReleaser snapshot with version 0.7.2, builds macOS, Linux,
+and Windows archives for both architectures, and runs the packed install script
+with local archive responses. The generated checksums and executable build
+metadata are checked for every target; `--version` runs on the host's native
+target. Other platform binaries are cross-compiled, so their terminal behavior
+still needs native smoke testing. `release-evidence.json` records the source
+commit, archive fingerprints, and whether the checkout was dirty. Use a clean
+committed checkout for the final review artifact. Existing output directories
+are rejected; this command never creates a tag or publishes anything.
+
+Local checks on October 4, 2026 passed for all six packed installs, including
+Windows ARM64, with native macOS ARM64 reporting `reevit version 0.7.2`.
+
 Follow the repository's releasing instructions after reviewing the complete
 changes since 0.7.1. Tagging publishes GitHub binaries, Homebrew, and npm;
 none of those publishing actions are part of this preparation.

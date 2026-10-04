@@ -20,6 +20,10 @@ jobs:
         with:
           go-version: "1.24.2"
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
       - uses: pnpm/action-setup@v4
         with:
           version: "10.33.0"
@@ -33,7 +37,15 @@ jobs:
 
       - uses: goreleaser/goreleaser-action@v6
         with:
-          version: "~> v2"
+          version: "v2.18.2"
+          install-only: true
+
+      - name: Verify all advertised platforms against the packed npm installer
+        run: node scripts/prepare-release.cjs "$RUNNER_TEMP/cli-release-artifacts"
+
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "v2.18.2"
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
