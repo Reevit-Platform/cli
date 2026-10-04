@@ -131,3 +131,16 @@ jobs:
           install-only: true
       - name: Verify all advertised platforms against the packed npm installer
         run: node scripts/prepare-release.cjs "$RUNNER_TEMP/cli-release-artifacts"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-release-artifacts
+          path: |
+            ${{ runner.temp }}/cli-release-artifacts/*.tgz
+            ${{ runner.temp }}/cli-release-artifacts/dist/*.tar.gz
+            ${{ runner.temp }}/cli-release-artifacts/dist/checksums.txt
+            ${{ runner.temp }}/cli-release-artifacts/release-evidence.json
+          if-no-files-found: error
+
+  native-release:
+    needs: release-artifacts
+    uses: ./.github/workflows/native-release.yml
