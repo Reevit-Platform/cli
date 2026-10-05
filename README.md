@@ -419,6 +419,13 @@ same workflow via npm trusted publishing (configure the repo + `release.yml`
 as a trusted publisher on the `@reevit/cli` package settings); bump
 `npm/package.json` to the tag version before tagging.
 
+PRs and release tags also install the unpublished GoReleaser archives through
+the packed npm installer on native Linux, macOS and Windows runners, on both
+x64 and arm64. Each runner executes version/help, generates a Go webhook
+project with the installed CLI, checks an idempotent setup rerun, and runs the
+generated handler against `payment.updated` outcomes. The tag workflow waits
+for all six native smoke checks before publishing.
+
 Checklist:
 
 1. Bump `npm/package.json` to the next semver. The release workflow's version

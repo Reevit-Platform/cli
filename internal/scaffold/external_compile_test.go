@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -33,7 +34,7 @@ func TestExternalGeneratedTypeScriptCompiles(t *testing.T) {
 				"packageManager": "pnpm@10.33.0",
 				"dependencies": {
 					"next": "16.2.10", "react": "19.2.4", "react-dom": "19.2.4",
-					"@reevit/react": "0.10.2", "@reevit/node": "0.9.0"
+					"@reevit/react": "0.11.0", "@reevit/node": "0.10.2"
 				},
 				"devDependencies": {
 					"typescript": "5.9.3", "@types/node": "25.5.0",
@@ -53,7 +54,7 @@ func TestExternalGeneratedTypeScriptCompiles(t *testing.T) {
 				"packageManager": "pnpm@10.33.0",
 				"dependencies": {
 					"next": "16.2.10", "react": "19.2.4", "react-dom": "19.2.4",
-					"@reevit/react": "0.10.2", "@reevit/node": "0.9.0"
+					"@reevit/react": "0.11.0", "@reevit/node": "0.10.2"
 				},
 				"devDependencies": {
 					"typescript": "5.9.3", "@types/node": "25.5.0",
@@ -72,7 +73,7 @@ func TestExternalGeneratedTypeScriptCompiles(t *testing.T) {
 				"private": true,
 				"packageManager": "pnpm@10.33.0",
 				"dependencies": {
-					"react": "19.2.4", "react-dom": "19.2.4", "@reevit/react": "0.10.2"
+					"react": "19.2.4", "react-dom": "19.2.4", "@reevit/react": "0.11.0"
 				},
 				"devDependencies": {
 					"typescript": "5.9.3", "@types/react": "19.2.14",
@@ -89,7 +90,7 @@ func TestExternalGeneratedTypeScriptCompiles(t *testing.T) {
 			},
 			pkg: `{
 				"private": true, "packageManager": "pnpm@10.33.0",
-				"dependencies": {"express":"5.1.0","@reevit/node":"0.9.0"},
+				"dependencies": {"express":"5.1.0","@reevit/node":"0.10.2"},
 				"devDependencies": {
 					"typescript":"5.9.3","@types/node":"25.5.0","@types/express":"5.0.5"
 				}
@@ -100,7 +101,7 @@ func TestExternalGeneratedTypeScriptCompiles(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			root := t.TempDir()
+			root := externalFixtureRoot(t)
 			test.project.Root = root
 			write(t, root, "package.json", test.pkg)
 			write(t, root, "tsconfig.json", `{
@@ -147,7 +148,7 @@ func TestExternalGeneratedGoCompiles(t *testing.T) {
 		t.Skip("set REEVIT_EXTERNAL_ADAPTER_TEST=1 for registry-backed adapter checks")
 	}
 
-	root := t.TempDir()
+	root := externalFixtureRoot(t)
 	write(t, root, "go.mod", "module example.com/reevit-fixture\n\ngo 1.23\n")
 	write(t, root, "main.go", `package main
 import "net/http"
@@ -163,7 +164,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	for _, command := range [][]string{
-		{"go", "get", "github.com/Reevit-Platform/go-sdk@latest"},
+		{"go", "get", "github.com/Reevit-Platform/go-sdk@v0.11.0"},
 		{"go", "test", "./..."},
 	} {
 		cmd := exec.CommandContext(ctx, command[0], command[1:]...)
@@ -179,14 +180,14 @@ func TestExternalGeneratedPythonImports(t *testing.T) {
 		t.Skip("set REEVIT_EXTERNAL_ADAPTER_TEST=1 for registry-backed adapter checks")
 	}
 
-	root := t.TempDir()
+	root := externalFixtureRoot(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	venv := filepath.Join(root, ".venv")
 	python := filepath.Join(venv, "bin", "python")
 	for _, command := range [][]string{
 		{"python3", "-m", "venv", venv},
-		{python, "-m", "pip", "install", "--quiet", "reevit==0.9.1", "fastapi", "flask", "django"},
+		{python, "-m", "pip", "install", "--quiet", "reevit==0.11.0", "fastapi", "flask", "django"},
 	} {
 		cmd := exec.CommandContext(ctx, command[0], command[1:]...)
 		cmd.Dir = root
@@ -245,7 +246,7 @@ func TestExternalGeneratedPHPSyntax(t *testing.T) {
 		t.Skip("set REEVIT_EXTERNAL_ADAPTER_TEST=1 for registry-backed adapter checks")
 	}
 
-	root := t.TempDir()
+	root := externalFixtureRoot(t)
 	write(t, root, "composer.json", `{"require":{"php":">=8.1"}}`)
 	project := Detect(root)
 	if _, err := Apply(project, TargetsFor(project), ApplyOptions{}); err != nil {
@@ -255,7 +256,7 @@ func TestExternalGeneratedPHPSyntax(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	for _, command := range [][]string{
-		{"composer", "require", "--quiet", "reevit/reevit-php:0.1.0"},
+		{"composer", "require", "--quiet", "reevit/reevit-php:0.3.0"},
 		{"php", "-l", "reevit-client.php"},
 		{"php", "-l", "reevit-webhook.php"},
 	} {
@@ -312,7 +313,7 @@ func TestExternalGeneratedVueAndSvelteCompile(t *testing.T) {
 			},
 			pkg: `{
 				"private": true, "packageManager": "pnpm@10.33.0",
-				"dependencies": {"vue":"3.5.22","@reevit/vue":"0.10.3","@reevit/core":"0.9.0"},
+				"dependencies": {"vue":"3.5.22","@reevit/vue":"0.11.0","@reevit/core":"0.9.1"},
 				"devDependencies": {"typescript":"5.9.3","vue-tsc":"3.1.4","vite":"7.2.2"}
 			}`,
 			tsconfig: `{
@@ -332,7 +333,7 @@ func TestExternalGeneratedVueAndSvelteCompile(t *testing.T) {
 			},
 			pkg: `{
 				"private": true, "packageManager": "pnpm@10.33.0", "type":"module",
-				"dependencies": {"svelte":"5.43.2","@reevit/svelte":"0.10.2","@reevit/core":"0.9.0"},
+				"dependencies": {"svelte":"5.43.2","@reevit/svelte":"0.11.0","@reevit/core":"0.9.1"},
 				"devDependencies": {"typescript":"5.9.3","svelte-check":"4.3.3","vite":"7.2.2"}
 			}`,
 			tsconfig: `{
@@ -349,7 +350,7 @@ func TestExternalGeneratedVueAndSvelteCompile(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			root := t.TempDir()
+			root := externalFixtureRoot(t)
 			test.project.Root = root
 			write(t, root, "package.json", test.pkg)
 			write(t, root, "tsconfig.json", test.tsconfig)
@@ -397,8 +398,8 @@ func TestExternalGeneratedFullStackVueAndSvelteCompile(t *testing.T) {
 			pkg: `{
 				"private":true,"packageManager":"pnpm@10.33.0","type":"module",
 				"dependencies":{
-					"nuxt":"4.2.1","vue":"3.5.22","@reevit/vue":"0.10.3",
-					"@reevit/core":"0.9.0","@reevit/node":"0.9.0"
+					"nuxt":"4.2.1","vue":"3.5.22","@reevit/vue":"0.11.0",
+					"@reevit/core":"0.9.1","@reevit/node":"0.10.2"
 				},
 				"devDependencies":{"typescript":"5.9.3","vue-tsc":"3.1.4","@types/node":"25.5.0"}
 			}`,
@@ -419,8 +420,8 @@ func TestExternalGeneratedFullStackVueAndSvelteCompile(t *testing.T) {
 			pkg: `{
 				"private":true,"packageManager":"pnpm@10.33.0","type":"module",
 				"dependencies":{
-					"@sveltejs/kit":"2.48.5","svelte":"5.43.2","@reevit/svelte":"0.10.2",
-					"@reevit/core":"0.9.0","@reevit/node":"0.9.0"
+					"@sveltejs/kit":"2.48.5","svelte":"5.43.2","@reevit/svelte":"0.11.0",
+					"@reevit/core":"0.9.1","@reevit/node":"0.10.2"
 				},
 				"devDependencies":{
 					"@sveltejs/vite-plugin-svelte":"6.2.1","svelte-check":"4.3.3",
@@ -442,7 +443,7 @@ export default { preprocess: vitePreprocess() };
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			root := t.TempDir()
+			root := externalFixtureRoot(t)
 			test.project.Root = root
 			write(t, root, "package.json", test.pkg)
 			for rel, content := range test.extraFiles {
@@ -464,4 +465,22 @@ export default { preprocess: vitePreprocess() };
 			}
 		})
 	}
+}
+
+// Retain generated sources and dependency locks when a reviewer requests artifacts.
+func externalFixtureRoot(t *testing.T) string {
+	t.Helper()
+	parent := os.Getenv("REEVIT_EXTERNAL_ARTIFACT_DIR")
+	if parent == "" {
+		return t.TempDir()
+	}
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.MkdirTemp(parent, strings.ReplaceAll(t.Name(), "/", "-")+"-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("generated fixture retained: %s", root)
+	return root
 }

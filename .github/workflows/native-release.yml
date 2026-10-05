@@ -1,0 +1,56 @@
+name: native release smoke
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: Native archive (${{ matrix.platform }}/${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # Standard native runners: https://docs.github.com/en/actions/reference/runners/github-hosted-runners
+        include:
+          - runner: ubuntu-24.04
+            platform: linux
+            arch: x64
+          - runner: ubuntu-24.04-arm
+            platform: linux
+            arch: arm64
+          - runner: macos-15-intel
+            platform: darwin
+            arch: x64
+          - runner: macos-15
+            platform: darwin
+            arch: arm64
+          - runner: windows-2025
+            platform: win32
+            arch: x64
+          - runner: windows-11-arm
+            platform: win32
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.2"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          architecture: ${{ matrix.arch }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: cli-release-artifacts
+          path: ${{ runner.temp }}/cli-release-artifacts
+      - name: Install and execute the native archive and generated handler
+        run: node scripts/smoke-native-release.cjs "${{ runner.temp }}/cli-release-artifacts" "${{ matrix.platform }}" "${{ matrix.arch }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-release-${{ matrix.platform }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/cli-release-artifacts/native-evidence-${{ matrix.platform }}-${{ matrix.arch }}.json
+          if-no-files-found: error

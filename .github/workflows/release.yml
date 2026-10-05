@@ -9,7 +9,48 @@ permissions:
   id-token: write # npm trusted publishing (OIDC)
 
 jobs:
+  release-artifacts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.2"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Guard npm wrapper version matches the tag
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PKG_VERSION=$(node -p "require('./npm/package.json').version")
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "npm/package.json is $PKG_VERSION but the tag is $TAG_VERSION — bump it before tagging" >&2
+            exit 1
+          fi
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "v2.18.2"
+          install-only: true
+      - name: Verify all advertised platforms against the packed npm installer
+        run: node scripts/prepare-release.cjs "$RUNNER_TEMP/cli-release-artifacts"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-release-artifacts
+          path: |
+            ${{ runner.temp }}/cli-release-artifacts/*.tgz
+            ${{ runner.temp }}/cli-release-artifacts/dist/*.tar.gz
+            ${{ runner.temp }}/cli-release-artifacts/dist/checksums.txt
+            ${{ runner.temp }}/cli-release-artifacts/release-evidence.json
+          if-no-files-found: error
+
+  native-release:
+    needs: release-artifacts
+    uses: ./.github/workflows/native-release.yml
+
   goreleaser:
+    needs: native-release
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,6 +60,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.24.2"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
 
       - uses: pnpm/action-setup@v4
         with:
@@ -33,7 +78,12 @@ jobs:
 
       - uses: goreleaser/goreleaser-action@v6
         with:
-          version: "~> v2"
+          version: "v2.18.2"
+          install-only: true
+
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "v2.18.2"
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -48,15 +98,6 @@ jobs:
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
-
-      - name: Guard npm wrapper version matches the tag
-        run: |
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
-          PKG_VERSION=$(node -p "require('./npm/package.json').version")
-          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
-            echo "npm/package.json is $PKG_VERSION but the tag is $TAG_VERSION — bump it before tagging" >&2
-            exit 1
-          fi
 
       - name: Publish npm wrapper
         working-directory: npm
