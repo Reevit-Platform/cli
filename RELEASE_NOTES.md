@@ -7,6 +7,9 @@ the legacy `type` envelope. Successful and failed payments arrive as
 `payment.updated`, with the outcome in `data.status`; handlers no longer
 wait for `payment.succeeded` or `payment.failed` event names.
 
+The generated Python webhook handler now imports on Python 3.9 (the default
+`python3` on macOS); it previously failed at import time with a `TypeError`.
+
 These fixes are already on `main`, together with executable generated-handler
 tests. Release 0.7.1 predates them. Preparing this release changes the npm
 wrapper version without duplicating the template implementation.
