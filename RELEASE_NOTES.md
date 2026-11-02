@@ -1,6 +1,4 @@
-# Next release: 0.7.2
-
-This version is prepared locally and has not been tagged or published.
+# 0.7.2 — 2026-11-02
 
 The generated webhook handlers dispatch production `event` envelopes and
 the legacy `type` envelope. Successful and failed payments arrive as
