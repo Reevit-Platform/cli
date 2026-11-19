@@ -254,7 +254,8 @@ to your endpoint with the production header set and a real signature
 verification code runs unchanged. The signing secret comes first from
 `--signing-secret`, then the project's `REEVIT_WEBHOOK_SECRET`, then platform
 webhook configuration; only the final fallback is ephemeral. Project secrets
-are reused without being printed. Reconnects with backoff; test mode only.
+are reused without being printed. Reconnects with backoff, and stops with an
+error once the API has refused the key three times in a row; test mode only.
 
 ## Telemetry
 

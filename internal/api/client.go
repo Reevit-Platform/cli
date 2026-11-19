@@ -63,6 +63,39 @@ func (e *APIError) Hint() string {
 	return ""
 }
 
+// Refused reports whether the API turned the caller away for who it is: a key
+// that is revoked, expired or unknown (401), or one that may not do this (403).
+// Retrying the same request with the same key gets the same answer.
+func (e *APIError) Refused() bool {
+	return e.Status == http.StatusUnauthorized || e.Status == http.StatusForbidden
+}
+
+// maxErrorBody caps how much of a failed response is read. An error envelope
+// is a few hundred bytes; a proxy's HTML error page need not be.
+const maxErrorBody = 64 * 1024
+
+// errorFrom builds the error for a failed response from the API's envelope.
+// A body that is not that envelope (an empty one, a proxy's HTML page) still
+// yields a code, and fallback as the message when there is one.
+func errorFrom(status int, raw []byte, fallback string) *APIError {
+	apiErr := &APIError{Status: status}
+	_ = json.Unmarshal(raw, apiErr)
+
+	// Unmarshal fills what it can before failing, and the envelope has no
+	// business overriding the status the server actually sent.
+	apiErr.Status = status
+
+	if apiErr.Code == "" {
+		apiErr.Code = fmt.Sprintf("http_%d", status)
+	}
+
+	if apiErr.Message == "" && apiErr.ErrText == "" {
+		apiErr.Message = fallback
+	}
+
+	return apiErr
+}
+
 type Request struct {
 	Method     string
 	Path       string // e.g. /payments
@@ -166,14 +199,7 @@ func (c *Client) Do(ctx context.Context, req Request, out any) error {
 	}
 
 	if resp.StatusCode >= 400 {
-		apiErr := &APIError{Status: resp.StatusCode}
-		_ = json.Unmarshal(raw, apiErr)
-
-		if apiErr.Code == "" {
-			apiErr.Code = fmt.Sprintf("http_%d", resp.StatusCode)
-		}
-
-		return apiErr
+		return errorFrom(resp.StatusCode, raw, "")
 	}
 
 	if out != nil && len(raw) > 0 {
