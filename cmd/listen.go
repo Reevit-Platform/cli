@@ -33,6 +33,27 @@ var (
 // shorten it.
 var healthyStreamAge = 30 * time.Second
 
+// reconnectDelay is the first wait after a dropped stream; it doubles up to
+// 30s. A package var so tests can shorten it.
+var reconnectDelay = time.Second
+
+// maxStreamRefusals is how many times in a row the API may refuse the key
+// before `listen` stops.
+//
+// Not one: a 401 is not always final, so a single refusal is waited out like
+// any other drop. Not unbounded either, which is what this used to be: a
+// revoked key was retried every 30s for as long as the terminal stayed open,
+// under a "reconnecting" line that promised it would come back.
+const maxStreamRefusals = 3
+
+// streamRefused reports whether the stream ended because the API refused the
+// key, as opposed to dropping, timing out or being rate limited.
+func streamRefused(err error) bool {
+	var apiErr *api.APIError
+
+	return errors.As(err, &apiErr) && apiErr.Refused()
+}
+
 // listenGapNotice is printed on every reconnect. The backend discards
 // Last-Event-ID, so events emitted while the CLI was disconnected are gone —
 // saying so beats letting the user assume the gap was replayed.
@@ -118,7 +139,8 @@ fallback is ephemeral.`,
 		)
 
 		// Reconnect with backoff: local dev streams drop on hot reloads.
-		backoff := time.Second
+		backoff := reconnectDelay
+		refusals := 0
 
 		for {
 			connectedAt := time.Now()
@@ -132,7 +154,17 @@ fallback is ephemeral.`,
 			// incident, not a continuation of an earlier outage. Without this
 			// the backoff ratchets to 30s and stays there for the session.
 			if time.Since(connectedAt) > healthyStreamAge {
-				backoff = time.Second
+				backoff = reconnectDelay
+			}
+
+			// Anything but a refusal clears the count: the key was accepted, or
+			// the API never got as far as judging it.
+			if !streamRefused(err) {
+				refusals = 0
+			} else if refusals++; refusals >= maxStreamRefusals {
+				// The error carries its own next step (api.APIError.Hint), so
+				// it is returned as it is rather than wrapped in a sentence.
+				return err
 			}
 
 			// The reconnect block stays on stderr even under --quiet: a

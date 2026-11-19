@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 )
@@ -40,7 +41,11 @@ func (c *Client) Stream(ctx context.Context, path string, handle func(SSEEvent))
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 400 {
-		return &APIError{Status: resp.StatusCode, Code: fmt.Sprintf("http_%d", resp.StatusCode), Message: "event stream rejected"}
+		// The body says why: `invalid_api_key` and `too_many_connections` are
+		// both "rejected", and only one of them is worth retrying.
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
+
+		return errorFrom(resp.StatusCode, raw, "event stream rejected")
 	}
 
 	scanner := bufio.NewScanner(resp.Body)
