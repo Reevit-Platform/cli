@@ -1,3 +1,15 @@
+# 0.7.3 — 2026-11-24
+
+`reevit listen` stops when the API keeps refusing the key. A revoked or
+expired key used to be retried every 30 seconds for as long as the terminal
+stayed open. After three refusals in a row (401 or 403) it now exits with
+status 1, the API's own reason, and a hint to run `reevit login`. A refusal
+that does not repeat is waited out like any other dropped stream; rate limits,
+server errors and clean closes reconnect as before.
+
+The stream's error carries the code and message from the API's response
+instead of a fixed "event stream rejected".
+
 # 0.7.2 — 2026-11-02
 
 The generated webhook handlers dispatch production `event` envelopes and
